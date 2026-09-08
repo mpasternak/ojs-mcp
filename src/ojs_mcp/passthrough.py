@@ -6,8 +6,7 @@ generycznym klientem HTTP. Stąd walidacja ścieżki i zamknięcie na zapisy.
 
 from __future__ import annotations
 
-import unicodedata
-import urllib.parse
+import re
 from typing import Any
 
 from .catalog import Katalog
@@ -15,43 +14,64 @@ from .client import OjsClient
 from .config import Config
 
 METODY_ODCZYTU = {"GET", "HEAD"}
+# Dozwolone znaki w segmentach ścieżki: alfanumeryczne, kropka, podkreślnik, myślnik.
+DOZWOLONE_ZNAKI = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 
 def waliduj_sciezke(sciezka: str) -> str:
     """Sprowadź do ścieżki względnej w ``api/v1`` albo odrzuć.
 
-    :raises ValueError: dla pełnych URL-i, ścieżek sieciowych, wyjścia w górę,
-        procentowania i znaków sterujących.
+    Dozwolone znaki w segmentach: a-z, A-Z, 0-9, ., _, -
+    Separator: pojedynczy /. Brak pustych segmentów ani .. .
+
+    :raises ValueError: dla każdego naruszenia powyższych reguł.
     """
     oczyszczona = (sciezka or "").strip()
     if not oczyszczona:
-        raise ValueError("Ścieżka nie może być pusta.")
-
-    # Odrzuć znaki sterujące i niedrukowalne (łącznie z zerową szerokością).
-    for char in oczyszczona:
-        if unicodedata.category(char) in ("Cc", "Cn", "Zs", "Zl", "Zp"):
-            raise ValueError("Ścieżka zawiera znaki sterujące lub niedrukowalne.")
-
-    # Odrzuć procentowanie — ścieżki API OJS nie potrzebują kodowania.
-    if "%" in oczyszczona:
         raise ValueError(
-            "Ścieżka nie może zawierać procentowania. "
+            "Ścieżka nie może być pusta. "
+            "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
             "Wartości parametrów przekazuj przez argument `parametry`."
         )
 
-    # Parsuj jako URL po zamianie backslashów na ukośniki.
-    znormalizowana = oczyszczona.replace("\\", "/")
-    rozbite = urllib.parse.urlsplit(znormalizowana)
+    # Usuń pojedynczy wiodący ukośnik (jeśli jest).
+    if oczyszczona.startswith("/"):
+        if len(oczyszczona) > 1 and oczyszczona[1] == "/":
+            raise ValueError(
+                "Ścieżka nie może zaczynać się od //. "
+                "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
+                "Wartości parametrów przekazuj przez argument `parametry`."
+            )
+        oczyszczona = oczyszczona[1:]
 
-    if rozbite.scheme or rozbite.netloc:
+    if not oczyszczona:
         raise ValueError(
-            "Podaj ścieżkę względną w api/v1 (np. 'submissions/1'), nie pełny URL."
+            "Ścieżka nie może być pusta. "
+            "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
+            "Wartości parametrów przekazuj przez argument `parametry`."
         )
 
-    # Usuń wiodące ukośniki i sprawdzaj wyjście poza api/v1.
-    oczyszczona = znormalizowana.lstrip("/")
-    if ".." in oczyszczona.split("/"):
-        raise ValueError("Ścieżka nie może wychodzić poza api/v1.")
+    # Rozbij na segmenty i waliduj każdy.
+    segmenty = oczyszczona.split("/")
+    for segment in segmenty:
+        if not segment:
+            raise ValueError(
+                "Ścieżka zawiera pusty segment (np. //, ///, ścieżka kończy się /). "
+                "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
+                "Wartości parametrów przekazuj przez argument `parametry`."
+            )
+        if segment == "..":
+            raise ValueError(
+                "Ścieżka zawiera segment .. (wychodzenie w górę). "
+                "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
+                "Wartości parametrów przekazuj przez argument `parametry`."
+            )
+        if not DOZWOLONE_ZNAKI.match(segment):
+            raise ValueError(
+                "Segment ścieżki zawiera niedozwolone znaki. "
+                "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
+                "Wartości parametrów przekazuj przez argument `parametry`."
+            )
 
     return oczyszczona
 

@@ -82,32 +82,80 @@ async def test_listy_w_parametrach_kodowane_przecinkiem():
     await klient.aclose()
 
 
-# Testy bezpieczeństwa — obejścia walidacji
+# Testy bezpieczeństwa — white-list walidacji
 
 
 @pytest.mark.parametrize(
-    "niebezpieczna",
+    "musi_odrzucic",
     [
-        "http:/\\evil.com",  # jeden backslash omija ://
-        "http:\\\\evil.com",  # dwa backslashe omijają ://
-        "\\\\evil.com",  # backslashe zamiast //
-        "/\\evil.com",  # mix slashy
-        "//​evil.com",  # ZERO WIDTH SPACE przed //
-        "submissions/%2e%2e/1",  # %2e to . (wychodzenie w górę)
-        "submissions/..%2f1",  # %2f to / (wychodzenie w górę)
-        "submissions/\r1",  # carriage return
-        "submissions/\n1",  # newline
-        "submissions/\x001",  # null byte
+        # Schematy
+        "HTTPS://evil.com",
+        "HtTpS://evil.com",
+        "javascript://evil.com",
+        "http://evil.com",
+        # Ścieżki sieciowe
+        "//evil.com",
+        "///evil.com",
+        "//​evil.com",  # ZERO WIDTH SPACE (U+200B) przed //
+        "﻿evil.com",  # BOM (U+FEFF) na początek
+        # Wychodzenie w górę
+        "..",
+        "../etc",
+        "a/..",
+        "a/../etc",
+        # Backslashe
+        "\\\\evil.com",
+        "http:\\\\evil.com",
+        "/\\evil.com",
+        # Procentowanie
+        "submissions/%2e%2e/1",
+        "submissions/..%2f1",
+        # Znaki sterujące
+        "submissions/\r1",
+        "submissions/\n1",
+        "submissions/\x001",
+        # Puste segmenty
+        "",
+        "/",
+        "submissions//files",
+        "submissions/",
+        "/submissions/",
+        # Spacja
+        " ",
     ],
 )
-def test_waliduj_sciezke_odrzuca_obejscia_bezpieczenstwa(niebezpieczna):
-    """Testy pokrywające wszystkie obejścia walidacji wyłapane w recenzji."""
+def test_waliduj_sciezke_musi_odrzucic(musi_odrzucic):
+    """Testy bezpieczeństwa — wszystkie niebezpieczne wejścia muszą zostać odrzucone."""
     with pytest.raises(ValueError):
-        waliduj_sciezke(niebezpieczna)
+        waliduj_sciezke(musi_odrzucic)
 
 
-@pytest.mark.parametrize("legalna", ["plik..txt", "/submissions/1", "issues/current"])
-def test_waliduj_sciezke_przyjmuje_legalne_sciezki(legalna):
-    """Upewnij się, że legalne ścieżki nadal przechodzą — regresja."""
-    # Nie powinno rzucić ValueError.
-    waliduj_sciezke(legalna)
+@pytest.mark.parametrize(
+    "musi_przepuscic",
+    [
+        # Zwykłe ścieżki
+        "submissions/1",
+        "/submissions/1",
+        "issues/current",
+        "vocabs",
+        # Bardziej złożone
+        "stats/publications/timeline",
+        "emailTemplates/SUBMISSION_ACK",
+        # Punkty wewnątrz segmentów (nie „..")
+        "plik..txt",
+        "..submissions",
+        "submissions..",
+        "sub..mission",
+    ],
+)
+def test_waliduj_sciezke_musi_przepuscic(musi_przepuscic):
+    """Testy regresji — legalne ścieżki muszą przechodzić bez zmian."""
+    # Sprawdzenie, że nie rzuca ValueError.
+    wynik = waliduj_sciezke(musi_przepuscic)
+    # Wiodący / powinien być obcięty.
+    assert not wynik.startswith("/")
+    # Sama ścieżka powinna być niezmieniona (poza wiodącym /).
+    if musi_przepuscic.startswith("/"):
+        assert wynik == musi_przepuscic[1:]
+    else:
+        assert wynik == musi_przepuscic
