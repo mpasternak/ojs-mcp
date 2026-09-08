@@ -77,6 +77,23 @@ async def test_issues_zwraca_items_mimo_swaggera():
 
 
 @respx.mock
+async def test_pobierz_wszystko_ucina_po_limicie_stron():
+    # limit_stron to jedyny mechanizm chroniący przed wciągnięciem całej
+    # bazy czasopisma do kontekstu modelu — itemsMax=1000 przy limit_stron=2
+    # musi zatrzymać się po dokładnie 2 żądaniach, wynik ucięty do 200.
+    trasa = respx.get(f"{BAZA}/submissions").mock(
+        return_value=httpx.Response(
+            200, json={"itemsMax": 1000, "items": [{"id": i} for i in range(100)]}
+        )
+    )
+    k = _klient()
+    wynik = await k.pobierz_wszystko("submissions", limit_stron=2)
+    assert trasa.calls.call_count == 2
+    assert len(wynik) == 200
+    await k.aclose()
+
+
+@respx.mock
 async def test_pobierz_wszystko_znosi_gola_tablice():
     # Bezpiecznik na wypadek endpointu, który jednak zwraca listę.
     respx.get(f"{BAZA}/stats/editorial", params={"count": "100", "offset": "0"}).mock(
@@ -118,6 +135,20 @@ async def test_mapowanie_bledow(status, tresc, oczekiwany):
 async def test_400_z_obiektem_pol_to_blad_walidacji():
     respx.put(f"{BAZA}/submissions/1/publications/2").mock(
         return_value=httpx.Response(400, json={"title": ["To pole jest wymagane."]})
+    )
+    k = _klient()
+    with pytest.raises(BladWalidacji) as exc:
+        await k.zadanie("PUT", "submissions/1/publications/2", cialo={"title": ""})
+    assert "title" in str(exc.value)
+    await k.aclose()
+
+
+@respx.mock
+async def test_422_z_obiektem_pol_to_blad_walidacji():
+    # OJS przy ValidationException zwraca 422 zamiast zwykłego 400 —
+    # traktujemy to identycznie jak 400 z obiektem pól.
+    respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+        return_value=httpx.Response(422, json={"title": ["To pole jest wymagane."]})
     )
     k = _klient()
     with pytest.raises(BladWalidacji) as exc:

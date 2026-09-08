@@ -115,6 +115,9 @@ class OjsClient:
         try:
             dane = odpowiedz.json()
         except ValueError:
+            # OJS przy 404 z poziomu routera (nieznane czasopismo) zwraca stronę
+            # HTML, nie JSON. Brak treści JSON jest tu oczekiwanym sygnałem,
+            # rozpoznawanym niżej w _na_blad, a nie błędem do zalogowania.
             dane = None
 
         tresc = None
@@ -125,9 +128,11 @@ class OjsClient:
 
         ogon = f" Odpowiedź OJS: {tresc}" if tresc else ""
 
-        if status == 400:
+        if status in (400, 422):
             # 400 ma dwa znaczenia: błąd tokenu albo błędy walidacji pól.
             # Rozróżniamy po kształcie ciała, nie po treści komunikatu.
+            # 422 traktujemy tak samo jak 400 z obiektem pól — OJS zwraca ten
+            # status, gdy podniesie ValidationException zamiast zwykłego 400.
             if isinstance(dane, dict) and "error" not in dane and dane:
                 pola = "; ".join(f"{k}: {v}" for k, v in dane.items())
                 return BladWalidacji(
