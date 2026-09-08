@@ -1,0 +1,147 @@
+# Indeks endpointów REST API OJS (wygenerowany z swagger-source.json)
+# Format: METODY ścieżka | parametry | opis
+# Wszystkie ścieżki są względne wobec {base}/index.php/{czasopismo}/api/v1
+# Kolekcje zwracają {"items": [...], "itemsMax": N} i stronicują się
+# parametrami count (max 100) oraz offset.
+
+PUT /_payments | - | Save payment settings.
+GET /_submissions | - | Get submissions.
+GET /_submissions/assigned | - | Get a list of submissions assigned to a user
+GET /_submissions/reviews | needsReviews,awaitingReviews,reviewsSubmitted,reviewsOverdue,revisionsRequested | Get a list of submissions in a review stage
+GET /_submissions/viewsCount | - | Get a collection of views count
+POST /_uploadPublicFile | - | Upload a file.
+GET/POST /announcements | count,offset,searchPhrase,typeIds | Get a collection of announcements.
+GET/PUT/DELETE /announcements/{announcementId} | - | Get an announcement.
+GET/POST /categories | - | Get a list of categories. Returns top-level categories with their nested sub-categories.
+PUT/DELETE /categories/{categoryId} | - | Edit category.
+GET/POST /comments | publicationIds,userIds,isReported,isApproved,page | Get a list of comments. This endpoint is only available to moderators.
+GET /comments/public | publicationId,page | Get a list of approved comments for a specific publication.
+GET/DELETE /comments/{commentId} | includeReports | Get details for a specific comment. This endpoint is only available to moderators.
+GET/POST/DELETE /comments/{commentId}/reports | page | Get a paginated list of reports for a specific comment.
+GET/DELETE /comments/{commentId}/reports/{reportId} | - | Get details for a specific comment report.
+PUT /comments/{commentId}/setApproval | - | Set approval status of a comment
+GET/POST /contexts | isEnabled,count,offset,searchPhrase | Get a list of contexts.
+GET/PUT/DELETE /contexts/{contextId} | - | Get a context.
+PUT /contexts/{contextId}/registrationAgency | - | Edit registration agency plugin settings
+GET/PUT /contexts/{contextId}/theme | - | Get the active theme.
+GET/POST /dois | status,count,offset | Get a list of DOIs.
+PUT /dois/depositAll | - | Schedule all DOIs for deposit.
+GET /dois/exports/{fileId} | - | Download a DOI export.
+POST /dois/issues/assignDois | - | Assign DOIs to Issues.
+PUT /dois/issues/deposit | - | Deposit Issue DOIs.
+PUT /dois/issues/export | - | Export Issue DOIs.
+PUT /dois/issues/markRegistered | - | Mark Issue DOIs registered.
+PUT /dois/issues/markStale | - | Mark Issue DOIs needs sync.
+PUT /dois/issues/markUnregistered | - | Mark Issue DOIs unregistered.
+POST /dois/submissions/assignDois | - | Assign DOIs to Submissions.
+PUT /dois/submissions/deposit | - | Deposit Submission DOIs.
+PUT /dois/submissions/export | - | Export Submission DOIs.
+PUT /dois/submissions/markRegistered | - | Mark Submission DOIs registered.
+PUT /dois/submissions/markStale | - | Mark Submission DOIs needs sync.
+PUT /dois/submissions/markUnregistered | - | Mark Submission DOIs unregistered.
+GET/PUT/DELETE /dois/{doiId} | - | Get a DOI by ID.
+GET/POST /editTaskTemplates | search,title,type,stageId,include,emailTemplateKey,count,offset | List task/discussion templates in the current context
+GET /editTaskTemplates/variables | - | List available variables for task/discussion templates
+PUT /editTaskTemplates/{templateId} | - | Update a task/discussion template
+GET/POST /emailTemplates | alternateTo,isModified,searchPhrase,count,offset | Get email templates.
+DELETE /emailTemplates/restoreDefaults | - | Restore default email templates.
+GET/PUT/DELETE /emailTemplates/{key} | - | Get an email template by key.
+GET /emails/authorEmails | submissionId,eventType | Gets an Author's email entry logs.
+GET /emails/{emailId} | - | Get an email entry log by ID
+GET/POST /institutions | count,offset,searchPhrase | Get a collection of institutions that have been added to this journal, press or preprint server.
+GET/PUT/DELETE /institutions/{institutionId} | - | Get an institution.
+POST /invitations/add/{type} | - | Create a new invitation.
+GET /invitations/{invitationId} | - | Get a single invitation.
+PUT /invitations/{invitationId}/cancel | - | Cancel an invitation.
+GET /invitations/{invitationId}/getMailable | - | Get the mailable that will be used to send this invitation.
+PUT /invitations/{invitationId}/invite | - | Send the invitation to the invitee.
+GET /invitations/{invitationId}/key/{key} | - | Retrieve an invitation using its access key.
+PUT /invitations/{invitationId}/key/{key}/decline | - | Decline an invitation using its access key.
+PUT /invitations/{invitationId}/key/{key}/finalize | - | Finalize (accept) an invitation using its access key.
+PUT /invitations/{invitationId}/key/{key}/refine | - | Refine an invitation before accepting it.
+PUT /invitations/{invitationId}/populate | - | Populate an invitation with additional data.
+GET /invitations/{type} | count,offset,status,invitee,inviter | Get a collection of invitations of a given type.
+GET /issues | count,offset,orderBy,orderDirection,isPublished,volumes,numbers,years,searchPhrase | Get a list of issues.
+GET /issues/current | - | Get the current issue.
+GET /issues/{issueId} | - | Get an issue by ID.
+GET /mailables | searchPhrase | Get all mailables
+GET /mailables/{id} | - | Get a mailable
+POST /navigationMenus | - | Create a new navigation menu.
+GET /navigationMenus/areas | - | Get available navigation areas.
+GET /navigationMenus/items | - | Get all navigation menu items for new menu creation.
+PUT /navigationMenus/{navigationMenuId} | - | Update a navigation menu.
+GET /navigationMenus/{navigationMenuId}/items | - | Get items for a navigation menu.
+POST /orcid/deleteForAuthor/{authorId} | - | Allows Journal Manager and Editors to revoke an author's ORCID and access tokens associated with a submission.
+POST /orcid/requestAuthorVerification/{authorId} | - | Allows Journal Manager and Editors to send email request to an author to link their ORCID to a submission in O
+GET /reviews/history/{submissionId}/{reviewRoundId} | - | Get the review history for a review round.
+GET /reviews/{submissionId}/exports/{fileId} | - | Download an exported review file.
+PUT /reviews/{submissionId}/{reviewAssignmentId}/confirmReview | - | Confirm a review assignment.
+GET /reviews/{submissionId}/{reviewAssignmentId}/export-pdf | authorFriendly | Export a review assignment as a PDF.
+GET /reviews/{submissionId}/{reviewAssignmentId}/export-xml | authorFriendly | Export a review assignment as XML.
+POST /reviews/{submissionId}/{reviewAssignmentId}/sendToOrcid | - | Submit a completed review to ORCID.
+GET/POST /rors | count,offset,searchPhrase | Get a collection of ROR records.
+GET /rors/{rorId} | - | Get a ROR record.
+GET /sections | count,offset,searchPhrase,title,abbrev,isInactive,editorIds | Get a collection of sections.
+GET /sections/{sectionId} | - | Get a section.
+GET/PUT /site | - | Get the site.
+GET/PUT /site/theme | - | Get the theme.
+GET /stats/contexts | dateStart,dateEnd,contextIds,searchPhrase,count,offset,orderDirection | Get a list of contexts sorted by the number of visits to their homepage.
+GET /stats/contexts/timeline | timelineInterval,dateStart,dateEnd,contextIds,searchPhrase | Get visits by day or month.
+GET /stats/contexts/{contextId} | dateStart,dateEnd | Get the number of views of a context's homepage.
+GET /stats/contexts/{contextId}/timeline | timelineInterval,dateStart,dateEnd | Get visits to one context by day or month.
+GET /stats/editorial | dateStart,dateEnd,sectionIds | Get editorial activity stats.
+GET /stats/editorial/averages | sectionIds | Get yearly averages of editorial stats.
+GET /stats/issues | dateStart,dateEnd,issueIds,searchPhrase,count,offset,orderDirection | Get a list of issues ordered by the number of visits it received.
+GET /stats/issues/timeline | timelineInterval,dateStart,dateEnd,issueIds,searchPhrase,type | Get visits by day or month.
+GET /stats/issues/{issueId} | dateStart,dateEnd | Get the visitor statistics for one issue.
+GET /stats/issues/{issueId}/timeline | timelineInterval,dateStart,dateEnd,type | Get one issue's visits by day or month.
+GET /stats/publications | dateStart,dateEnd,issueIds,sectionIds,submissionIds,searchPhrase,count,offset,orderDirection | Get a list of publications ordered by visits.
+GET /stats/publications/cities | dateStart,dateEnd,issueIds,sectionIds,submissionIds,searchPhrase,count,offset,orderDirection | Get a list of cities ordered by the number of visits to publications.
+GET /stats/publications/countries | dateStart,dateEnd,issueIds,sectionIds,submissionIds,searchPhrase,count,offset,orderDirection | Get a list of countries ordered by the number of visits to publications.
+GET /stats/publications/files | dateStart,dateEnd,issueIds,sectionIds,submissionIds,searchPhrase,count,offset,orderDirection | Get a list of published files ordered by downloads.
+GET /stats/publications/regions | dateStart,dateEnd,issueIds,sectionIds,submissionIds,searchPhrase,count,offset,orderDirection | Get a list of regions ordered by the number of visits to publications.
+GET /stats/publications/timeline | timelineInterval,dateStart,dateEnd,issueIds,sectionIds,submissionIds,searchPhrase,type | Get visits by day or month.
+GET /stats/publications/{submissionId} | dateStart,dateEnd | Get one publication's stats.
+GET /stats/publications/{submissionId}/timeline | timelineInterval,dateStart,dateEnd,type | Get one publication's visits by day or month.
+GET /stats/users | registeredAfter,registeredBefore,status | Get user statistics.
+GET/POST /submissions | assignedTo,categoryIds,count,daysInactive,isIncomplete,isOverdue,issueIds,offset,orderBy,orderDirection,searchPhrase,sectionIds,stageIds,status | Get a list of submissions.
+GET/PUT/DELETE /submissions/{submissionId} | - | Get a submission by ID.
+GET/POST /submissions/{submissionId}/decisions | decisionTypes,editorIds,reviewRoundId,stageId | Get decisions for a submission.
+GET/POST /submissions/{submissionId}/files | fileStages,reviewRoundIds | Get a submission's files.
+GET/PUT/DELETE /submissions/{submissionId}/files/{submissionFileId} | stageId | Get a submission file.
+PUT /submissions/{submissionId}/files/{submissionFileId}/copy | stageId | Copy a submission file.
+GET /submissions/{submissionId}/nextAvailableVersion | versionStage,versionIsMinor | Get next available version number for submission
+GET /submissions/{submissionId}/participants | - | Get assigned participants.
+GET /submissions/{submissionId}/participants/{stageId} | - | Get assigned participants by stage.
+GET/POST /submissions/{submissionId}/publications | - | Get a submission's publications.
+GET/PUT/DELETE /submissions/{submissionId}/publications/{publicationId} | - | Get a publication.
+GET /submissions/{submissionId}/publications/{publicationId}/_components/{component} | - | Get a configured publication form component used by the editorial UI.
+PUT /submissions/{submissionId}/publications/{publicationId}/changeLocale | - | Change the primary locale of a publication.
+GET/POST /submissions/{submissionId}/publications/{publicationId}/contributors | - | Get a publication's contributors.
+PUT /submissions/{submissionId}/publications/{publicationId}/contributors/saveOrder | - | Reorder publication's contributors
+GET/PUT/DELETE /submissions/{submissionId}/publications/{publicationId}/contributors/{contributorId} | - | Get a contributor.
+GET/POST/DELETE /submissions/{submissionId}/publications/{publicationId}/jats | - | Get the JATS XML for a submission's publication.
+PUT /submissions/{submissionId}/publications/{publicationId}/publish | - | Publish a publication.
+PUT /submissions/{submissionId}/publications/{publicationId}/unpublish | - | Unpublish a publication.
+POST/PUT /submissions/{submissionId}/publications/{publicationId}/version | - | Create a new version of a publication.
+GET/POST /submissions/{submissionId}/reviewers/suggestions | approved,include_reviewer_data | Get reviewer suggestions for a submission.
+GET/PUT/DELETE /submissions/{submissionId}/reviewers/suggestions/{suggestionId} | - | Get a reviewer suggestion.
+PUT /submissions/{submissionId}/saveForLater | - | Save a submission for later
+GET /submissions/{submissionId}/stage/{stageId}/tasks | isOpen,orderBy,orderDirection | Retrieve all submission's task associated with the certain workflow stage
+GET /submissions/{submissionId}/stage/{stageId}/tasks/fromTemplate/{templateId} | - | Get a task created from a specific template
+PUT /submissions/{submissionId}/submit | - | Submit a submission
+POST /submissions/{submissionId}/tasks/ | - | Add a new task or discussion.
+GET/PUT /submissions/{submissionId}/tasks/{taskId} | - | Retrieve the task or discussion by ID.
+PUT /submissions/{submissionId}/tasks/{taskId}/close | - | Close a task or discussion.
+POST /submissions/{submissionId}/tasks/{taskId}/notes | - | Add a note to a task or discussion, except a headnote.
+DELETE /submissions/{submissionId}/tasks/{taskId}/notes/{noteId} | - | Delete a note associated with task or discussion, except a headnote.
+PUT /submissions/{submissionId}/tasks/{taskId}/open | - | Reopen a closed task or discussion.
+PUT /submissions/{submissionId}/tasks/{taskId}/start | - | Start a task.
+POST /temporaryFiles | - | Upload a file.
+GET /userGroups | stageIds,roleIds | Get a list of user groups for a context.
+GET /users | roleIds,status,assignedToSubmission,assignedToSubmissionStage,assignedToSection,count,offset,orderBy,orderDirection,searchPhrase | Get a list of users.
+GET /users/reviewers | status,reviewerRating,reviewStage,reviewsCompleted,reviewsActive,daysSinceLastAssignment,averageCompletion,count,offset,orderBy,orderDirection,searchPhrase | Get a list of reviewers.
+GET /users/{userId} | - | Get a user by ID.
+PUT /users/{userId}/endRole/{userGroupId} | - | End role access for a given user.
+GET /vocabs | vocab,locale | Get controlled vocab entries.
+GET /vocabs/interests | term | Get user interests vocabulary.
