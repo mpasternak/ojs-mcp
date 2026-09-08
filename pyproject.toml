@@ -55,6 +55,12 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 88
 target-version = "py310"
+# Dokumenty w docs/ to narracja, nie kod źródłowy. Ruff od 0.16 formatuje
+# bloki Pythona wewnątrz Markdowna, przez co spec i plan implementacji
+# wywalały `ruff format --check .` — czerwone CI dlatego, że dokument
+# projektowy zapisał krotkę w jednej linii, nie niesie żadnej informacji
+# o jakości kodu.
+exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP", "B"]
