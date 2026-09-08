@@ -3,6 +3,7 @@ import pytest
 from ojs_mcp.slowniki import (
     DECYZJE,
     ETAPY,
+    ETAPY_PLIKU,
     ROLE_NA_ID,
     STATUSY,
     STATUSY_DOI,
@@ -68,3 +69,24 @@ def test_na_nazwe_odwraca_na_wartosci():
 
 def test_na_nazwe_zwraca_none_dla_nieznanego_kodu():
     assert na_nazwe(999, STATUSY) is None
+
+
+def test_etapy_pliku_maja_wartosci_z_ojs():
+    # SubmissionFile.php:29-45 — sprawdzone co do joty w źródle.
+    assert ETAPY_PLIKU["zgloszenie"] == 2
+    assert ETAPY_PLIKU["notatka"] == 3
+    assert ETAPY_PLIKU["plik_recenzji"] == 4
+    assert ETAPY_PLIKU["zalacznik_recenzji"] == 5
+    assert ETAPY_PLIKU["wersja_finalna"] == 6
+    assert ETAPY_PLIKU["redakcja"] == 9
+    assert ETAPY_PLIKU["korekta"] == 10
+    assert ETAPY_PLIKU["gotowe_do_produkcji"] == 11
+    assert ETAPY_PLIKU["zalacznik"] == 13
+    assert ETAPY_PLIKU["poprawki_po_recenzji"] == 15
+    assert ETAPY_PLIKU["plik_zalezny"] == 17
+    assert ETAPY_PLIKU["dyskusja"] == 18
+    assert ETAPY_PLIKU["plik_recenzji_wewnetrznej"] == 19
+    assert ETAPY_PLIKU["poprawki_po_recenzji_wewnetrznej"] == 20
+    assert ETAPY_PLIKU["jats"] == 21
+    assert ETAPY_PLIKU["tekst_glowny"] == 22
+    assert ETAPY_PLIKU["media"] == 23

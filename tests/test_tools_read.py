@@ -341,12 +341,29 @@ async def test_pobierz_publikacje_zwraca_szczegoly_pominiete_na_liscie():
                 "abstract": {"pl": "Streszczenie."},
                 "keywords": {"pl": ["słowo1", "słowo2"]},
                 "doiId": 9,
+                "pages": "12-20",
+                "articleNumber": "e12345",
                 "authors": [
                     {
                         "id": 1,
                         "fullName": "Jan Kowalski",
                         "email": "jan@example.edu",
                         "orcidAccessToken": "sekret-oauth",
+                    }
+                ],
+                "galleys": [
+                    {
+                        "id": 5,
+                        "label": "PDF",
+                        "urlPublished": "https://x.edu/rocznik/article/view/1/5",
+                        "seq": 1,
+                        "file": {
+                            "id": 50,
+                            "mimetype": "application/pdf",
+                            "url": "https://x.edu/rocznik/article/download/1/5",
+                            "path": "wewnetrzna/sciezka/na/dysku",
+                        },
+                        "wewnetrzne_pole_ui": True,
                     }
                 ],
                 "cos_wiecej": 1,
@@ -362,8 +379,23 @@ async def test_pobierz_publikacje_zwraca_szczegoly_pominiete_na_liscie():
     assert wynik["abstract"] == {"pl": "Streszczenie."}
     assert wynik["keywords"] == {"pl": ["słowo1", "słowo2"]}
     assert wynik["doiId"] == 9
+    assert wynik["pages"] == "12-20"
+    assert wynik["articleNumber"] == "e12345"
     assert wynik["authors"] == [
         {"id": 1, "fullName": "Jan Kowalski", "email": "jan@example.edu"}
+    ]
+    assert wynik["galleys"] == [
+        {
+            "id": 5,
+            "label": "PDF",
+            "urlPublished": "https://x.edu/rocznik/article/view/1/5",
+            "seq": 1,
+            "file": {
+                "id": 50,
+                "mimetype": "application/pdf",
+                "url": "https://x.edu/rocznik/article/download/1/5",
+            },
+        }
     ]
     assert "cos_wiecej" not in wynik
     await klient.aclose()
@@ -387,6 +419,8 @@ async def test_pliki_zgloszenia_woła_wlasciwy_endpoint():
     wynik = await pliki_zgloszenia_impl(klient, katalog, zgloszenie=42)
     assert wynik["znaleziono"] == 1
     assert wynik["pliki"][0]["id"] == 1
+    # fileStage=2 == SUBMISSION_FILE_SUBMISSION (SubmissionFile.php:29).
+    assert wynik["pliki"][0]["etap_pliku_nazwa"] == "zgloszenie"
     await klient.aclose()
 
 

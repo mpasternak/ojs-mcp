@@ -19,6 +19,7 @@ from .client import MAX_COUNT, OjsClient
 from .pola import (
     POLA_AUTORA_PUBLIKACJI,
     POLA_DOI,
+    POLA_GALERII,
     POLA_NUMERU,
     POLA_PLIKU,
     POLA_PRZYPISANIA_RECENZJI,
@@ -35,7 +36,15 @@ from .pola import (
     POLA_ZGLOSZENIA_PELNE,
     przytnij,
 )
-from .slowniki import ETAPY, ROLE_NA_ID, STATUSY, STATUSY_DOI, na_nazwe, na_wartosci
+from .slowniki import (
+    ETAPY,
+    ETAPY_PLIKU,
+    ROLE_NA_ID,
+    STATUSY,
+    STATUSY_DOI,
+    na_nazwe,
+    na_wartosci,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -272,9 +281,11 @@ async def pobierz_publikacje_impl(
     ``GET /submissions/{zgloszenie}/publications/{publikacja}`` — ID
     publikacji znajdziesz w wyniku ``pobierz_zgloszenie``. W odróżnieniu od
     skróconych publikacji na liście, zwraca też abstrakt, pełną listę
-    autorów, słowa kluczowe i DOI. OJS nie wiąże z publikacją zakresu stron
-    ani plików — po pliki użyj ``pliki_zgloszenia``, po DOI całego
-    czasopisma ``lista_doi``.
+    autorów, słowa kluczowe, DOI, numer strony/artykułu (``pages``/
+    ``articleNumber``) oraz ``galleys`` — gotowe pliki tej wersji (PDF,
+    HTML itp.) z publicznymi linkami. Po WSZYSTKIE pliki zgłoszenia
+    (włącznie z etapami roboczymi, nie tylko gotowymi galleyami) użyj
+    ``pliki_zgloszenia``.
     """
     kontekst = await katalog.rozwiaz(czasopismo)
     dane = await client.get(
@@ -286,6 +297,17 @@ async def pobierz_publikacje_impl(
         wynik["authors"] = [
             przytnij(a, POLA_AUTORA_PUBLIKACJI) for a in autorzy if isinstance(a, dict)
         ]
+    galerie = dane.get("galleys") or []
+    if isinstance(galerie, list):
+        przyciete_galerie = []
+        for g in galerie:
+            if not isinstance(g, dict):
+                continue
+            wpis = przytnij(g, POLA_GALERII)
+            if isinstance(wpis.get("file"), dict):
+                wpis["file"] = przytnij(wpis["file"], POLA_PLIKU)
+            przyciete_galerie.append(wpis)
+        wynik["galleys"] = przyciete_galerie
     wynik["czasopismo"] = kontekst
     return wynik
 
@@ -300,10 +322,13 @@ async def pliki_zgloszenia_impl(
 ) -> dict[str, Any]:
     """Pobierz pliki dołączone do zgłoszenia (``GET /submissions/{id}/files``).
 
-    Zwraca pliki niezależnie od etapu przepływu (zgłoszenie, recenzja,
-    redakcja, produkcja) — filtr ``fileStages`` z OJS nie ma tu odpowiednika
-    z nazwami słownymi, bo jego wartości liczbowe nie są udokumentowane
-    w specyfikacji tego projektu.
+    Zwraca pliki ze WSZYSTKICH etapów przepływu naraz (zgłoszenie, recenzja,
+    redakcja, produkcja itd.) — każdy plik ma ``etap_pliku_nazwa`` obok
+    liczbowego ``fileStage`` (nazwy z ``ETAPY_PLIKU``). Świadomie nie ma
+    filtra ``fileStages`` na wejściu — to celowe zawężenie zakresu tego
+    narzędzia (samo tłumaczenie liczb na nazwy jest zweryfikowane
+    w źródle OJS, ale zawężanie po etapie to osobna funkcja, którą można
+    dodać później).
     """
     kontekst = await katalog.rozwiaz(czasopismo)
     pozycje = await client.pobierz_wszystko(
@@ -312,11 +337,17 @@ async def pliki_zgloszenia_impl(
         limit_stron=_limit_stron(limit),
     )
     wybrane = pozycje[:limit]
+    pliki = []
+    for p in wybrane:
+        wpis = przytnij(p, POLA_PLIKU)
+        if "fileStage" in wpis:
+            wpis["etap_pliku_nazwa"] = na_nazwe(wpis["fileStage"], ETAPY_PLIKU)
+        pliki.append(wpis)
     return {
         "czasopismo": kontekst,
         "zgloszenie": zgloszenie,
-        "znaleziono": len(wybrane),
-        "pliki": [przytnij(p, POLA_PLIKU) for p in wybrane],
+        "znaleziono": len(pliki),
+        "pliki": pliki,
     }
 
 
@@ -846,7 +877,8 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         Zgłoszenie może mieć kilka wersji (kolejne poprawki po recenzji) —
         ID publikacji znajdziesz w wyniku `pobierz_zgloszenie`. W odróżnieniu
         od skróconej listy, zwraca też abstrakt, pełną listę autorów, słowa
-        kluczowe i DOI.
+        kluczowe, DOI, numer strony/artykułu i `galleys` — gotowe pliki tej
+        wersji (PDF, HTML itp.) z linkami publicznymi.
         """
         return await pobierz_publikacje_impl(
             client,
@@ -860,7 +892,11 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
     async def pliki_zgloszenia(
         zgloszenie: int, limit: int = 100, czasopismo: str | None = None
     ) -> dict:
-        """Pobierz listę plików dołączonych do zgłoszenia (wszystkie etapy)."""
+        """Pobierz listę plików dołączonych do zgłoszenia (wszystkie etapy).
+
+        Każdy plik ma `etap_pliku_nazwa` obok liczbowego kodu etapu, np.
+        `plik_recenzji`, `redakcja`, `wersja_finalna`, `tekst_glowny`.
+        """
         return await pliki_zgloszenia_impl(
             client, katalog, zgloszenie=zgloszenie, czasopismo=czasopismo, limit=limit
         )

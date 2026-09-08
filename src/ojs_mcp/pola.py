@@ -10,10 +10,18 @@ Krotki są dobrane na podstawie realnych schematów JSON z repozytoriów
 ``pkp/pkp-lib`` i ``pkp/ojs`` (gałąź ``main``, sprawdzone we wrześniu 2026) —
 pól z flagą ``"apiSummary": true`` w plikach ``schemas/submission.json``,
 ``publication.json``, ``issue.json``, ``section.json``, ``user.json``,
-``doi.json``, ``author.json``, ``reviewAssignment.json`` oraz
-``submissionFile.json``. Wyjątek: tokeny OAuth ORCID (``orcidAccessToken``
-i pokrewne) mają ``apiSummary=true``, ale świadomie NIE trafiają do żadnej
-krotki — to sekrety, nie dane do pokazania modelowi.
+``doi.json``, ``author.json``, ``galley.json``, ``reviewAssignment.json``
+oraz ``submissionFile.json``. Wyjątek: tokeny OAuth ORCID
+(``orcidAccessToken`` i pokrewne) mają ``apiSummary=true``, ale świadomie
+NIE trafiają do żadnej krotki — to sekrety, nie dane do pokazania modelowi.
+
+UWAGA przy weryfikacji wobec schematów: ``publication.json`` (i tylko ono)
+jest rozbite na DWA pliki w DWÓCH repozytoriach — ``pkp-lib`` ma część
+wspólną dla OJS/OMP/OPS, a ``ojs`` dokłada pola specyficzne dla artykułów
+w numerach czasopisma (m.in. ``pages``, ``galleys``, ``articleNumber``,
+``sectionId``, ``status``). Sprawdzanie tylko ``pkp-lib`` daje niepełny
+obraz — tak powstała pierwsza, błędna wersja ``POLA_PUBLIKACJI_PELNE``
+w tym module (bez ``pages``/``galleys``), poprawiona po review.
 """
 
 from __future__ import annotations
@@ -58,9 +66,10 @@ POLA_PUBLIKACJI = (
 # ma sens pokazać więcej niż na liście. `GET /publications/{id}` w OJS
 # realnie zwraca te pola (PKPSubmissionController::getPublication woła
 # ``Repo::publication()->getSchemaMap(...)->map($publication)``, czyli pełny
-# zestaw, nie summarize). Świadomie pominięte: `pages` — schemat publikacji
-# w OJS nie ma takiego pola (to funkcja rozdziałów w OMP, nie artykułów
-# w OJS); pliki publikacji też nie są tu osadzone — użyj `pliki_zgloszenia`.
+# zestaw, nie summarize). `pages`, `articleNumber` i `galleys` pochodzą
+# z DOKŁADKI schematu w repo `pkp/ojs` (schemat bazowy w `pkp-lib` ich nie
+# ma — patrz uwaga w docstringu modułu); `galleys` to gotowe pliki tej
+# wersji (PDF, HTML...) — przycinane osobno przez `POLA_GALERII`.
 POLA_PUBLIKACJI_PELNE = POLA_PUBLIKACJI + (
     "abstract",
     "keywords",
@@ -70,6 +79,9 @@ POLA_PUBLIKACJI_PELNE = POLA_PUBLIKACJI + (
     "licenseUrl",
     "copyrightHolder",
     "copyrightYear",
+    "pages",
+    "articleNumber",
+    "galleys",
 )
 
 # schemas/author.json — podzbiór pól apiSummary; bez sekretów OAuth ORCID
@@ -85,6 +97,21 @@ POLA_AUTORA_PUBLIKACJI = (
     "country",
     "orcid",
     "contributorRoles",
+)
+
+# schemas/galley.json (repo pkp/ojs) — pola apiSummary. `file` to
+# zagnieżdżony obiekt pliku (`$ref: SubmissionFile`), przycinany tym samym
+# `POLA_PLIKU` co w `pliki_zgloszenia` — to jedyny sposób dotrzeć do
+# faktycznego URL-a/mimetype gotowego pliku publikacji z poziomu publikacji.
+POLA_GALERII = (
+    "id",
+    "label",
+    "locale",
+    "seq",
+    "isApproved",
+    "urlPublished",
+    "urlRemote",
+    "file",
 )
 
 # schemas/submissionFile.json — podzbiór pól apiSummary; pominięte szczegóły

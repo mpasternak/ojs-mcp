@@ -2,7 +2,8 @@
 
 Model nie powinien podawać magicznych liczb: narzędzia przyjmują
 ``status="opublikowane"``, a nie ``status=3``. Wartości pochodzą
-z PKPSubmission.php, PKPApplication.php, Decision.php i Role.php.
+z PKPSubmission.php, PKPApplication.php, Decision.php, Role.php,
+Doi.php i SubmissionFile.php.
 """
 
 from __future__ import annotations
@@ -81,6 +82,30 @@ STATUSY_DOI: dict[str, int] = {
     "zarejestrowane": 3,
     "blad": 4,
     "nieaktualne": 5,
+}
+
+# classes/submissionFile/SubmissionFile.php:29-45 (pkp-lib) — stałe
+# SUBMISSION_FILE_* (zweryfikowane w źródle na GitHubie: pkp/pkp-lib,
+# gałąź main, wrzesień 2026). Świadomie bez 1 (SUBMISSION_FILE_PUBLIC) i
+# 7/8/12/14/16 — te stałe albo nie istnieją, albo są funkcją OMP.
+ETAPY_PLIKU: dict[str, int] = {
+    "zgloszenie": 2,
+    "notatka": 3,
+    "plik_recenzji": 4,
+    "zalacznik_recenzji": 5,
+    "wersja_finalna": 6,
+    "redakcja": 9,
+    "korekta": 10,
+    "gotowe_do_produkcji": 11,
+    "zalacznik": 13,
+    "poprawki_po_recenzji": 15,
+    "plik_zalezny": 17,
+    "dyskusja": 18,
+    "plik_recenzji_wewnetrznej": 19,
+    "poprawki_po_recenzji_wewnetrznej": 20,
+    "jats": 21,
+    "tekst_glowny": 22,
+    "media": 23,
 }
 
 
