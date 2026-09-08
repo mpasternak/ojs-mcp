@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from ojs_mcp.auth import ustaw_token_zadania
@@ -23,7 +25,8 @@ async def test_bez_allow_writes_brak_narzedzi_zapisu():
     await klient.aclose()
 
 
-async def test_z_allow_writes_narzedzia_zapisu_sa():
+async def test_z_allow_writes_narzedzia_zapisu_sa(caplog):
+    caplog.set_level(logging.WARNING)
     cfg = Config(
         base_url="https://x.edu", journal="r", api_token="t", allow_writes=True
     )
@@ -33,6 +36,9 @@ async def test_z_allow_writes_narzedzia_zapisu_sa():
     # rejestruje — sprawdzamy tu tylko, że ścieżka importu/rejestracji przy
     # allow_writes=True nie wywala budowy serwera.
     assert isinstance(nazwy, set)
+    # Jedyny sygnał dla operatora, że instancja może modyfikować dane
+    # produkcyjne czasopisma — musi zostać, nawet po refaktorze.
+    assert "OJS_ALLOW_WRITES" in caplog.text
     await klient.aclose()
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import sys
 
@@ -85,6 +86,13 @@ def main(argv: list[str] | None = None) -> int:
 
         return uruchom_http(config)
 
-    mcp, _client = zbuduj_serwer(config)
-    mcp.run()
+    mcp, client = zbuduj_serwer(config)
+    try:
+        # `mcp.run()` jest w pełni synchroniczne (owija własną pętlę zdarzeń
+        # przez `anyio.run`) i kończy się dopiero po zamknięciu stdin —
+        # nie ma tu miejsca na `await`. Po jego powrocie pętla jest już
+        # zamknięta, więc `aclose()` odpalamy w nowej, jednorazowej pętli.
+        mcp.run()
+    finally:
+        asyncio.run(client.aclose())
     return 0

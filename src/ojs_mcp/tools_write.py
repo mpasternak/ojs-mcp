@@ -1,6 +1,6 @@
 """Narzędzia zapisu.
 
-To jest ZAŚLECZKA — moduł istnieje wyłącznie, żeby import warunkowy w
+To jest ZAŚLEPKA — moduł istnieje wyłącznie, żeby import warunkowy w
 ``server.zbuduj_serwer`` (aktywny tylko przy ``config.allow_writes``) miał
 co zaimportować. Pełna implementacja (m.in. ``dodaj_decyzje_redakcyjna``,
 ``opublikuj_publikacje``) powstanie w Task 13.
@@ -8,8 +8,11 @@ co zaimportować. Pełna implementacja (m.in. ``dodaj_decyzje_redakcyjna``,
 
 from __future__ import annotations
 
+from .catalog import Katalog
+from .client import OjsClient
 
-def zarejestruj_zapis(mcp, client, katalog) -> None:
+
+def zarejestruj_zapis(mcp, client: OjsClient, katalog: Katalog) -> None:
     """Zarejestruj narzędzia modyfikujące dane czasopisma.
 
     Zaślepka: na razie nie rejestruje żadnego narzędzia. Implementacja
