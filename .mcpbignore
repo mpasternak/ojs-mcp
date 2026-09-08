@@ -1,0 +1,8 @@
+.git/
+.github/
+.venv/
+docs/
+site/
+tests/
+.pytest_cache/
+.ruff_cache/
