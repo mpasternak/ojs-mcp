@@ -58,6 +58,31 @@ ROLE: dict[int, str] = {
     2097152: "menedżer prenumerat",
 }
 
+# Role.php:24-31 — te same stałe co ROLE, ale jako nazwy słowne w konwencji
+# reszty tego modułu (snake_case, bez spacji i diakrytyków), do użycia jako
+# wartość filtra (np. `roleIds` w GET /users), a nie tylko do prezentacji
+# `pkp.currentUser`.
+ROLE_NA_ID: dict[str, int] = {
+    "administrator_witryny": 1,
+    "menedzer_czasopisma": 16,
+    "redaktor_dzialu": 17,
+    "recenzent": 4096,
+    "asystent": 4097,
+    "autor": 65536,
+    "czytelnik": 1048576,
+    "menedzer_prenumerat": 2097152,
+}
+
+# classes/doi/Doi.php — stałe STATUS_* (zweryfikowane w źródle na GitHubie:
+# pkp/pkp-lib, gałąź main, wrzesień 2026).
+STATUSY_DOI: dict[str, int] = {
+    "niezarejestrowane": 1,
+    "zgloszone": 2,
+    "zarejestrowane": 3,
+    "blad": 4,
+    "nieaktualne": 5,
+}
+
 
 def na_wartosci(
     nazwy: str | Iterable[str],
@@ -84,3 +109,18 @@ def na_wartosci(
             )
         wynik.append(str(slownik[nazwa]))
     return ",".join(wynik)
+
+
+def na_nazwe(wartosc: int, slownik: dict[str, int]) -> str | None:
+    """Odwrotność ``na_wartosci``: zamień kod liczbowy z odpowiedzi OJS
+    z powrotem na nazwę słowną, do dołożenia obok surowego kodu (np.
+    ``status_nazwa`` obok ``status``).
+
+    Zwraca ``None`` dla kodu spoza słownika zamiast podnosić wyjątek —
+    odpowiedź OJS (np. z nowszej wersji) nie powinna wywalać całego
+    narzędzia tylko dlatego, że nie umiemy nazwać jednego pola.
+    """
+    for nazwa, wart in slownik.items():
+        if wart == wartosc:
+            return nazwa
+    return None

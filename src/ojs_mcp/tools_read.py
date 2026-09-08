@@ -3,192 +3,84 @@ je testować bez uruchamiania serwera MCP — rejestracja w ``zarejestruj_odczyt
 jest tylko cienką warstwą tłumaczącą sygnaturę narzędzia MCP na wywołanie
 ``*_impl``.
 
-Krotki ``POLA_*`` określają, które pola surowej odpowiedzi OJS trafiają do
-modelu. Są dobrane na podstawie realnych schematów JSON z repozytoriów
-``pkp/pkp-lib`` i ``pkp/ojs`` (gałąź ``main``, sprawdzone we wrześniu 2026) —
-pól z flagą ``"apiSummary": true`` w plikach ``schemas/submission.json``,
-``publication.json``, ``issue.json``, ``section.json``, ``user.json``,
-``doi.json``, ``reviewAssignment.json`` oraz ``submissionFile.json``. Wyjątek:
-tokeny OAuth ORCID (``orcidAccessToken`` i pokrewne) mają ``apiSummary=true``,
-ale świadomie NIE trafiają do żadnej krotki — to sekrety, nie dane do pokazania
-modelowi.
+Krotki pól do przycinania odpowiedzi (``POLA_*``) i funkcja ``przytnij``
+mieszkają w ``pola.py`` — patrz docstring tamtego modułu po uzasadnienie
+i źródła, na których są oparte.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from .bledy import BladNieZnaleziono, BladOjs, BladUwierzytelnienia
 from .catalog import Katalog
-from .client import OjsClient
-from .slowniki import ETAPY, ROLE, STATUSY, na_wartosci
+from .client import MAX_COUNT, OjsClient
+from .pola import (
+    POLA_AUTORA_PUBLIKACJI,
+    POLA_DOI,
+    POLA_NUMERU,
+    POLA_PLIKU,
+    POLA_PRZYPISANIA_RECENZJI,
+    POLA_PUBLIKACJI,
+    POLA_PUBLIKACJI_PELNE,
+    POLA_PUBLIKACJI_W_STATYSTYKACH,
+    POLA_RECENZENTA,
+    POLA_RUNDY_RECENZJI,
+    POLA_SEKCJI,
+    POLA_STATYSTYK_PUBLIKACJI,
+    POLA_STATYSTYKI_REDAKCYJNEJ,
+    POLA_UZYTKOWNIKA,
+    POLA_ZGLOSZENIA,
+    POLA_ZGLOSZENIA_PELNE,
+    przytnij,
+)
+from .slowniki import ETAPY, ROLE_NA_ID, STATUSY, STATUSY_DOI, na_nazwe, na_wartosci
 
-# --- Krotki przycinania odpowiedzi -----------------------------------------
+logger = logging.getLogger(__name__)
 
-# schemas/submission.json — pola apiSummary z listy /submissions.
-POLA_ZGLOSZENIA = (
-    "id",
-    "status",
-    "stageId",
+# classes/submission/Collector.php / spec §3.10 — jedyne dozwolone wartości
+# `orderBy` dla GET /submissions. UWAGA: to nazwy PARAMETRU zapytania, nie
+# nazwy pól w odpowiedzi JSON — stąd np. `lastActivity`, a nie
+# `dateLastActivity` (to pole odpowiedzi, którym pierwotnie było pomyłkowo
+# podmienione tu jako wartość domyślna).
+SORTOWANIE_ZGLOSZEN = (
+    "datePublished",
     "dateSubmitted",
-    "dateLastActivity",
-    "submissionProgress",
-)
-
-# Jak wyżej, plus pola przydatne przy odczycie pojedynczego zgłoszenia.
-# `reviewRounds`/`reviewAssignments` (readOnly, pełny GET) mają osobne
-# narzędzie (`recenzje_zgloszenia`) i osobne krotki niżej.
-POLA_ZGLOSZENIA_PELNE = POLA_ZGLOSZENIA + (
-    "currentPublicationId",
-    "editorAssigned",
-)
-
-# schemas/publication.json — pola apiSummary. Pominięte `pub-id::*`: klucz
-# zależy od zainstalowanych wtyczek identyfikatorów, więc nie da się go
-# nazwać statycznie.
-POLA_PUBLIKACJI = (
-    "id",
-    "submissionId",
-    "status",
-    "version",
-    "versionString",
-    "datePublished",
-    "sectionId",
+    "lastActivity",
+    "lastModified",
+    "sequence",
     "title",
-    "subtitle",
-    "authorsStringShort",
-    "urlPublished",
 )
 
-# schemas/submissionFile.json — podzbiór pól apiSummary; pominięte szczegóły
-# techniczne bez wartości dla modelu (np. `path`, `variantGroupId`).
-POLA_PLIKU = (
-    "id",
-    "submissionId",
-    "fileStage",
-    "genreId",
-    "genreName",
-    "name",
-    "mimetype",
-    "documentType",
-    "dateCreated",
-    "uploaderUserId",
-    "uploaderUserName",
-    "url",
-    "viewable",
-)
-
-# schemas/reviewRound.json nie oznacza pól flagą apiSummary — obiekt jest
-# już wąski, więc bierzemy wszystkie jego właściwości.
-POLA_RUNDY_RECENZJI = ("id", "round", "stageId", "status", "statusId")
-
-# schemas/reviewAssignment.json — podzbiór pól apiSummary istotny do
-# przeglądu stanu recenzji; pominięte pola czysto operacyjne UI
-# (`requestResent`, `reminderWasAutomatic`, `lastModifiedBy` itp.).
-POLA_PRZYPISANIA_RECENZJI = (
-    "id",
-    "reviewerId",
-    "reviewerFullName",
-    "reviewRoundId",
-    "round",
-    "stageId",
-    "status",
-    "reviewMethod",
-    "dateAssigned",
-    "dateConfirmed",
-    "dateDue",
-    "dateCompleted",
-    "dateAcknowledged",
-    "declined",
-    "cancelled",
-    "reviewerRecommendation",
-    "quality",
-)
-
-# schemas/issue.json (repo pkp/ojs) — pola apiSummary, bez pól czysto
-# prezentacyjnych okładki (`coverImage*`).
-POLA_NUMERU = (
-    "id",
-    "volume",
-    "number",
-    "year",
-    "title",
-    "identification",
+# classes/issue/Collector.php (repo pkp/ojs) — jedyne dozwolone wartości
+# `orderBy` dla GET /issues. Kierunek sortowania jest tam ustalany przez
+# OJS wewnętrznie dla każdej z tych wartości (patrz uwaga przy
+# `lista_numerow_impl`) — `orderDirection` nie ma tu żadnego efektu.
+SORTOWANIE_NUMEROW = (
     "datePublished",
-    "published",
+    "lastModified",
+    "seq",
+    "publishedIssues",
+    "unpublishedIssues",
+    "shelf",
 )
-
-# schemas/section.json — komplet pól apiSummary.
-POLA_SEKCJI = ("id", "title", "abbrev", "sequence", "isInactive")
-
-# schemas/user.json — podzbiór pól apiSummary. Świadomie pominięte:
-# `orcidAccessToken`, `orcidRefreshToken` i pokrewne (sekrety OAuth), `gossip`
-# (notatka wewnętrzna administratora), `canLoginAs`/`canMergeUsers`
-# (uprawnienia UI, nie dane o użytkowniku).
-POLA_UZYTKOWNIKA = (
-    "id",
-    "userName",
-    "email",
-    "fullName",
-    "givenName",
-    "familyName",
-    "affiliation",
-    "disabled",
-    "orcid",
-)
-
-# classes/user/maps/Schema.php:88-89 (pkp-lib) — pola dokładane do
-# podsumowania użytkownika w /users/reviewers ponad zwykłe POLA_UZYTKOWNIKA.
-POLA_RECENZENTA = POLA_UZYTKOWNIKA + (
-    "reviewsActive",
-    "reviewsCompleted",
-    "reviewsDeclined",
-    "reviewsCancelled",
-    "averageReviewCompletionDays",
-    "dateLastReviewAssignment",
-    "reviewerRating",
-)
-
-# schemas/doi.json — komplet pól apiSummary.
-POLA_DOI = ("id", "doi", "status", "resolvingUrl", "registrationAgency")
-
-# api/v1/stats/publications/PKPStatsPublicationController.php:getItemForJSON —
-# dokładny kształt pojedynczej pozycji z GET /stats/publications.
-POLA_STATYSTYK_PUBLIKACJI = (
-    "abstractViews",
-    "galleyViews",
-    "pdfViews",
-    "htmlViews",
-    "otherViews",
-    "jatsViews",
-    "publication",
-)
-
-# Spec §3.10: kształt odpowiedzi /stats/editorial to [{key, name, value}].
-POLA_STATYSTYKI_REDAKCYJNEJ = ("key", "name", "value")
-
-# classes/doi/Doi.php — stałe STATUS_*. Nazwy słowne własne tego modułu (nie
-# ma ich w slowniki.py, bo dotyczą wyłącznie DOI, nie zgłoszeń/etapów/ról).
-STATUSY_DOI: dict[str, int] = {
-    "niezarejestrowane": 1,
-    "zgloszone": 2,
-    "zarejestrowane": 3,
-    "blad": 4,
-    "nieaktualne": 5,
-}
-
-# Odwrócenie ROLE (int -> nazwa) na potrzeby filtra `roleIds` w /users —
-# to te same stałe Role::ROLE_ID_*, którymi ROLE już dysponuje.
-_ROLA_NA_ID: dict[str, int] = {
-    nazwa: identyfikator for identyfikator, nazwa in ROLE.items()
-}
 
 _STATUSY_KONTA = ("active", "disabled", "all")
 
 
-def przytnij(pozycja: dict, pola: tuple[str, ...]) -> dict:
-    """Zostaw tylko wskazane pola — surowe odpowiedzi OJS są bardzo szerokie."""
-    return {k: pozycja[k] for k in pola if k in pozycja}
+def _sprawdz_wartosc(wartosc: str, dozwolone: tuple[str, ...], etykieta: str) -> None:
+    """Sprawdź, że ``wartosc`` należy do zamkniętego zbioru dozwolonych.
+
+    Wspólna walidacja dla parametrów, które są już nazwami słownymi
+    (np. ``orderBy``, ``status`` konta) — w odróżnieniu od ``na_wartosci``,
+    nie tłumaczy na liczby, tylko odrzuca literówki z czytelnym komunikatem.
+    """
+    if wartosc not in dozwolone:
+        lista = ", ".join(dozwolone)
+        raise ValueError(
+            f"Nieznana wartość {wartosc!r} dla {etykieta!r}. Dozwolone: {lista}."
+        )
 
 
 def _limit_stron(limit: int) -> int:
@@ -196,10 +88,63 @@ def _limit_stron(limit: int) -> int:
     return max(1, (limit + 99) // 100)
 
 
-def _sprawdz_status_konta(status: str) -> None:
-    if status not in _STATUSY_KONTA:
-        dozwolone = ", ".join(_STATUSY_KONTA)
-        raise ValueError(f"Nieznany status {status!r}. Dozwolone: {dozwolone}.")
+def _lokalny_tekst(wartosc: Any) -> str | None:
+    """Wyciągnij jeden czytelny napis z pola wielojęzycznego OJS.
+
+    OJS zwraca pola wielojęzyczne jako słownik ``{locale: tekst}``.
+    Wybieramy pierwszy dostępny z preferowanej kolejności (pl, en, en_US),
+    a w braku dopasowania — dowolną pierwszą niepustą wartość. Ta sama
+    logika co ``catalog._nazwa``, ale ogólniejsza (nie tylko dla nazw
+    czasopism).
+    """
+    if isinstance(wartosc, dict):
+        for klucz in ("pl", "en", "en_US"):
+            if wartosc.get(klucz):
+                return str(wartosc[klucz])
+        for tekst in wartosc.values():
+            if tekst:
+                return str(tekst)
+        return None
+    if isinstance(wartosc, str) and wartosc:
+        return wartosc
+    return None
+
+
+def _dodaj_tytul_i_autorow(wynik: dict, surowe: dict) -> None:
+    """Dołóż czytelny ``tytul``/``autorzy`` z ostatniej publikacji zgłoszenia.
+
+    Spec §4.2 dopuszcza jawną listę wyjątków ponad ``apiSummary`` — bez
+    tytułu model dostaje z ``szukaj_zgloszen`` gołe ID i kody liczbowe
+    i nie umie powiedzieć użytkownikowi, o który artykuł chodzi. Działa
+    defensywnie: gdy ``publications`` nie ma w odpowiedzi (albo jest puste
+    czy złego kształtu), pola po prostu nie pojawiają się w wyniku — bez
+    wyjątku.
+    """
+    publikacje = surowe.get("publications")
+    if not publikacje or not isinstance(publikacje, list):
+        return
+    ostatnia = publikacje[-1]
+    if not isinstance(ostatnia, dict):
+        return
+    tytul = _lokalny_tekst(ostatnia.get("title"))
+    if tytul:
+        wynik["tytul"] = tytul
+    autorzy = ostatnia.get("authorsStringShort")
+    if autorzy:
+        wynik["autorzy"] = autorzy
+
+
+def _dodaj_nazwy_zgloszenia(wynik: dict) -> dict:
+    """Dołóż ``status_nazwa``/``etap_nazwa`` obok kodów ``status``/``stageId``.
+
+    Zasada „nazwy słowne, nie magiczne liczby” dotyczy też wyjścia, nie
+    tylko wejścia — bez tego model dostaje ``status: 3`` i musi zgadywać.
+    """
+    if "status" in wynik:
+        wynik["status_nazwa"] = na_nazwe(wynik["status"], STATUSY)
+    if "stageId" in wynik:
+        wynik["etap_nazwa"] = na_nazwe(wynik["stageId"], ETAPY)
+    return wynik
 
 
 # --- Zgłoszenia --------------------------------------------------------------
@@ -213,18 +158,29 @@ async def szukaj_zgloszen_impl(
     fraza: str | None = None,
     status: list[str] | None = None,
     etap: list[str] | None = None,
+    sekcja: list[int] | None = None,
     bez_aktywnosci_dni: int | None = None,
     zlozone_od: str | None = None,
     zlozone_do: str | None = None,
-    sortuj: str = "dateLastActivity",
+    sortuj: str = "lastActivity",
     malejaco: bool = True,
     limit: int = 50,
 ) -> dict[str, Any]:
     """Znajdź zgłoszenia. ``status`` i ``etap`` przyjmują nazwy słowne.
 
+    ``sortuj`` to nazwa PARAMETRU zapytania OJS (``orderBy``), nie nazwa pola
+    w odpowiedzi — dozwolone: ``datePublished``, ``dateSubmitted``,
+    ``lastActivity``, ``lastModified``, ``sequence``, ``title`` (spec §3.10).
+
     OJS nie ma filtrów dat w ``GET /submissions``, więc ``zlozone_od`` i
-    ``zlozone_do`` są stosowane po naszej stronie, na pobranych stronach.
+    ``zlozone_do`` są stosowane po naszej stronie, na już pobranych stronach
+    (do ``limit_stron`` wyliczonego z ``limit``). Jeśli zgłoszeń jest więcej
+    niż zdołaliśmy pobrać, filtr dat może NIE dotrzeć do starszych pozycji —
+    pusty albo krótszy wynik nie zawsze znaczy „nie ma takich zgłoszeń”.
+    Pole ``filtrowanie_dat_niepelne`` w odpowiedzi (heurystyka: pobrano
+    dokładnie tyle stron, ile pozwalał limit) sygnalizuje to ryzyko.
     """
+    _sprawdz_wartosc(sortuj, SORTOWANIE_ZGLOSZEN, "sortuj")
     kontekst = await katalog.rozwiaz(czasopismo)
     parametry: dict[str, Any] = {
         "orderBy": sortuj,
@@ -236,15 +192,23 @@ async def szukaj_zgloszen_impl(
         parametry["status"] = na_wartosci(status, STATUSY, "status")
     if etap:
         parametry["stageIds"] = na_wartosci(etap, ETAPY, "etap")
+    if sekcja:
+        parametry["sectionIds"] = ",".join(str(s) for s in sekcja)
     if bez_aktywnosci_dni is not None:
         parametry["daysInactive"] = bez_aktywnosci_dni
 
+    limit_stron = _limit_stron(limit)
     pozycje = await client.pobierz_wszystko(
         "submissions",
         parametry=parametry,
         czasopismo=kontekst,
-        limit_stron=_limit_stron(limit),
+        limit_stron=limit_stron,
     )
+    # Heurystyka: jeśli pobraliśmy dokładnie tyle pozycji, ile pozwalał limit
+    # stron, prawdopodobnie zatrzymaliśmy się na suficie, a nie dlatego, że
+    # dane się skończyły — filtr dat zastosowany niżej mógł pominąć starsze
+    # zgłoszenia, których nie zdążyliśmy pobrać.
+    mogl_byc_uciety = len(pozycje) >= limit_stron * MAX_COUNT
 
     def w_zakresie(poz: dict) -> bool:
         data = (poz.get("dateSubmitted") or "")[:10]
@@ -255,10 +219,19 @@ async def szukaj_zgloszen_impl(
         return True
 
     wybrane = [p for p in pozycje if w_zakresie(p)][:limit]
+    zgloszenia = []
+    for p in wybrane:
+        wpis = przytnij(p, POLA_ZGLOSZENIA)
+        _dodaj_tytul_i_autorow(wpis, p)
+        _dodaj_nazwy_zgloszenia(wpis)
+        zgloszenia.append(wpis)
     return {
         "czasopismo": kontekst,
-        "znaleziono": len(wybrane),
-        "zgloszenia": [przytnij(p, POLA_ZGLOSZENIA) for p in wybrane],
+        "znaleziono": len(zgloszenia),
+        "zgloszenia": zgloszenia,
+        "filtrowanie_dat_niepelne": bool(
+            mogl_byc_uciety and (zlozone_od or zlozone_do)
+        ),
     }
 
 
@@ -279,6 +252,7 @@ async def pobierz_zgloszenie_impl(
     kontekst = await katalog.rozwiaz(czasopismo)
     dane = await client.get(f"submissions/{zgloszenie}", czasopismo=kontekst)
     wynik = przytnij(dane, POLA_ZGLOSZENIA_PELNE)
+    _dodaj_nazwy_zgloszenia(wynik)
     publikacje = dane.get("publications") or []
     wynik["publications"] = [przytnij(p, POLA_PUBLIKACJI) for p in publikacje]
     wynik["czasopismo"] = kontekst
@@ -293,16 +267,25 @@ async def pobierz_publikacje_impl(
     publikacja: int,
     czasopismo: str | None = None,
 ) -> dict[str, Any]:
-    """Pobierz jedną wersję (publikację) zgłoszenia.
+    """Pobierz jedną wersję (publikację) zgłoszenia — widok SZCZEGÓŁOWY.
 
     ``GET /submissions/{zgloszenie}/publications/{publikacja}`` — ID
-    publikacji znajdziesz w wyniku ``pobierz_zgloszenie``.
+    publikacji znajdziesz w wyniku ``pobierz_zgloszenie``. W odróżnieniu od
+    skróconych publikacji na liście, zwraca też abstrakt, pełną listę
+    autorów, słowa kluczowe i DOI. OJS nie wiąże z publikacją zakresu stron
+    ani plików — po pliki użyj ``pliki_zgloszenia``, po DOI całego
+    czasopisma ``lista_doi``.
     """
     kontekst = await katalog.rozwiaz(czasopismo)
     dane = await client.get(
         f"submissions/{zgloszenie}/publications/{publikacja}", czasopismo=kontekst
     )
-    wynik = przytnij(dane, POLA_PUBLIKACJI)
+    wynik = przytnij(dane, POLA_PUBLIKACJI_PELNE)
+    autorzy = dane.get("authors") or []
+    if isinstance(autorzy, list):
+        wynik["authors"] = [
+            przytnij(a, POLA_AUTORA_PUBLIKACJI) for a in autorzy if isinstance(a, dict)
+        ]
     wynik["czasopismo"] = kontekst
     return wynik
 
@@ -375,19 +358,25 @@ async def lista_numerow_impl(
     fraza: str | None = None,
     tylko_opublikowane: bool | None = None,
     sortuj: str = "datePublished",
-    malejaco: bool = True,
     limit: int = 50,
 ) -> dict[str, Any]:
     """Znajdź numery (wydania) czasopisma (``GET /issues``).
 
     ``tylko_opublikowane=True`` ogranicza do numerów już opublikowanych,
     ``False`` do tych jeszcze przygotowywanych; pominięcie zwraca oba rodzaje.
+
+    ``sortuj``: ``datePublished``, ``lastModified``, ``seq``,
+    ``publishedIssues``, ``unpublishedIssues``, ``shelf``
+    (``classes/issue/Collector.php`` w repo ``pkp/ojs``). Bez parametru
+    kierunku sortowania — OJS ustala go sam dla każdej z tych wartości
+    i ignoruje ``orderDirection`` dla numerów (zweryfikowane w źródle:
+    ``api/v1/issues/IssueController.php`` czyta z zapytania tylko
+    ``orderBy``), więc żeby nie wystawiać parametru, który nic by nie robił,
+    to narzędzie (w odróżnieniu od ``szukaj_zgloszen``) nie ma ``malejaco``.
     """
+    _sprawdz_wartosc(sortuj, SORTOWANIE_NUMEROW, "sortuj")
     kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {
-        "orderBy": sortuj,
-        "orderDirection": "DESC" if malejaco else "ASC",
-    }
+    parametry: dict[str, Any] = {"orderBy": sortuj}
     if fraza:
         parametry["searchPhrase"] = fraza
     if tylko_opublikowane is not None:
@@ -415,15 +404,29 @@ async def biezacy_numer_impl(
 ) -> dict[str, Any]:
     """Pobierz bieżący numer czasopisma (``GET /issues/current``).
 
-    OJS odpowiada 404, gdy żaden numer nie jest oznaczony jako bieżący —
-    wtedy zwracamy ``numer: None``, a nie wyjątek.
+    OJS odpowiada 404 z treścią JSON, gdy żaden numer nie jest oznaczony
+    jako bieżący — wtedy zwracamy ``numer: None``, a nie wyjątek. To NIE to
+    samo, co 404 z nieznanego czasopisma (literówka w ``OJS_JOURNAL`` albo
+    w parametrze ``czasopismo``) — tamto 404 ma pustą treść JSON (routing
+    OJS zwraca stronę HTML, ``client._na_blad`` zostawia wtedy ``tresc=None``)
+    i jest przepuszczane dalej jako błąd, żeby literówka nie wyglądała jak
+    poprawna odpowiedź „brak numeru”.
     """
     kontekst = await katalog.rozwiaz(czasopismo)
     try:
         dane = await client.get("issues/current", czasopismo=kontekst)
-    except BladNieZnaleziono:
-        # 404 z tego endpointu ma jedno znaczenie: czasopismo nie ma
-        # ustawionego numeru bieżącego — to nie błąd, tylko odpowiedź.
+    except BladNieZnaleziono as exc:
+        if exc.tresc is None:
+            logger.error(
+                "GET issues/current dla czasopisma %r zwróciło 404 bez "
+                "treści JSON — to zwykle nieznane czasopismo, nie brak "
+                "numeru bieżącego. Sprawdź OJS_JOURNAL/parametr czasopismo.",
+                kontekst,
+            )
+            raise
+        # 404 Z treścią JSON z tego endpointu ma jedno znaczenie: czasopismo
+        # istnieje, ale nie ma ustawionego numeru bieżącego — to odpowiedź,
+        # nie błąd.
         return {"czasopismo": kontekst, "numer": None}
     return {"czasopismo": kontekst, "numer": przytnij(dane, POLA_NUMERU)}
 
@@ -496,15 +499,17 @@ async def szukaj_uzytkownikow_impl(
     """Znajdź użytkowników czasopisma (``GET /users``).
 
     ``status``: ``active``, ``disabled``, ``all``. ``rola`` przyjmuje nazwy
-    z ``ROLE`` (np. ``recenzent``, ``redaktor działu``, ``autor``).
+    z ``ROLE_NA_ID``: ``administrator_witryny``, ``menedzer_czasopisma``,
+    ``redaktor_dzialu``, ``recenzent``, ``asystent``, ``autor``,
+    ``czytelnik``, ``menedzer_prenumerat``.
     """
-    _sprawdz_status_konta(status)
+    _sprawdz_wartosc(status, _STATUSY_KONTA, "status")
     kontekst = await katalog.rozwiaz(czasopismo)
     parametry: dict[str, Any] = {"status": status}
     if fraza:
         parametry["searchPhrase"] = fraza
     if rola:
-        parametry["roleIds"] = na_wartosci(rola, _ROLA_NA_ID, "rola")
+        parametry["roleIds"] = na_wartosci(rola, ROLE_NA_ID, "rola")
 
     pozycje = await client.pobierz_wszystko(
         "users",
@@ -536,7 +541,7 @@ async def lista_recenzentow_impl(
     czas ukończenia recenzji w dniach (``averageReviewCompletionDays``)
     i ocenę recenzenta (``reviewerRating``).
     """
-    _sprawdz_status_konta(status)
+    _sprawdz_wartosc(status, _STATUSY_KONTA, "status")
     kontekst = await katalog.rozwiaz(czasopismo)
     parametry: dict[str, Any] = {"status": status}
     if fraza:
@@ -578,8 +583,7 @@ async def statystyki_publikacji_impl(
     ``interwal``: ``day`` albo ``month``. Daty ``data_od``/``data_do``
     w formacie RRRR-MM-DD.
     """
-    if interwal not in ("day", "month"):
-        raise ValueError(f"Nieznany interwał {interwal!r}. Dozwolone: day, month.")
+    _sprawdz_wartosc(interwal, ("day", "month"), "interwal")
     kontekst = await katalog.rozwiaz(czasopismo)
     parametry: dict[str, Any] = {}
     if data_od:
@@ -603,10 +607,21 @@ async def statystyki_publikacji_impl(
         limit_stron=_limit_stron(limit),
     )
     wybrane = pozycje[:limit]
+    publikacje = []
+    for p in wybrane:
+        wpis = przytnij(p, POLA_STATYSTYK_PUBLIKACJI)
+        # `publication` to najgrubszy zagnieżdżony obiekt w tej odpowiedzi
+        # (classes/submission/maps/Schema.php::mapToStats) — przycinamy go
+        # tak samo jak `publications` w `pobierz_zgloszenie_impl`.
+        if isinstance(wpis.get("publication"), dict):
+            wpis["publication"] = przytnij(
+                wpis["publication"], POLA_PUBLIKACJI_W_STATYSTYKACH
+            )
+        publikacje.append(wpis)
     return {
         "czasopismo": kontekst,
-        "znaleziono": len(wybrane),
-        "publikacje": [przytnij(p, POLA_STATYSTYK_PUBLIKACJI) for p in wybrane],
+        "znaleziono": len(publikacje),
+        "publikacje": publikacje,
     }
 
 
@@ -633,10 +648,24 @@ async def statystyki_redakcyjne_impl(
         parametry["dateEnd"] = data_do
 
     dane = await client.get("stats/editorial", parametry=parametry, czasopismo=kontekst)
-    pozycje = dane if isinstance(dane, list) else []
+    if not isinstance(dane, list):
+        # Spec §3.10: /stats/editorial ma zwracać płaską listę. Inny kształt
+        # to sygnał, że coś się zmieniło (nowa wersja OJS, błąd po drugiej
+        # stronie) — cichy powrót do pustej listy udawałby „brak statystyk”
+        # zamiast prawdziwego problemu.
+        logger.error(
+            "Nieoczekiwany kształt odpowiedzi GET stats/editorial dla %r: "
+            "%s zamiast listy.",
+            kontekst,
+            type(dane).__name__,
+        )
+        raise BladOjs(
+            "OJS zwrócił nieoczekiwany kształt odpowiedzi dla statystyk "
+            f"redakcyjnych (oczekiwano listy, dostano {type(dane).__name__})."
+        )
     return {
         "czasopismo": kontekst,
-        "statystyki": [przytnij(p, POLA_STATYSTYKI_REDAKCYJNEJ) for p in pozycje],
+        "statystyki": [przytnij(p, POLA_STATYSTYKI_REDAKCYJNEJ) for p in dane],
     }
 
 
@@ -758,9 +787,12 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         fraza: str | None = None,
         status: list[str] | None = None,
         etap: list[str] | None = None,
+        sekcja: list[int] | None = None,
         bez_aktywnosci_dni: int | None = None,
         zlozone_od: str | None = None,
         zlozone_do: str | None = None,
+        sortuj: str = "lastActivity",
+        malejaco: bool = True,
         limit: int = 50,
         czasopismo: str | None = None,
     ) -> dict:
@@ -768,8 +800,12 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
 
         `status`: w_toku, opublikowane, odrzucone, zaplanowane.
         `etap`: zgloszenie, recenzja_zewnetrzna, redakcja, produkcja.
+        `sekcja`: lista ID sekcji (z `lista_sekcji`).
         `bez_aktywnosci_dni`: tylko zgłoszenia bez ruchu przez N dni.
-        Daty w formacie RRRR-MM-DD.
+        `sortuj`: datePublished, dateSubmitted, lastActivity, lastModified,
+        sequence, title. `malejaco=True` sortuje malejąco (domyślnie).
+        Daty w formacie RRRR-MM-DD. Filtr dat działa tylko na już pobranych
+        stronach wyniku — patrz pole `filtrowanie_dat_niepelne` w odpowiedzi.
         """
         return await szukaj_zgloszen_impl(
             client,
@@ -778,9 +814,12 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
             fraza=fraza,
             status=status,
             etap=etap,
+            sekcja=sekcja,
             bez_aktywnosci_dni=bez_aktywnosci_dni,
             zlozone_od=zlozone_od,
             zlozone_do=zlozone_do,
+            sortuj=sortuj,
+            malejaco=malejaco,
             limit=limit,
         )
 
@@ -802,10 +841,12 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
     async def pobierz_publikacje(
         zgloszenie: int, publikacja: int, czasopismo: str | None = None
     ) -> dict:
-        """Pobierz jedną wersję (publikację) zgłoszenia.
+        """Pobierz jedną wersję (publikację) zgłoszenia — pełne szczegóły.
 
         Zgłoszenie może mieć kilka wersji (kolejne poprawki po recenzji) —
-        ID publikacji znajdziesz w wyniku `pobierz_zgloszenie`.
+        ID publikacji znajdziesz w wyniku `pobierz_zgloszenie`. W odróżnieniu
+        od skróconej listy, zwraca też abstrakt, pełną listę autorów, słowa
+        kluczowe i DOI.
         """
         return await pobierz_publikacje_impl(
             client,
@@ -842,6 +883,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
     async def lista_numerow(
         fraza: str | None = None,
         tylko_opublikowane: bool | None = None,
+        sortuj: str = "datePublished",
         limit: int = 50,
         czasopismo: str | None = None,
     ) -> dict:
@@ -849,6 +891,9 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
 
         `tylko_opublikowane=True` ogranicza do numerów już opublikowanych,
         `False` do przygotowywanych; pominięcie zwraca oba rodzaje.
+        `sortuj`: datePublished, lastModified, seq, publishedIssues,
+        unpublishedIssues, shelf. OJS sam ustala kierunek sortowania dla
+        każdej z tych wartości — nie da się go tu odwrócić.
         """
         return await lista_numerow_impl(
             client,
@@ -856,6 +901,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
             czasopismo=czasopismo,
             fraza=fraza,
             tylko_opublikowane=tylko_opublikowane,
+            sortuj=sortuj,
             limit=limit,
         )
 
@@ -907,8 +953,8 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         """Znajdź użytkowników czasopisma po nazwie/e-mailu, statusie i roli.
 
         `status`: active (domyślnie), disabled, all.
-        `rola`: administrator witryny, menedżer czasopisma, redaktor działu,
-        recenzent, asystent, autor, czytelnik, menedżer prenumerat.
+        `rola`: administrator_witryny, menedzer_czasopisma, redaktor_dzialu,
+        recenzent, asystent, autor, czytelnik, menedzer_prenumerat.
         """
         return await szukaj_uzytkownikow_impl(
             client,

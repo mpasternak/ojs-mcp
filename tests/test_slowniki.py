@@ -1,6 +1,14 @@
 import pytest
 
-from ojs_mcp.slowniki import DECYZJE, ETAPY, STATUSY, na_wartosci
+from ojs_mcp.slowniki import (
+    DECYZJE,
+    ETAPY,
+    ROLE_NA_ID,
+    STATUSY,
+    STATUSY_DOI,
+    na_nazwe,
+    na_wartosci,
+)
 
 
 def test_statusy_maja_wartosci_z_ojs():
@@ -39,3 +47,24 @@ def test_na_wartosci_odrzuca_nieznana_nazwe():
 
 def test_na_wartosci_przyjmuje_pojedynczy_napis():
     assert na_wartosci("w_toku", STATUSY, "status") == "1"
+
+
+def test_role_na_id_ma_te_same_wartosci_co_role():
+    assert ROLE_NA_ID["recenzent"] == 4096
+    assert ROLE_NA_ID["redaktor_dzialu"] == 17
+    assert ROLE_NA_ID["menedzer_czasopisma"] == 16
+
+
+def test_statusy_doi_maja_wartosci_z_ojs():
+    assert STATUSY_DOI["niezarejestrowane"] == 1
+    assert STATUSY_DOI["zarejestrowane"] == 3
+    assert STATUSY_DOI["nieaktualne"] == 5
+
+
+def test_na_nazwe_odwraca_na_wartosci():
+    assert na_nazwe(3, STATUSY) == "opublikowane"
+    assert na_nazwe(4, ETAPY) == "redakcja"
+
+
+def test_na_nazwe_zwraca_none_dla_nieznanego_kodu():
+    assert na_nazwe(999, STATUSY) is None
