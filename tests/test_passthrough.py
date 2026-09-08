@@ -37,6 +37,7 @@ async def test_get_dziala_bez_flagi():
     await klient.aclose()
 
 
+@respx.mock
 async def test_zapis_bez_flagi_odrzucony():
     cfg, klient, katalog = _zestaw(allow_writes=False)
     with pytest.raises(PermissionError) as exc:
@@ -79,3 +80,34 @@ async def test_listy_w_parametrach_kodowane_przecinkiem():
     )
     assert trasa.calls.last.request.url.params["status"] == "1,3"
     await klient.aclose()
+
+
+# Testy bezpieczeństwa — obejścia walidacji
+
+
+@pytest.mark.parametrize(
+    "niebezpieczna",
+    [
+        "http:/\\evil.com",  # jeden backslash omija ://
+        "http:\\\\evil.com",  # dwa backslashe omijają ://
+        "\\\\evil.com",  # backslashe zamiast //
+        "/\\evil.com",  # mix slashy
+        "//​evil.com",  # ZERO WIDTH SPACE przed //
+        "submissions/%2e%2e/1",  # %2e to . (wychodzenie w górę)
+        "submissions/..%2f1",  # %2f to / (wychodzenie w górę)
+        "submissions/\r1",  # carriage return
+        "submissions/\n1",  # newline
+        "submissions/\x001",  # null byte
+    ],
+)
+def test_waliduj_sciezke_odrzuca_obejscia_bezpieczenstwa(niebezpieczna):
+    """Testy pokrywające wszystkie obejścia walidacji wyłapane w recenzji."""
+    with pytest.raises(ValueError):
+        waliduj_sciezke(niebezpieczna)
+
+
+@pytest.mark.parametrize("legalna", ["plik..txt", "/submissions/1", "issues/current"])
+def test_waliduj_sciezke_przyjmuje_legalne_sciezki(legalna):
+    """Upewnij się, że legalne ścieżki nadal przechodzą — regresja."""
+    # Nie powinno rzucić ValueError.
+    waliduj_sciezke(legalna)

@@ -6,6 +6,8 @@ generycznym klientem HTTP. Stąd walidacja ścieżki i zamknięcie na zapisy.
 
 from __future__ import annotations
 
+import unicodedata
+import urllib.parse
 from typing import Any
 
 from .catalog import Katalog
@@ -18,18 +20,39 @@ METODY_ODCZYTU = {"GET", "HEAD"}
 def waliduj_sciezke(sciezka: str) -> str:
     """Sprowadź do ścieżki względnej w ``api/v1`` albo odrzuć.
 
-    :raises ValueError: dla pełnych URL-i, ścieżek sieciowych i wyjścia w górę.
+    :raises ValueError: dla pełnych URL-i, ścieżek sieciowych, wyjścia w górę,
+        procentowania i znaków sterujących.
     """
     oczyszczona = (sciezka or "").strip()
     if not oczyszczona:
         raise ValueError("Ścieżka nie może być pusta.")
-    if "://" in oczyszczona or oczyszczona.startswith("//"):
+
+    # Odrzuć znaki sterujące i niedrukowalne (łącznie z zerową szerokością).
+    for char in oczyszczona:
+        if unicodedata.category(char) in ("Cc", "Cn", "Zs", "Zl", "Zp"):
+            raise ValueError("Ścieżka zawiera znaki sterujące lub niedrukowalne.")
+
+    # Odrzuć procentowanie — ścieżki API OJS nie potrzebują kodowania.
+    if "%" in oczyszczona:
+        raise ValueError(
+            "Ścieżka nie może zawierać procentowania. "
+            "Wartości parametrów przekazuj przez argument `parametry`."
+        )
+
+    # Parsuj jako URL po zamianie backslashów na ukośniki.
+    znormalizowana = oczyszczona.replace("\\", "/")
+    rozbite = urllib.parse.urlsplit(znormalizowana)
+
+    if rozbite.scheme or rozbite.netloc:
         raise ValueError(
             "Podaj ścieżkę względną w api/v1 (np. 'submissions/1'), nie pełny URL."
         )
-    oczyszczona = oczyszczona.lstrip("/")
+
+    # Usuń wiodące ukośniki i sprawdzaj wyjście poza api/v1.
+    oczyszczona = znormalizowana.lstrip("/")
     if ".." in oczyszczona.split("/"):
         raise ValueError("Ścieżka nie może wychodzić poza api/v1.")
+
     return oczyszczona
 
 
@@ -54,7 +77,7 @@ async def zapytanie_impl(
     czasopismo: str | None = None,
 ) -> Any:
     """Wykonaj dowolne żądanie do API OJS w granicach bezpiecznika."""
-    metoda = (metoda or "GET").upper()
+    metoda = (metoda or "GET").strip().upper()
     if metoda not in METODY_ODCZYTU and not config.allow_writes:
         raise PermissionError(
             f"Metoda {metoda} zmienia dane, a serwer działa w trybie tylko do "
