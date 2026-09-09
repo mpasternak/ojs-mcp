@@ -38,9 +38,11 @@ import logging
 
 import anyio
 import uvicorn
+from mcp.server.transport_security import TransportSecuritySettings
+from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse
-from starlette.types import Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .auth import token_z_naglowka, ustaw_token_zadania
 from .bledy import BladUwierzytelnienia
@@ -72,6 +74,10 @@ class OriginMiddleware:
     ``BaseHTTPMiddleware`` buforowałby/zakłócał taki strumień. Dodawana
     NA ZEWNĄTRZ ``TokenMiddleware`` (patrz ``zbuduj_aplikacje``), żeby
     odrzucenie po ``Origin`` następowało, zanim ktokolwiek sięgnie po token.
+
+    Sprawdza też scope ``websocket`` (streamable HTTP go nie używa, ale
+    deklarowany niezmiennik „Origin sprawdzany jako pierwszy” ma
+    obowiązywać formalnie dla każdego typu żądania, nie tylko dla http).
     """
 
     def __init__(self, app, dozwolone: tuple[str, ...]) -> None:
@@ -79,16 +85,18 @@ class OriginMiddleware:
         self._dozwolone = dozwolone
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
+        if scope["type"] not in ("http", "websocket"):
             await self._app(scope, receive, send)
             return
 
-        request = Request(scope, receive)
-        origin = request.headers.get("origin")
+        origin = Headers(scope=scope).get("origin")
         if not sprawdz_origin(origin, self._dozwolone):
             logger.warning(
                 "Odrzucono żądanie z Origin=%s (poza dozwoloną listą)", origin
             )
+            if scope["type"] == "websocket":
+                await send({"type": "websocket.close", "code": 1008})
+                return
             odpowiedz = JSONResponse(
                 {
                     "error": "Origin niedozwolony. Ustaw OJS_MCP_ALLOWED_ORIGINS, "
@@ -157,6 +165,10 @@ async def _obsluz_lifespan(receive: Receive, send: Send) -> None:
         elif typ == "lifespan.shutdown":
             await send({"type": "lifespan.shutdown.complete"})
             return
+        else:
+            # Protokół ASGI dopuszcza rozszerzenia — cichy `pass` utrudniałby
+            # diagnozę, gdyby serwer zaczął wysyłać coś nieoczekiwanego.
+            logger.debug("Nieznany komunikat protokołu lifespan: %s", typ)
 
 
 class _AplikacjaMcpNaZadanie:
@@ -200,6 +212,19 @@ class _AplikacjaMcpNaZadanie:
                 host=self._config.http_host,
                 stateless_http=True,
                 json_response=True,
+                # WYŁĄCZAMY własną ochronę SDK przed DNS rebinding — nie
+                # znika, tylko przenosi się w całości do `OriginMiddleware`
+                # (patrz `zbuduj_aplikacje`), która stosuje listę z
+                # `OJS_MCP_ALLOWED_ORIGINS`. Bez tego, dla hosta
+                # 127.0.0.1/localhost/::1, SDK samo włącza WŁASNĄ,
+                # zaszytą na sztywno listę originów/hostów
+                # (`["http://127.0.0.1:*", ...]`) i odrzuca origin z NASZEJ
+                # listy dwie warstwy niżej — `OJS_MCP_ALLOWED_ORIGINS`
+                # stawałoby się martwe, a wdrożenie za odwrotnym proxy
+                # (inny nagłówek `Host`) w ogóle by nie działało (421).
+                transport_security=TransportSecuritySettings(
+                    enable_dns_rebinding_protection=False
+                ),
             )
             async with mcp.session_manager.run():
                 await aplikacja(scope, receive, send)
@@ -207,13 +232,42 @@ class _AplikacjaMcpNaZadanie:
             await client.aclose()
 
 
-def zbuduj_aplikacje(config: Config):
+def _wymagaj_trybu_http(config: Config) -> None:
+    """Zagwarantuj, że wywołujący faktycznie chce trybu http.
+
+    `zbuduj_serwer` wybiera strategię uwierzytelniania WYŁĄCZNIE na
+    podstawie ``config.transport`` — dla każdej innej wartości sięga po
+    poświadczenia SERWERA (``zbuduj_auth``, patrz ``auth.py``), nie po
+    token żądania. Cały model bezpieczeństwa tego modułu („serwer nie
+    przechowuje żadnych poświadczeń”) trzyma się WYŁĄCZNIE na tym, że
+    ``config.transport == "http"`` w chwili wywołania — inaczej dowolny
+    token z nagłówka żądania byłby ignorowany, a do OJS poleciałyby
+    poświadczenia z ``Config`` (dokładnie to, czemu ten moduł ma zapobiegać).
+
+    :raises ValueError: gdy ``config.transport != "http"``.
+    """
+    if config.transport != "http":
+        raise ValueError(
+            "zbuduj_aplikacje/uruchom_http wymagają config.transport == "
+            f"'http' (jest: {config.transport!r}). Ten moduł realizuje model "
+            "bezpieczeństwa 'serwer nie przechowuje poświadczeń' WYŁĄCZNIE "
+            "dla transportu http — z każdym innym transportem "
+            "`zbuduj_serwer` używa poświadczeń z konfiguracji serwera "
+            "(OJS_API_TOKEN / OJS_USERNAME / OJS_PASSWORD)."
+        )
+
+
+def zbuduj_aplikacje(config: Config) -> ASGIApp:
     """Złóż pełny stos ASGI trybu http: ``Origin`` → token → serwer MCP.
 
     Kolejność dodawania ma znaczenie: ``OriginMiddleware`` musi być
     NAJBARDZIEJ zewnętrzny, żeby odrzucenie po ``Origin`` następowało
     zanim ktokolwiek sięgnie po nagłówek ``Authorization``.
+
+    :raises ValueError: gdy ``config.transport != "http"`` — patrz
+        ``_wymagaj_trybu_http``.
     """
+    _wymagaj_trybu_http(config)
     return OriginMiddleware(
         TokenMiddleware(_AplikacjaMcpNaZadanie(config)),
         dozwolone=config.allowed_origins,
@@ -243,7 +297,11 @@ def uruchom_http(config: Config) -> int:
     (``anyio.run`` obejmuje całe działanie ``uvicorn.Server``), więc nie
     występuje tu odpowiednik problemu z zamykaniem klienta httpx między
     pętlami zdarzeń, udokumentowanego przy trybie stdio (Task 9).
+
+    :raises ValueError: gdy ``config.transport != "http"`` — patrz
+        ``_wymagaj_trybu_http``.
     """
+    _wymagaj_trybu_http(config)
     _ostrzez_o_ignorowanych_poswiadczeniach(config)
 
     aplikacja = zbuduj_aplikacje(config)
