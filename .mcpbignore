@@ -20,3 +20,6 @@ site/
 .superpowers/
 .pre-commit-config.yaml
 *.mcpb
+# Poświadczenia lokalne — nigdy do paczki (recenzja: W8 załatało
+# `.gitignore`, ale nie tę listę osobną).
+.env*

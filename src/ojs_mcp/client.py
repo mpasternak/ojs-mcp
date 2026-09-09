@@ -106,6 +106,36 @@ class OjsClient:
         if zamknij_auth is not None:
             await zamknij_auth()
 
+    @property
+    def tozsamosc_sesji(self) -> dict | None:
+        """Surowa tożsamość zalogowanego użytkownika, jeśli strategia auth
+        ją zna (dziś: wyłącznie ``SessionAuth`` — ``session_login.py``).
+
+        `None` dla ``TokenAuth``/``TokenZadaniaAuth`` (nie mają tożsamości —
+        token API nie niesie żadnej) oraz dla `SessionAuth`, zanim leniwe
+        logowanie w ogóle się odbyło.
+
+        Ten sam wzorzec `getattr` co ``aclose()`` wyżej i z tego samego
+        powodu: `OjsClient` nie ma (i nie powinien mieć) importu konkretnych
+        strategii z `auth.py`/`session_login.py`. RÓŻNICA wobec sięgania po
+        `self._auth` z ZEWNĄTRZ tej klasy (usterka z recenzji W7, Runda 2):
+        to jest WŁASNY atrybut `OjsClient`, czytany przez WŁASNĄ metodę —
+        enkapsulacja zachowana. Wywołujący spoza tego modułu (np.
+        `tools_read.kim_jestem_impl`) mają czytać TĘ property, nie
+        `client._auth` bezpośrednio.
+
+        UWAGA — SEKRETY: zwracany słownik to SUROWY ``pkp.currentUser``,
+        który niesie m.in. ``csrfToken`` (żywy token CSRF sesji, tym samym,
+        którym `SessionAuth` autoryzuje zapisy). Wywołujący MUSI przyciąć
+        go przed pokazaniem gdziekolwiek na zewnątrz (modelowi, logom) —
+        patrz ``pola.POLA_TOZSAMOSCI`` i `tools_read.kim_jestem_impl`. Ta
+        property świadomie NIE przycina sama — `client.py` nie zależy od
+        `pola.py` (odwrotny kierunek zależności niż `tools_read`/`tools_write`,
+        patrz docstring modułu `pola.py`), a przycinanie tu ukryłoby to
+        ryzyko przed czytelnikiem tego kodu zamiast je nazwać.
+        """
+        return getattr(self._auth, "uzytkownik", None)
+
     def _url(self, sciezka: str, czasopismo: str | None) -> str:
         return f"{self.config.api_root(czasopismo)}/{sciezka.lstrip('/')}"
 

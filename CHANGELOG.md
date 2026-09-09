@@ -10,9 +10,10 @@ Pierwsze wydanie.
 ### Dodane
 
 - Serwer MCP dla uwierzytelnionego REST API Open Journal Systems
-  (OJS 3.5/3.6) — siedemnaście narzędzi odczytu (zgłoszenia, publikacje,
+  (OJS 3.5/3.6) — szesnaście narzędzi odczytu (zgłoszenia, publikacje,
   numery, sekcje, użytkownicy, recenzenci, statystyki, DOI, tożsamość i
-  katalog czasopism) rejestrowanych zawsze, oraz pięć narzędzi zapisu
+  katalog czasopism) plus furtka `ojs_zapytanie` niżej (razem siedemnaście
+  rejestrowanych zawsze), oraz pięć narzędzi zapisu
   (decyzje redakcyjne, edycja metadanych publikacji, publikacja/cofnięcie
   publikacji, ogłoszenia) rejestrowanych wyłącznie przy jawnie włączonym
   `OJS_ALLOW_WRITES=1`.

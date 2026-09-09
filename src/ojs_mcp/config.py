@@ -45,7 +45,8 @@ class Config:
 
         :raises BrakKonfiguracji: gdy ``OJS_BASE_URL`` jest pusty lub
             nieustawiony, albo gdy ``OJS_MCP_HTTP_PORT`` jest ustawiony na
-            wartość, która nie jest liczbą całkowitą.
+            wartość, która nie jest liczbą całkowitą albo leży poza
+            zakresem poprawnych portów TCP (1–65535).
         """
         base = (os.environ.get("OJS_BASE_URL") or "").strip()
         if not base:
@@ -72,6 +73,15 @@ class Config:
                 "Ustaw port jako liczbę, np. OJS_MCP_HTTP_PORT=8000, albo "
                 "usuń tę zmienną, żeby użyć domyślnego portu 8000."
             ) from exc
+        # Zakres portów TCP (recenzja, ta sama klasa co W1): `0`, `-1`,
+        # `99999` przechodziłyby przez samo `int(...)` i wywalały się
+        # dopiero surowym błędem w `socket.bind()`/uvicornie, głęboko w
+        # serwerze, zamiast tu, czytelnie.
+        if not (1 <= http_port <= 65535):
+            raise BrakKonfiguracji(
+                f"OJS_MCP_HTTP_PORT={http_port} jest poza zakresem portów "
+                "TCP (1-65535). Ustaw poprawny port, np. OJS_MCP_HTTP_PORT=8000."
+            )
         origins = tuple(
             czesc.strip()
             for czesc in (os.environ.get("OJS_MCP_ALLOWED_ORIGINS") or "").split(",")

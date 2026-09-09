@@ -18,7 +18,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
-    "Topic :: Text Processing :: Markup",
+    "Topic :: Internet :: WWW/HTTP",
 ]
 # Górna granica na `mcp` jest obowiązkowa: wydanie główne SDK potrafi skasować
 # cały moduł serwera, a niezwiązany specyfikator wpuściłby to użytkownikom
@@ -64,7 +64,7 @@ packages = ["src/ojs_mcp"]
 artifacts = ["src/ojs_mcp/data/*.txt"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/ojs_mcp", "tests", "README.md", "LICENSE"]
+include = ["src/ojs_mcp", "tests", "README.md", "LICENSE", "CHANGELOG.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

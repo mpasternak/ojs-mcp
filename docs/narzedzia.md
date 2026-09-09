@@ -14,7 +14,11 @@ Rejestrowane zawsze, niezależnie od `OJS_ALLOW_WRITES`.
 
 - **`lista_czasopism`** — wypisz czasopisma widoczne dla bieżących
   poświadczeń. Jedyne narzędzie bez parametru `czasopismo`.
-- **`kim_jestem`** — sprawdź, czy bieżące poświadczenia (token API) działają.
+- **`kim_jestem`** — sprawdź, czy bieżące poświadczenia działają. Przy
+  tokenie API: OJS nie ma endpointu tożsamości dla tokenu, więc narzędzie
+  mówi wyłącznie, czy uwierzytelnianie działa (`tozsamosc: null`). Przy
+  logowaniu login/hasłem: `tozsamosc` niesie realne dane zalogowanego
+  użytkownika (`id`, `username`, `fullName`, `roles`, `role_nazwy`).
   Pierwsze wywołanie warte zrobienia po skonfigurowaniu serwera.
 
 ### Zgłoszenia i publikacje

@@ -297,6 +297,13 @@ async def test_kim_jestem_dla_sesji_zwraca_tozsamosc_z_pkp_current_user():
     Sonda (`GET /submissions?count=1`) przechodzi przez PRAWDZIWY
     `SessionAuth.async_auth_flow` — wstępnie "zalogowany" (csrf ustawiony
     z góry), więc nie próbuje prawdziwej sekwencji logowania.
+
+    BLOKADA scalenia, Runda 2 recenzji W7: `pkp.currentUser` SUROWY niesie
+    `csrfToken` — żywy token CSRF sesji, tym samym, którym `SessionAuth`
+    autoryzuje zapisy — więc atrapa tożsamości niżej ZAWIERA go (jak
+    prawdziwy OJS), a asercja przez PEŁNĄ równość (jak D8) dowodzi, że
+    `kim_jestem` go przycina razem z każdym innym polem spoza
+    `pola.POLA_TOZSAMOSCI`.
     """
     trasa = respx.get(f"{BAZA}/submissions").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
@@ -309,7 +316,11 @@ async def test_kim_jestem_dla_sesji_zwraca_tozsamosc_z_pkp_current_user():
     auth._uzytkownik = {
         "id": 42,
         "username": "redaktor",
-        "role_nazwy": ["menedżer czasopisma"],
+        "fullName": "Redaktor Testowy",
+        "roles": [16, 65536],
+        "role_nazwy": ["menedżer czasopisma", "autor"],
+        # SEKRET — nie może przeciekać do modelu (patrz docstring testu).
+        "csrfToken": "TOKEN-SESJI",
     }
     klient = OjsClient(cfg, auth)
     klient.sciezka_auth = "sesja"
@@ -322,8 +333,11 @@ async def test_kim_jestem_dla_sesji_zwraca_tozsamosc_z_pkp_current_user():
     assert wynik["tozsamosc"] == {
         "id": 42,
         "username": "redaktor",
-        "role_nazwy": ["menedżer czasopisma"],
+        "fullName": "Redaktor Testowy",
+        "roles": [16, 65536],
+        "role_nazwy": ["menedżer czasopisma", "autor"],
     }
+    assert "csrfToken" not in wynik["tozsamosc"]
     await klient.aclose()
 
 

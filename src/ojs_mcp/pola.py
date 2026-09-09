@@ -14,6 +14,9 @@ pól z flagą ``"apiSummary": true`` w plikach ``schemas/submission.json``,
 oraz ``submissionFile.json``. Wyjątek: tokeny OAuth ORCID
 (``orcidAccessToken`` i pokrewne) mają ``apiSummary=true``, ale świadomie
 NIE trafiają do żadnej krotki — to sekrety, nie dane do pokazania modelowi.
+Ta sama zasada obowiązuje ``POLA_TOZSAMOSCI`` niżej (literał
+``pkp.currentUser``, spoza REST API): jego ``csrfToken`` — żywy token CSRF
+sesji — też jest świadomie pominięty, z tego samego powodu.
 
 UWAGA przy weryfikacji wobec schematów: ``publication.json`` (i tylko ono)
 jest rozbite na DWA pliki w DWÓCH repozytoriach — ``pkp-lib`` ma część
@@ -203,6 +206,19 @@ POLA_UZYTKOWNIKA = (
     "disabled",
     "orcid",
 )
+
+# Literał `pkp.currentUser` (PKPTemplateManager, wyłuskiwany przez
+# `session_login.wyluskaj_current_user`) — UWAGA, INNY kształt niż
+# `POLA_UZYTKOWNIKA` wyżej: to nie odpowiedź REST API (`schemas/user.json`),
+# tylko zmienna szablonu JS strony backendowej, więc `username` (małe „n”),
+# nie `userName`. Niesie też `csrfToken` — ŻYWY token CSRF sesji, tym samym,
+# którym `SessionAuth` autoryzuje zapisy (patrz jej docstring) — i to
+# świadomie NIE trafia tutaj, z tego samego powodu co sekrety OAuth ORCID
+# w `POLA_UZYTKOWNIKA` wyżej. Jedyny dziś konsument: `tools_read.kim_jestem_impl`
+# na ścieżce sesyjnej (`OjsClient.tozsamosc_sesji`, `client.py`) — recenzja
+# W7 Runda 2: zwracanie tego słownika BEZ przycięcia wypuszczało `csrfToken`
+# do modelu/logów/transkryptu.
+POLA_TOZSAMOSCI = ("id", "username", "fullName", "roles", "role_nazwy")
 
 # classes/user/maps/Schema.php:88-89 (pkp-lib) — pola dokładane do
 # podsumowania użytkownika w /users/reviewers ponad zwykłe POLA_UZYTKOWNIKA.

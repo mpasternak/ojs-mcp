@@ -93,6 +93,26 @@ def test_http_port_poprawny_jest_uzywany(monkeypatch):
     assert Config.from_env().http_port == 9001
 
 
+@pytest.mark.parametrize("port", ["0", "-1", "99999"])
+def test_http_port_poza_zakresem_daje_czytelny_blad(monkeypatch, port):
+    """Regresja (recenzja, ta sama klasa co W1): `0`, `-1`, `99999`
+    przechodziły przez samo `int(...)` i wywalały się dopiero surowym
+    błędem w serwerze, zamiast tu, czytelnie.
+    """
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_MCP_HTTP_PORT", port)
+    with pytest.raises(BrakKonfiguracji) as exc:
+        Config.from_env()
+    assert "OJS_MCP_HTTP_PORT" in str(exc.value)
+
+
+@pytest.mark.parametrize("port", ["1", "65535"])
+def test_http_port_na_granicy_zakresu_jest_poprawny(monkeypatch, port):
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_MCP_HTTP_PORT", port)
+    assert Config.from_env().http_port == int(port)
+
+
 def test_transport_ze_spacja_jest_przycinany(monkeypatch):
     """Regresja W1: `"http "` (ze spacją) cicho dawało `stdio` zamiast
     `http`, bo `OJS_MCP_TRANSPORT` nie było przycinane `.strip()`.

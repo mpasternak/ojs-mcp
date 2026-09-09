@@ -29,7 +29,8 @@ htmlcov/
 
 # Poświadczenia lokalne (repozytorium jest publiczne; projekt konfiguruje
 # się wyłącznie zmiennymi środowiskowymi — patrz docs/instalacja.md).
-.env
+# `.env*` (nie goły `.env`), żeby złapać też `.env.local`/`.env.production`.
+.env*
 
 # Bundle MCPB zbudowany lokalnie (patrz docs/instalacja.md, wariant 2).
 *.mcpb

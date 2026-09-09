@@ -35,6 +35,7 @@ from .pola import (
     POLA_SEKCJI,
     POLA_STATYSTYK_PUBLIKACJI,
     POLA_STATYSTYKI_REDAKCYJNEJ,
+    POLA_TOZSAMOSCI,
     POLA_UZYTKOWNIKA,
     POLA_ZGLOSZENIA,
     POLA_ZGLOSZENIA_PELNE,
@@ -757,12 +758,16 @@ async def kim_jestem_impl(
 
     Ścieżka sesyjna (login+hasło, spec §8.1): ``SessionAuth`` loguje się
     NAPRAWDĘ i zna tożsamość zalogowanego użytkownika z ``pkp.currentUser``
-    (patrz ``session_login.zaloguj``/``SessionAuth.uzytkownik``) — TĘ SAMĄ
-    sondę wykorzystujemy tu, żeby wymusić (leniwe) logowanie, jeśli jeszcze
-    nie nastąpiło, a potem odczytujemy zapamiętaną tożsamość (W7, recenzja:
-    dawniej ta ścieżka zgłaszała "niezaimplementowane", mimo że dane były
-    już pobierane przez ``zaloguj()`` i tylko wyrzucane przez
-    ``SessionAuth``).
+    (patrz ``session_login.zaloguj``/``SessionAuth.uzytkownik``,
+    ``OjsClient.tozsamosc_sesji``) — TĘ SAMĄ sondę wykorzystujemy tu, żeby
+    wymusić (leniwe) logowanie, jeśli jeszcze nie nastąpiło, a potem
+    odczytujemy zapamiętaną tożsamość (W7, recenzja: dawniej ta ścieżka
+    zgłaszała "niezaimplementowane", mimo że dane były już pobierane przez
+    ``zaloguj()`` i tylko wyrzucane przez ``SessionAuth``). Zwracana
+    tożsamość jest przycięta przez ``pola.POLA_TOZSAMOSCI`` — SUROWY
+    ``pkp.currentUser`` niesie ``csrfToken``, żywy token CSRF sesji (W7,
+    Runda 2 recenzji: zwracanie go bez przycięcia wypuszczało ten sekret do
+    modelu/logów/transkryptu).
     """
     kontekst = await katalog.rozwiaz(czasopismo)
     try:
@@ -779,11 +784,12 @@ async def kim_jestem_impl(
             "uwaga": str(exc),
         }
     if client.sciezka_auth != "token":
-        uzytkownik = getattr(client._auth, "uzytkownik", None)
+        uzytkownik = client.tozsamosc_sesji
+        tozsamosc = przytnij(uzytkownik, POLA_TOZSAMOSCI) if uzytkownik else None
         return {
             "czasopismo": kontekst,
             "uwierzytelniony": True,
-            "tozsamosc": uzytkownik,
+            "tozsamosc": tozsamosc,
             "uwaga": "Tożsamość pochodzi z sesji logowania (pkp.currentUser).",
         }
     return {
@@ -813,10 +819,14 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
     @mcp.tool()
     @z_czytelnym_bledem
     async def kim_jestem(czasopismo: str | None = None) -> dict:
-        """Sprawdź, czy bieżące poświadczenia (token API) działają.
+        """Sprawdź, czy bieżące poświadczenia działają, i kim jesteś.
 
-        OJS nie ma endpointu tożsamości dla tokenu — to narzędzie NIE mówi,
-        kim jest użytkownik, tylko czy uwierzytelnianie w ogóle działa.
+        Token API: OJS nie ma endpointu tożsamości dla tokenu — to
+        narzędzie mówi WYŁĄCZNIE, czy uwierzytelnianie w ogóle działa, nie
+        kim jest użytkownik (`tozsamosc` w odpowiedzi jest wtedy `None`).
+
+        Login i hasło: `tozsamosc` niesie realne dane zalogowanego
+        użytkownika (`id`, `username`, `fullName`, `roles`, `role_nazwy`).
         """
         return await kim_jestem_impl(client, katalog, czasopismo=czasopismo)
 
