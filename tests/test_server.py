@@ -1,15 +1,59 @@
 import logging
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import anyio
 import pytest
 
 from ojs_mcp.auth import ustaw_token_zadania
 from ojs_mcp.bledy import BladUwierzytelnienia
 from ojs_mcp.config import Config
-from ojs_mcp.server import main, zbuduj_serwer
+from ojs_mcp.server import _uruchom_stdio_i_zamknij, main, zbuduj_serwer
 
 
 async def _nazwy_narzedzi(mcp):
     return {n.name for n in await mcp.list_tools()}
+
+
+class _ProstyHandlerJson(BaseHTTPRequestHandler):
+    """Odpowiada 200 JSON na każde GET. HTTP/1.1 + Content-Length => keep-alive.
+
+    Bez jawnego `Content-Length` httpcore nie wie, kiedy kończy się ciało
+    odpowiedzi, więc nigdy nie odda połączenia z powrotem do puli
+    keep-alive — a to właśnie ta pula jest źródłem błędu, który testujemy.
+    """
+
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self) -> None:  # nazwa metody narzucona przez BaseHTTPRequestHandler
+        cialo = b"{}"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(cialo)))
+        self.end_headers()
+        self.wfile.write(cialo)
+
+    def log_message(self, *args: object) -> None:
+        # Ciszej w testach — domyślnie loguje każde żądanie na stderr.
+        pass
+
+
+@pytest.fixture
+def serwer_http_keepalive():
+    """Prawdziwy serwer HTTP lokalny, żeby OjsClient otworzył realny socket.
+
+    `respx` tu nie wystarczy — podmienia transport httpx, więc nigdy nie
+    powstaje prawdziwe połączenie keep-alive powiązane z pętlą zdarzeń,
+    a to jest właśnie mechanizm usterki, którą te testy sprawdzają.
+    """
+    serwer = ThreadingHTTPServer(("127.0.0.1", 0), _ProstyHandlerJson)
+    watek = threading.Thread(target=serwer.serve_forever, daemon=True)
+    watek.start()
+    try:
+        yield f"http://127.0.0.1:{serwer.server_port}"
+    finally:
+        serwer.shutdown()
+        watek.join(timeout=5)
 
 
 async def test_bez_allow_writes_brak_narzedzi_zapisu():
@@ -94,3 +138,45 @@ async def test_http_bez_tokenu_w_kontekscie_konczy_bledem_uwierzytelnienia():
     assert "sekret-z-konfiguracji" not in komunikat
     assert "administrator-instancji" not in komunikat
     assert "haslo-administratora" not in komunikat
+
+
+async def test_zamkniecie_klienta_po_realnym_ruchu_http_w_jednej_petli(
+    serwer_http_keepalive,
+):
+    """To jest dokładnie sekwencja `main()` w trybie stdio, tyle że
+    `run_stdio_async` jest podmienione na realne żądanie HTTP zamiast
+    obsługi protokołu MCP. Sprawdza naprawę: `run_stdio_async` i
+    `client.aclose()` w jednej wspólnej pętli zdarzeń.
+    """
+    cfg = Config(base_url=serwer_http_keepalive, journal="site", api_token="t")
+    mcp, klient = zbuduj_serwer(cfg)
+
+    async def udaje_obsluge_zadania_mcp() -> None:
+        odpowiedz = await klient.get("cokolwiek")
+        assert odpowiedz == {}
+
+    mcp.run_stdio_async = udaje_obsluge_zadania_mcp
+
+    # Kluczowe: to NIE MOŻE rzucić `RuntimeError: Event loop is closed`.
+    await _uruchom_stdio_i_zamknij(mcp, klient)
+
+
+def test_zamkniecie_w_nowej_petli_po_realnym_ruchu_konczy_sie_bledem(
+    serwer_http_keepalive,
+):
+    """Odtwarza dokładnie usterkę, dla której istnieje
+    `_uruchom_stdio_i_zamknij`: httpx/httpcore trzymają połączenie
+    keep-alive powiązane z pętlą zdarzeń, w której powstało. Zamknięcie
+    klienta w INNEJ, nowej pętli (dokładnie to, co robiłoby osobne
+    `mcp.run()` + `asyncio.run(client.aclose())`) kończy się
+    `RuntimeError: Event loop is closed` — ale dopiero PO co najmniej
+    jednym realnym żądaniu, bo pusta pula połączeń nie ma czego zamykać.
+    Ten test dokumentuje, dlaczego nie wolno wrócić do dwóch pętli.
+    """
+    cfg = Config(base_url=serwer_http_keepalive, journal="site", api_token="t")
+    mcp, klient = zbuduj_serwer(cfg)
+
+    anyio.run(klient.get, "cokolwiek")  # żądanie w PIERWSZEJ pętli
+
+    with pytest.raises(RuntimeError, match="Event loop is closed"):
+        anyio.run(klient.aclose)  # zamknięcie w DRUGIEJ, nowej pętli

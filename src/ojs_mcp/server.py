@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import logging
 import sys
 
+import anyio
 from mcp.server.mcpserver import MCPServer
 
 from . import __version__
@@ -87,12 +87,26 @@ def main(argv: list[str] | None = None) -> int:
         return uruchom_http(config)
 
     mcp, client = zbuduj_serwer(config)
-    try:
-        # `mcp.run()` jest w pełni synchroniczne (owija własną pętlę zdarzeń
-        # przez `anyio.run`) i kończy się dopiero po zamknięciu stdin —
-        # nie ma tu miejsca na `await`. Po jego powrocie pętla jest już
-        # zamknięta, więc `aclose()` odpalamy w nowej, jednorazowej pętli.
-        mcp.run()
-    finally:
-        asyncio.run(client.aclose())
+    anyio.run(_uruchom_stdio_i_zamknij, mcp, client)
     return 0
+
+
+async def _uruchom_stdio_i_zamknij(mcp: MCPServer, client: OjsClient) -> None:
+    """Uruchom serwer w trybie stdio i zamknij klienta w TEJ SAMEJ pętli.
+
+    Nie wolno zastąpić tego przez ``mcp.run()`` (synchroniczne, owija się
+    we własne ``anyio.run``) plus osobne ``asyncio.run(client.aclose())`` po
+    nim — httpx/httpcore trzymają połączenia keep-alive powiązane z pętlą
+    zdarzeń, w której powstały. Po zamknięciu tamtej pętli przez `mcp.run()`
+    próba zamknięcia transportu w NOWEJ pętli kończy się
+    ``RuntimeError: Event loop is closed`` (transport wywołuje wewnętrznie
+    ``call_soon`` na już nieistniejącej pętli) — i to dopiero po pierwszym
+    realnym żądaniu HTTP, bo puste połączenie nie ma czego zamykać. Gorzej:
+    ten `RuntimeError` z bloku zamykającego przykrywa prawdziwy wyjątek,
+    gdyby ``mcp.run()`` sam padł. Jedna wspólna pętla (`anyio.run` tutaj,
+    `run_stdio_async` w środku) eliminuje oba problemy.
+    """
+    try:
+        await mcp.run_stdio_async()
+    finally:
+        await client.aclose()

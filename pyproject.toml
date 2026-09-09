@@ -24,7 +24,16 @@ classifiers = [
 # przychodzenie tranzytywne z `mcp` nie jest kontraktem.
 # `uvicorn` deklarowane jawnie, bo późniejsze zadanie importuje je wprost do
 # transportu HTTP — przychodzenie tranzytywne nie jest kontraktem.
-dependencies = ["mcp>=2,<3", "httpx>=0.27", "starlette>=0.27", "uvicorn>=0.30"]
+# `anyio` deklarowane jawnie, bo `server.main()` woła `anyio.run()` wprost,
+# żeby serwer stdio i zamknięcie klienta httpx działały w jednej pętli
+# zdarzeń — przychodzenie tranzytywne z `mcp` nie jest kontraktem.
+dependencies = [
+    "mcp>=2,<3",
+    "httpx>=0.27",
+    "starlette>=0.27",
+    "uvicorn>=0.30",
+    "anyio>=4.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/mpasternak/ojs-mcp"
