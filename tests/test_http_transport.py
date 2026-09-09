@@ -13,7 +13,6 @@ import anyio
 import httpx
 import pytest
 import respx
-import uvicorn
 from mcp.client.session import ClientSession
 from mcp.client.streamable_http import streamable_http_client
 from starlette.responses import JSONResponse
@@ -26,7 +25,6 @@ from ojs_mcp.http_transport import (
     OriginMiddleware,
     TokenMiddleware,
     _ostrzez_o_ignorowanych_poswiadczeniach,
-    _serwuj,
     sprawdz_origin,
     uruchom_http,
     zbuduj_aplikacje,
@@ -505,45 +503,74 @@ async def test_zbuduj_serwer_wolane_raz_a_nie_per_zadanie(monkeypatch):
     assert licznik == 1
 
 
-async def test_serwuj_zamyka_klienta_po_zatrzymaniu_serwera(monkeypatch):
-    """`_serwuj` (użyte przez `uruchom_http`) zamyka WSPÓLNEGO klienta OJS
-    dopiero PO zatrzymaniu `uvicorn.Server`, w tej samej pętli zdarzeń —
-    nie ma tu stałego klienta trzymanego w nieskończoność, ale też nie
-    jest on budowany/zamykany na każde żądanie (patrz test wyżej)."""
+class _FalszywyKlient:
+    def __init__(self) -> None:
+        self.zamkniety = False
+        self.podniesc_bledem = False
 
-    class _FalszywyKlient:
-        def __init__(self) -> None:
-            self.zamkniety = False
+    async def aclose(self) -> None:
+        self.zamkniety = True
+        if self.podniesc_bledem:
+            raise RuntimeError("awaryjne zamknięcie klienta")
 
-        async def aclose(self) -> None:
-            self.zamkniety = True
 
-    async def _falszywy_serve(self) -> None:
-        # Udaje, że serwer natychmiast się zatrzymał (np. Ctrl-C) —
-        # nie otwieramy żadnego prawdziwego portu.
-        return None
+async def _prosta_aplikacja(scope, receive, send) -> None:
+    if scope["type"] == "lifespan":
+        while True:
+            wiadomosc = await receive()
+            if wiadomosc["type"] == "lifespan.startup":
+                await send({"type": "lifespan.startup.complete"})
+            elif wiadomosc["type"] == "lifespan.shutdown":
+                await send({"type": "lifespan.shutdown.complete"})
+                return
 
-    monkeypatch.setattr(uvicorn.Server, "serve", _falszywy_serve)
 
+async def test_zamkniecie_klienta_na_lifespan_dopiero_po_shutdown(caplog):
+    """N4+N5 (recenzja Rundy 2): zamknięcie WSPÓLNEGO klienta OJS jest
+    wpięte w protokół ASGI lifespan tej samej aplikacji — nie wcześniej niż
+    `lifespan.shutdown.complete` (serwer wciąż mógłby obsługiwać żądania),
+    i to TA SAMA droga dla `uruchom_http` (uvicorn) i `zbuduj_aplikacje`
+    (testy) — patrz `_ZamkniecieKlientaNaLifespan`.
+    """
     klient = _FalszywyKlient()
-    cfg = Config(base_url="https://x.edu", journal="r", transport="http")
+    aplikacja = ht._ZamkniecieKlientaNaLifespan(_prosta_aplikacja, klient)
 
-    await _serwuj(lambda scope, receive, send: None, klient, cfg)
+    async with _uruchom_lifespan(aplikacja):
+        assert not klient.zamkniety  # NIE zamknięty w trakcie działania
+
+    assert klient.zamkniety  # zamknięty PO lifespan.shutdown.complete
+
+
+async def test_zamkniecie_klienta_na_lifespan_nie_wywala_sie_na_bledzie(caplog):
+    """N4: błąd `client.aclose()` jest logowany, nie podnoszony — to
+    sprzątanie PO zakończeniu lifespan, więc nie ma już wyjątku serwera,
+    który mogłoby przykryć, ale i tak nie może się cicho zgubić."""
+    caplog.set_level(logging.ERROR)
+    klient = _FalszywyKlient()
+    klient.podniesc_bledem = True
+    aplikacja = ht._ZamkniecieKlientaNaLifespan(_prosta_aplikacja, klient)
+
+    async with _uruchom_lifespan(aplikacja):
+        pass  # nie podnosi wyjątku mimo błędu w `aclose()`
 
     assert klient.zamkniety
+    assert "Nie udało się zamknąć klienta" in caplog.text
 
 
-# --- Runda 2: katalog czasopism pobierany raz, nie za każdym wywołaniem -
+# --- Runda 3 (N2): katalog izolowany między użytkownikami, bez zatrucia -
 
 
 @respx.mock
-async def test_katalog_pobierany_raz_mimo_wielu_wywolan_z_roznymi_tokenami():
-    """Punkt 6 weryfikacji Rundy 2: klient PODAJE `czasopismo` (scenariusz
-    docelowy trybu http — bez `OJS_JOURNAL` klient MUSI je podawać), co
-    zmusza `Katalog.rozwiaz()` do sięgnięcia po katalog. Ten katalog ma być
-    pobrany RAZ i użyty ponownie dla KOLEJNYCH użytkowników — nie pobierany
-    od nowa przy każdym wywołaniu narzędzia (Runda 1: dokładnie to robiła,
-    bo `Katalog` powstawał na nowo z każdym `OjsClient`)."""
+async def test_katalog_izolowany_miedzy_uzytkownikami_nie_wspoldzielony():
+    """N2 (recenzja Rundy 2, WAŻNA — blokująca): `Katalog` jest teraz
+    obiektem WSPÓLNYM dla całego procesu (jak `OjsClient`), ale jego cache
+    NIE MOŻE przeciekać między użytkownikami — inaczej pierwszy z nich
+    (nawet awaryjny fallback bez uprawnień, patrz test niżej) narzucałby
+    swój katalog wszystkim kolejnym aż do restartu procesu. Klient PODAJE
+    `czasopismo` (scenariusz docelowy trybu http — bez `OJS_JOURNAL` MUSI
+    je podawać), co zmusza `Katalog.rozwiaz()` do sięgnięcia po katalog —
+    KAŻDY użytkownik ma to zrobić WŁASNYM tokenem, osobno.
+    """
     trasa_katalog = respx.get(
         "https://przyklad.edu/index.php/rocznik/api/v1/contexts"
     ).mock(
@@ -567,8 +594,72 @@ async def test_katalog_pobierany_raz_mimo_wielu_wywolan_z_roznymi_tokenami():
         await _wywolaj_kim_jestem(aplikacja, "token-uzytkownik-1", czasopismo="rocznik")
         await _wywolaj_kim_jestem(aplikacja, "token-uzytkownik-2", czasopismo="rocznik")
 
-    assert trasa_katalog.call_count == 1
+    # KAŻDY użytkownik pobrał katalog OSOBNO, własnym tokenem — zero
+    # współdzielenia cache'u między nimi.
+    assert trasa_katalog.call_count == 2
+    assert (
+        trasa_katalog.calls[0].request.headers["authorization"]
+        == "Bearer token-uzytkownik-1"
+    )
+    assert (
+        trasa_katalog.calls[1].request.headers["authorization"]
+        == "Bearer token-uzytkownik-2"
+    )
     assert trasa_submissions.call_count == 2
+
+
+@respx.mock
+async def test_brak_zatrucia_katalogu_nieuprzywilejowany_potem_administrator():
+    """Punkt 8 weryfikacji obowiązkowej (Runda 3): użytkownik BEZ uprawnień
+    do listy czasopism łączy się PIERWSZY (dostaje awaryjny, jednoelementowy
+    katalog — patrz `Katalog.czasopisma()`), potem administrator —
+    administrator MA WIDZIEĆ PEŁNY katalog i móc pracować z DOWOLNYM
+    czasopismem, mimo że proces (i `Katalog`) jest ten sam, współdzielony.
+    """
+    respx.get("https://przyklad.edu/index.php/rocznik/api/v1/contexts").mock(
+        side_effect=[
+            # Nieuprzywilejowany: 500 (HasRoles bez nullsafe — patrz
+            # `Katalog.czasopisma()`/`test_500_daje_katalog_jednoelementowy_z_journal`).
+            httpx.Response(500, json={"error": "Server error"}),
+            # Administrator: pełny katalog, DWA czasopisma.
+            httpx.Response(
+                200,
+                json={
+                    "items": [
+                        {"urlPath": "rocznik", "name": {"en_US": "Rocznik"}},
+                        {"urlPath": "kwartalnik", "name": {"en_US": "Kwartalnik"}},
+                    ],
+                    "itemsMax": 2,
+                },
+            ),
+        ]
+    )
+    respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
+        return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
+    )
+    respx.get("https://przyklad.edu/index.php/kwartalnik/api/v1/submissions").mock(
+        return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
+    )
+
+    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
+    aplikacja = zbuduj_aplikacje(cfg)
+    ustaw_token_zadania(None)
+
+    async with _uruchom_lifespan(aplikacja):
+        # 1) Nieuprzywilejowany użytkownik — dostaje fallback do OJS_JOURNAL.
+        wynik_nieuprzywilejowany = await _wywolaj_kim_jestem(
+            aplikacja, "token-bez-uprawnien", czasopismo="rocznik"
+        )
+        assert not wynik_nieuprzywilejowany.is_error
+
+        # 2) Administrator, INNE czasopismo niż OJS_JOURNAL — musiałby
+        # dostać błąd "nie ma takiego czasopisma", gdyby odziedziczył
+        # jednoelementowy fallback nieuprzywilejowanego użytkownika.
+        wynik_administratora = await _wywolaj_kim_jestem(
+            aplikacja, "token-administrator", czasopismo="kwartalnik"
+        )
+
+    assert not wynik_administratora.is_error, wynik_administratora
 
 
 # --- Runda 2: weryfikacja obowiązkowa (raport koordynatora) -------------
@@ -662,3 +753,46 @@ async def test_sekwencja_a_401_b_na_jednym_polaczeniu_bez_odwrotu_do_a():
     assert trasa.call_count == wywolania_po_a + 1
     assert trasa.calls[0].request.headers["authorization"] == "Bearer token-A"
     assert trasa.calls[-1].request.headers["authorization"] == "Bearer token-B"
+
+
+# --- Runda 3: weryfikacja obowiązkowa — punkt 7 (N1) ---------------------
+
+
+@respx.mock
+async def test_brak_przecieku_ciasteczek_pod_obciazeniem_50_uzytkownikow():
+    """Punkt 7 weryfikacji obowiązkowej (Runda 3, N1 — KRYTYCZNA): atrapa
+    OJS odsyła `Set-Cookie` z sesją; co najmniej 50 różnych użytkowników
+    (różne tokeny), równolegle, z wymuszonym przeplotem (`anyio.sleep` po
+    stronie atrapy — bez tego respx rozwiązuje odpowiedź synchronicznie i
+    zadania nie przeplatają się naprawdę) — ŻADNE wychodzące żądanie nie
+    może nieść cudzego (ani w ogóle żadnego) ciasteczka sesji.
+    """
+
+    async def _z_ciasteczkiem_sesji(request: httpx.Request) -> httpx.Response:
+        await anyio.sleep(0.005)
+        naglowek_auth = request.headers.get("authorization", "?")
+        return httpx.Response(
+            200,
+            json={"items": [], "itemsMax": 0},
+            headers={"Set-Cookie": f"OJSSID=sesja-dla-{naglowek_auth}"},
+        )
+
+    trasa = respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
+        side_effect=_z_ciasteczkiem_sesji
+    )
+
+    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
+    aplikacja = zbuduj_aplikacje(cfg)
+    ustaw_token_zadania(None)
+
+    n = 50
+    tokeny = [f"token-{i}" for i in range(n)]
+    async with _uruchom_lifespan(aplikacja):
+        wyniki = await asyncio.gather(
+            *[_wywolaj_kim_jestem(aplikacja, t) for t in tokeny]
+        )
+
+    assert all(not w.is_error for w in wyniki)
+    assert trasa.call_count == n
+    for wywolanie in trasa.calls:
+        assert "cookie" not in {h.lower() for h in wywolanie.request.headers}

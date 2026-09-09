@@ -1,3 +1,5 @@
+import asyncio
+
 import httpx
 import pytest
 import respx
@@ -96,4 +98,30 @@ async def test_katalog_cachuje_wynik():
     await katalog.czasopisma()
     await katalog.czasopisma()
     assert trasa.call_count == 1
+    await klient.aclose()
+
+
+@respx.mock
+async def test_cache_izolowany_miedzy_zadaniami_nie_wspoldzielony():
+    """Runda 3 (N2, recenzja Rundy 2): `Katalog` jest teraz obiektem
+    WSPÓLNYM dla całego procesu — jego cache NIE MOŻE mimo to przeciekać
+    między różnymi żądaniami/użytkownikami, inaczej pierwszy użytkownik
+    (nawet bez uprawnień, patrz `test_500_daje_katalog_jednoelementowy_z_journal`)
+    narzucałby swój katalog wszystkim kolejnym aż do restartu procesu —
+    dokładnie usterka, którą naprawia ta runda.
+    """
+    trasa = respx.get("https://x.edu/index.php/rocznik/api/v1/contexts").mock(
+        return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
+    )
+    _, klient, katalog = _zestaw()
+
+    # `asyncio.create_task` kopiuje bieżący kontekst PRZY STARCIE zadania —
+    # dokładnie ten sam mechanizm, którym `stateless_http=True` izoluje od
+    # siebie kolejne żądania ASGI (patrz `http_transport.py`). Oba zadania
+    # startują z TEGO SAMEGO (pustego) kontekstu nadrzędnego, więc `.set()`
+    # w jednym NIE MA prawa być widoczne w drugim.
+    await asyncio.create_task(katalog.czasopisma())
+    await asyncio.create_task(katalog.czasopisma())
+
+    assert trasa.call_count == 2  # każde "żądanie" pobrało katalog OSOBNO
     await klient.aclose()

@@ -194,3 +194,50 @@ async def test_aclose_toleruje_strategie_bez_wlasnych_zasobow():
     # musi po prostu pominąć ten krok, nie wywalić się na braku atrybutu.
     k = _klient()
     await k.aclose()  # nie podnosi wyjątku
+
+
+@respx.mock
+async def test_http_nie_roznosi_ciasteczek_miedzy_uzytkownikami():
+    """N1 (recenzja Task 12, Runda 2) — KRYTYCZNA: w trybie http JEDEN
+    `OjsClient` obsługuje wielu użytkowników. Domyślny magazyn ciasteczek
+    httpx jest współdzielony przez wszystkie żądania danego klienta —
+    `Set-Cookie` z odpowiedzi dla użytkownika A trafiłoby do magazynu, a
+    httpx doklejałoby je do żądań WSZYSTKICH kolejnych użytkowników.
+    Ciasteczko sesji jest poświadczeniem; serwer bez własnych poświadczeń
+    nie ma prawa zbierać cudzych i rozdawać ich dalej.
+    """
+    trasa = respx.get(f"{BAZA}/issues/current").mock(
+        side_effect=[
+            httpx.Response(
+                200, json={"id": 1}, headers={"Set-Cookie": "OJSSID=uzytkownik-A"}
+            ),
+            httpx.Response(200, json={"id": 2}),
+        ]
+    )
+    cfg = Config(base_url="https://x.edu", journal="rocznik", transport="http")
+    k = OjsClient(cfg, TokenAuth("tok-a"))
+
+    await k.get("issues/current")  # "użytkownik A" — odpowiedź niesie Set-Cookie
+    await k.get("issues/current")  # "użytkownik B" — ten sam, współdzielony klient
+
+    naglowki_drugiego = trasa.calls[1].request.headers
+    assert "cookie" not in {h.lower() for h in naglowki_drugiego.keys()}
+    await k.aclose()
+
+
+@respx.mock
+async def test_stdio_zachowuje_normalny_magazyn_ciasteczek():
+    """Kontrast do testu wyżej: tryb stdio (jeden proces = jeden
+    użytkownik, patrz `SessionAuth` z Task 11) nie dostaje pustego
+    magazynu — to nie może się cicho zepsuć razem z poprawką N1."""
+    trasa = respx.get(f"{BAZA}/issues/current").mock(
+        side_effect=[
+            httpx.Response(200, json={"id": 1}, headers={"Set-Cookie": "OJSSID=abc"}),
+            httpx.Response(200, json={"id": 2}),
+        ]
+    )
+    k = _klient()  # transport domyślny: stdio
+    await k.get("issues/current")
+    await k.get("issues/current")
+    assert "OJSSID=abc" in trasa.calls[1].request.headers.get("cookie", "")
+    await k.aclose()

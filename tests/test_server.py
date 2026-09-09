@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import anyio
 import pytest
+import respx
 
 from ojs_mcp.auth import ustaw_token_zadania
 from ojs_mcp.bledy import BladUwierzytelnienia
@@ -131,12 +132,20 @@ async def test_http_budowa_serwera_nie_wymaga_tokenu_w_kontekscie():
         await klient.aclose()
 
 
+@respx.mock
 async def test_http_bez_tokenu_zadanie_do_ojs_konczy_sie_bledem_uwierzytelnienia():
     # Reguła bezpieczeństwa: w trybie http, gdy PRÓBA ROZMOWY Z OJS (nie
     # sama budowa serwera — patrz test wyżej) nie ma tokenu w kontekście,
     # kończy się BladUwierzytelnienia — a komunikat NIE MOŻE ujawniać
     # żadnej wartości poświadczenia zapisanej w konfiguracji (OJS_API_TOKEN,
     # OJS_USERNAME, OJS_PASSWORD).
+    #
+    # N7 (recenzja Task 12, Runda 2): `@respx.mock` bez żadnej zamontowanej
+    # trasy — jeśli `TokenZadaniaAuth.auth_flow` kiedyś przestałaby
+    # podnosić wyjątek PRZED `yield`, żądanie poleciałoby do respx, które
+    # podniosłoby `AllMockedAssertionError` (nie `BladUwierzytelnienia`),
+    # więc test i tak by się wywalił — ale w sposób kontrolowany, bez
+    # realnego wyjścia do sieci/DNS.
     ustaw_token_zadania(None)
     cfg = Config(
         base_url="https://x.edu",

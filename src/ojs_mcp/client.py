@@ -2,11 +2,13 @@
 
 Ten moduł nie wie nic o MCP. Jest jedynym właścicielem
 ``httpx.AsyncClient`` — strategie uwierzytelniania wchodzą jako
-``httpx.Auth``, żeby w trybie http token mógł być tworzony per żądanie.
+``httpx.Auth``, żeby w trybie http token mógł być czytany per żądanie
+(patrz ``auth.TokenZadaniaAuth``).
 """
 
 from __future__ import annotations
 
+import http.cookiejar
 import logging
 from typing import Any
 
@@ -28,6 +30,32 @@ logger = logging.getLogger(__name__)
 MAX_COUNT = 100
 
 
+class SloikBezCiasteczek(http.cookiejar.CookieJar):
+    """Magazyn ciasteczek, który nic nie zapamiętuje i nic nie dokłada.
+
+    W trybie http JEDEN ``OjsClient`` (a więc jeden ``httpx.AsyncClient``)
+    obsługuje WIELU użytkowników — patrz Runda 2 Tasku 12. Domyślny magazyn
+    ciasteczek httpx jest współdzielony przez WSZYSTKIE żądania tego
+    klienta: ``Set-Cookie`` z odpowiedzi dla użytkownika A trafiłoby do
+    magazynu, a httpx doklejałoby je do żądań WSZYSTKICH kolejnych
+    użytkowników tego samego hosta (usterka N1, recenzja Rundy 2 —
+    zmierzona: 99 ze 100 żądań pod obciążeniem niosło cudze ciasteczko
+    sesji). Ciasteczko sesji OJS jest poświadczeniem — serwer, którego
+    cała obietnica brzmi „nie mam własnych poświadczeń”, nie może zbierać
+    cudzych i rozdawać ich dalej.
+
+    httpx wymaga OBIEKTU ``http.cookiejar.CookieJar`` jako magazynu — nie
+    da się go „wyłączyć” inaczej niż podstawieniem takiego, który udaje
+    pusty, zawsze pusty magazyn.
+    """
+
+    def extract_cookies(self, response, request) -> None:
+        return None
+
+    def add_cookie_header(self, request) -> None:
+        return None
+
+
 class OjsClient:
     """Cienka warstwa nad ``httpx`` mówiąca dialektem API OJS."""
 
@@ -47,6 +75,13 @@ class OjsClient:
             timeout=httpx.Timeout(30.0, connect=10.0),
             follow_redirects=True,
             headers={"Accept": "application/json"},
+            # Patrz docstring `SloikBezCiasteczek` — w trybie stdio klient
+            # obsługuje JEDNEGO użytkownika przez cały proces, więc zwykły
+            # magazyn ciasteczek jest poprawny i potrzebny (`SessionAuth`
+            # sam zarządza własnym, oddzielnym klientem logowania i tak
+            # ustawia nagłówek `Cookie` ręcznie — patrz jej docstring — ale
+            # to nie ma znaczenia dla magazynu TEGO klienta).
+            cookies=SloikBezCiasteczek() if config.transport == "http" else None,
         )
         if klient is not None:
             self._klient.auth = auth

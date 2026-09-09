@@ -182,13 +182,48 @@ i dostają klienta wstrzykniętego.
 
 ### 4.1 Własność klienta HTTP
 
-**`OjsClient` jest właścicielem jedynego `httpx.AsyncClient`.** Strategie
-uwierzytelniania implementują `httpx.Auth`:
-- `TokenAuth` — dokłada `Authorization: Bearer`; bezstanowa
-- `SessionAuth` — cookie jar, token CSRF, ponowne logowanie w `auth_flow`
+**`OjsClient` jest właścicielem jedynego `httpx.AsyncClient`** — w trybie
+`http` budowanego RAZ, przy starcie procesu, i współdzielonego przez
+wszystkich użytkowników (Task 12, Runda 2: przebudowa serwera/klienta na
+każde żądanie kosztowała ok. 16 ms CPU na żądanie i uniemożliwiała
+reużycie połączeń do OJS). Strategie uwierzytelniania implementują
+`httpx.Auth`:
+- `TokenAuth` — dokłada `Authorization: Bearer` zamrożony w konstruktorze;
+  bezstanowa; używana w trybie `stdio` (jeden proces = jeden użytkownik)
+- `TokenZadaniaAuth` — jak wyżej, ale token czyta DOPIERO w `auth_flow`, z
+  `ContextVar` wypełnianego przez `TokenMiddleware` per żądanie; używana w
+  trybie `http`, gdzie jedna instancja (i jeden `OjsClient`) obsługuje
+  wielu różnych użytkowników
+- `SessionAuth` — cookie jar, token CSRF, ponowne logowanie w `auth_flow`;
+  tylko tryb `stdio`
 
-W trybie `http` `TokenAuth` jest tworzony **per żądanie** z `ContextVar`, więc
-klient nie trzyma stanu uwierzytelnienia między użytkownikami.
+**Magazyn ciasteczek w trybie `http` jest pusty i nic nie zapamiętuje**
+(`client.SloikBezCiasteczek`, podstawiony jako `cookies=` przy budowie
+klienta gdy `config.transport == "http"`). Bez tego domyślny magazyn
+httpx byłby współdzielony przez WSZYSTKICH użytkowników tego samego
+klienta: `Set-Cookie` z odpowiedzi dla użytkownika A trafiałby do
+magazynu, a httpx doklejałoby je do żądań kolejnych użytkowników —
+ciasteczko sesji jest poświadczeniem, więc byłby to dokładnie ten sam
+rodzaj wycieku, przed którym chroni oddzielny token per żądanie (usterka
+N1, recenzja Rundy 2 Tasku 12: pod obciążeniem 99 ze 100 żądań niosło
+cudze ciasteczko sesji). W trybie `stdio` (jeden proces = jeden
+użytkownik) magazyn jest zwykły — `SessionAuth` i tak zarządza własnymi
+ciasteczkami przez oddzielny, wewnętrzny klient logowania.
+
+**Katalog czasopism (`Katalog`) jest też obiektem współdzielonym, ale
+jego cache NIE jest atrybutem instancji** — mieszka w `ContextVar`
+własnym dla danej instancji, wypełnianym leniwie per żądanie, tym samym
+mechanizmem co token. Inaczej pierwszy użytkownik (zwłaszcza bez
+uprawnień do listy czasopism, patrz fallback do `OJS_JOURNAL`) narzucałby
+swój katalog wszystkim kolejnym aż do restartu procesu — odmowa usługi
+między użytkownikami (usterka N2, recenzja Rundy 2 Tasku 12).
+
+Poprawność powyższego przy wielu użytkownikach naraz zależy od tego, że
+SDK niesie migawkę kontekstu nadawcy PER WIADOMOŚĆ — dotyczy to zarówno
+trybu bezstanowego, jak i stanowego streamable HTTP (`http_transport.py`
+używa `stateless_http=True` z powodów operacyjnych — brak przypinania
+sesji na równoważniku obciążenia — nie dlatego, że wariant stanowy
+zgubiłby token; ten wariant nie jest w tym repozytorium przetestowany).
 
 ### 4.2 Zasób danych
 

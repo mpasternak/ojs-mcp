@@ -105,13 +105,16 @@ class TokenZadaniaAuth(httpx.Auth):
 
     Poprawność przy wielu użytkownikach naraz zależy od tego, że token w
     kontekście ustawiony przez warstwę pośredniczącą (``TokenMiddleware``)
-    faktycznie dociera do TEGO wywołania ``auth_flow`` — czyli od trybu
-    ``stateless_http=True`` w ``http_transport.py``, który gwarantuje, że
-    obsługa każdego żądania trafia do świeżo utworzonego zadania (anyio/
-    asyncio kopiują bieżący kontekst w chwili startu zadania). Bez tego
-    handler narzędzia biegłby w tle zadania uruchomionego raz, przy
-    ``initialize`` — dokładnie pułapka, przed którą ostrzega spec przy
-    ``get_access_token()`` (§6.1).
+    faktycznie dociera do TEGO wywołania ``auth_flow`` — a więc od tego, że
+    SDK niesie migawkę kontekstu nadawcy PER WIADOMOŚĆ (potwierdzone
+    testami z realną rozmową MCP, m.in.
+    ``test_izolacja_tokenow_pod_wymuszonym_przeplotem_30_rownoleglych`` w
+    ``tests/test_http_transport.py``). Uwaga: `http_transport.py` mimo to
+    używa `stateless_http=True` — z powodów operacyjnych (brak przypinania
+    sesji, prostsze skalowanie poziome), NIE dlatego, że w trybie stanowym
+    ten mechanizm by nie zadziałał — patrz docstring modułu
+    ``http_transport`` po pełne uzasadnienie i zastrzeżenie, że wariant
+    stanowy nie jest tu w ogóle testowany.
     """
 
     def auth_flow(

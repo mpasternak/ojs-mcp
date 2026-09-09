@@ -17,16 +17,24 @@ uzasadnienie. Runda 1 budowała serwer i klienta na nowo przy KAŻDYM
 żądaniu ASGI wyłącznie dlatego, że ówczesna strategia (``TokenAuth``)
 zamrażała token w konstruktorze; to już nieaktualne.
 
-``stateless_http=True`` ZOSTAJE mimo to — z INNEGO powodu niż w Rundzie 1.
-Gwarantuje, że obsługa KAŻDEGO żądania trafia do świeżo utworzonego
-zadania (anyio/asyncio kopiują bieżący kontekst w chwili startu zadania).
-Bez tego, w trybie stanowym, handler narzędzia biegłby w tle zadania
-uruchomionego RAZ, przy ``initialize`` tej sesji — token ustawiony przez
-``TokenMiddleware`` przy PÓŹNIEJSZYM ``tools/call`` nigdy by tam nie
-dotarł. To dokładnie pułapka, przed którą ostrzega spec przy
-``get_access_token()`` (§6.1) — zweryfikowana tu doświadczalnie (patrz
-`tests/test_http_transport.py` i raport Task 12, sekcja "Runda 2"), nie
-tylko rozumowaniem.
+``stateless_http=True`` ZOSTAJE — ale UWAGA na uzasadnienie (poprawka N3,
+recenzja Rundy 2). Wcześniejsza wersja tego dokumentu twierdziła, że bez
+trybu bezstanowego token z późniejszego ``tools/call`` „nigdy by nie
+dotarł” do handlera narzędzia, bo biegłby w tle zadania uruchomionego raz,
+przy ``initialize`` — i że zostało to „zweryfikowane doświadczalnie”. To
+BYŁO NIEPRAWDZIWE: żaden test w tym repo nie uruchamiał wariantu
+stanowego, a kontrpróba recenzenta pokazała, że przy trybie stanowym token
+z późniejszego wywołania narzędzia TEŻ dociera poprawnie — SDK (2.2.0)
+niesie migawkę kontekstu nadawcy PER WIADOMOŚĆ, niezależnie od tego, czy
+sesja jest stanowa czy bezstanowa. Prawdziwy powód, dla którego
+``stateless_http=True`` zostaje: brak stanu sesji po stronie serwera jest
+dobrą własnością SAMĄ W SOBIE dla serwera wielodostępowego — nie trzeba
+przypinania sesji (session affinity) na równoważniku obciążenia, nie ma
+pamięci serwera rosnącej z liczbą otwartych sesji, restart nie gubi
+„w trakcie” żadnej rozmowy wymagającej kontynuacji. To decyzja operacyjna,
+nie wymóg poprawności — wariant stanowy pozostaje NIEPRZETESTOWANY w tym
+repozytorium; ktoś, kto chciałby na nim polegać, powinien dopisać test
+zamiast ufać temu komentarzowi.
 """
 
 from __future__ import annotations
@@ -174,12 +182,57 @@ def _wymagaj_trybu_http(config: Config) -> None:
         )
 
 
-def _zloz_stos(mcp: MCPServer, config: Config) -> ASGIApp:
+class _ZamkniecieKlientaNaLifespan:
+    """Domyka WSPÓLNEGO klienta OJS na zdarzenie ASGI lifespan shutdown.
+
+    Poprawka N4+N5 (recenzja Rundy 2): zamiast dwóch niezależnych ścieżek
+    zamykania — jawnej w ``uruchom_http`` (dla produkcji) i BRAKU jej w
+    ``zbuduj_aplikacje`` (klient zostawał bez właściciela — N5) — jest
+    JEDNA, podpięta pod protokół lifespan, którego i tak używa zarówno
+    prawdziwy uvicorn (``uruchom_http``), jak i ręczne sterowanie lifespan
+    w testach (``zbuduj_aplikacje``). Nie maskuje błędu serwera błędem
+    zamykania klienta (ten sam wzorzec i to samo uzasadnienie co
+    ``_uruchom_stdio_i_zamknij`` w ``server.py``, commit 523a28d „nie
+    maskuj wyjątku z run_stdio_async błędem zamykania klienta” — N4).
+    """
+
+    def __init__(self, app: ASGIApp, client: OjsClient) -> None:
+        self._app = app
+        self._client = client
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "lifespan":
+            await self._app(scope, receive, send)
+            return
+
+        async def _wyslij_i_zamknij_na_koniec(message) -> None:
+            await send(message)
+            if message["type"] in (
+                "lifespan.shutdown.complete",
+                "lifespan.shutdown.failed",
+            ):
+                try:
+                    await self._client.aclose()
+                except Exception:
+                    # Nie propagujemy: to jest sprzątanie PO zakończeniu
+                    # lifespan, więc nie ma już żadnego wyjątku serwera,
+                    # który mogłoby przykryć — ale i tak logujemy z pełnym
+                    # tracebackiem zamiast cichego połknięcia.
+                    logger.exception(
+                        "Nie udało się zamknąć klienta HTTP po zatrzymaniu serwera"
+                    )
+
+        await self._app(scope, receive, _wyslij_i_zamknij_na_koniec)
+
+
+def _zloz_stos(mcp: MCPServer, client: OjsClient, config: Config) -> ASGIApp:
     """Owiń GOTOWY (już zbudowany) serwer MCP warstwami Origin i token.
 
     Wywoływana raz z ``zbuduj_aplikacje`` i raz z ``uruchom_http`` — obie
     muszą dostać DOKŁADNIE ten sam stos (kolejność ma znaczenie, patrz
-    ``zbuduj_aplikacje``), więc trzymamy go w jednym miejscu.
+    ``zbuduj_aplikacje``), więc trzymamy go w jednym miejscu. Zamykanie
+    ``client`` jest wpięte w lifespan tej samej aplikacji (patrz
+    ``_ZamkniecieKlientaNaLifespan``) — obaj wywołujący dostają je za darmo.
     """
     aplikacja_mcp = mcp.streamable_http_app(
         host=config.http_host,
@@ -198,6 +251,7 @@ def _zloz_stos(mcp: MCPServer, config: Config) -> ASGIApp:
             enable_dns_rebinding_protection=False
         ),
     )
+    aplikacja_mcp = _ZamkniecieKlientaNaLifespan(aplikacja_mcp, client)
     return OriginMiddleware(
         TokenMiddleware(aplikacja_mcp),
         dozwolone=config.allowed_origins,
@@ -208,18 +262,18 @@ def zbuduj_aplikacje(config: Config) -> ASGIApp:
     """Złóż pełny stos ASGI trybu http: ``Origin`` → token → serwer MCP.
 
     Serwer MCP i klient OJS powstają TUTAJ, RAZ (``zbuduj_serwer``) — nie
-    na każde żądanie, patrz docstring modułu. Klient zwrócony przez
-    ``zbuduj_serwer`` nie jest tu zamykany — funkcja ta służy głównie
-    testom, które budują aplikację do jednorazowego użycia; produkcyjny
-    cykl życia klienta (budowa + zamknięcie po zatrzymaniu serwera)
-    realizuje ``uruchom_http``.
+    na każde żądanie, patrz docstring modułu. Klient jest zamykany przez
+    protokół lifespan tej aplikacji (``_ZamkniecieKlientaNaLifespan``) —
+    ten sam mechanizm, którego używa produkcyjnie ``uruchom_http``, więc
+    obie ścieżki (testy budujące aplikację samodzielnie i uvicorn
+    w produkcji) sprzątają klienta tak samo, zamiast dwiema różnymi drogami.
 
     :raises ValueError: gdy ``config.transport != "http"`` — patrz
         ``_wymagaj_trybu_http``.
     """
     _wymagaj_trybu_http(config)
-    mcp, _client = zbuduj_serwer(config)
-    return _zloz_stos(mcp, config)
+    mcp, client = zbuduj_serwer(config)
+    return _zloz_stos(mcp, client, config)
 
 
 def _ostrzez_o_ignorowanych_poswiadczeniach(config: Config) -> None:
@@ -237,25 +291,24 @@ def _ostrzez_o_ignorowanych_poswiadczeniach(config: Config) -> None:
         )
 
 
-async def _serwuj(aplikacja: ASGIApp, client: OjsClient, config: Config) -> None:
-    """Uruchom uvicorn i zamknij klienta OJS PO zatrzymaniu serwera.
-
-    W TEJ SAMEJ pętli zdarzeń co ``anyio.run`` w ``uruchom_http`` — ten sam
-    wzorzec, co ``_uruchom_stdio_i_zamknij`` w ``server.py`` dla trybu
-    stdio, i z tego samego powodu (httpx/httpcore trzymają połączenia
-    keep-alive powiązane z pętlą zdarzeń, w której powstały).
+async def _serwuj(aplikacja: ASGIApp, config: Config) -> None:
+    """Uruchom uvicorn w TEJ SAMEJ pętli zdarzeń co ``anyio.run`` wołające
+    tę funkcję — ten sam wzorzec, co ``_uruchom_stdio_i_zamknij`` w
+    ``server.py`` dla trybu stdio, i z tego samego powodu (httpx/httpcore
+    trzymają połączenia keep-alive powiązane z pętlą zdarzeń, w której
+    powstały). Zamknięcie WSPÓLNEGO klienta OJS dzieje się przez protokół
+    ASGI lifespan (``_ZamkniecieKlientaNaLifespan`` w ``_zloz_stos``),
+    którego uvicorn i tak używa przy starcie/zatrzymaniu — nie trzeba
+    osobnego ``finally`` w tej funkcji.
     """
-    try:
-        konfiguracja_uvicorn = uvicorn.Config(
-            aplikacja,
-            host=config.http_host,
-            port=config.http_port,
-            log_level="info",
-        )
-        serwer = uvicorn.Server(konfiguracja_uvicorn)
-        await serwer.serve()
-    finally:
-        await client.aclose()
+    konfiguracja_uvicorn = uvicorn.Config(
+        aplikacja,
+        host=config.http_host,
+        port=config.http_port,
+        log_level="info",
+    )
+    serwer = uvicorn.Server(konfiguracja_uvicorn)
+    await serwer.serve()
 
 
 def uruchom_http(config: Config) -> int:
@@ -263,8 +316,9 @@ def uruchom_http(config: Config) -> int:
 
     Buduje serwer MCP i klienta OJS RAZ (``zbuduj_serwer``) — jeden
     ``httpx.AsyncClient`` obsługuje wszystkie żądania (reużycie połączeń,
-    spec §4.1), zamykany dopiero po zatrzymaniu serwera, w tej samej pętli
-    zdarzeń (``anyio.run`` obejmuje całe działanie ``uvicorn.Server``).
+    spec §4.1). Zamykany przez protokół lifespan (patrz ``_zloz_stos`` /
+    ``_ZamkniecieKlientaNaLifespan``), w tej samej pętli zdarzeń, którą
+    ``anyio.run`` obejmuje przez cały czas działania ``uvicorn.Server``.
 
     :raises ValueError: gdy ``config.transport != "http"`` — patrz
         ``_wymagaj_trybu_http``.
@@ -273,7 +327,7 @@ def uruchom_http(config: Config) -> int:
     _ostrzez_o_ignorowanych_poswiadczeniach(config)
 
     mcp, client = zbuduj_serwer(config)
-    aplikacja = _zloz_stos(mcp, config)
+    aplikacja = _zloz_stos(mcp, client, config)
 
-    anyio.run(_serwuj, aplikacja, client, config)
+    anyio.run(_serwuj, aplikacja, config)
     return 0
