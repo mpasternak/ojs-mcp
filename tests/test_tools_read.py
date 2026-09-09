@@ -5,140 +5,140 @@ import pytest
 import respx
 
 from ojs_mcp.auth import TokenAuth
-from ojs_mcp.bledy import BladOjs
-from ojs_mcp.catalog import Katalog
+from ojs_mcp.catalog import Catalog
 from ojs_mcp.client import OjsClient
 from ojs_mcp.config import Config
-from ojs_mcp.pola import przytnij as przytnij_z_pola
+from ojs_mcp.exceptions import OjsError
+from ojs_mcp.fields import trim as trim_from_fields
 from ojs_mcp.session_login import SessionAuth
 from ojs_mcp.tools_read import (
-    biezacy_numer_impl,
-    kim_jestem_impl,
-    lista_czasopism_impl,
-    lista_doi_impl,
-    lista_numerow_impl,
-    lista_recenzentow_impl,
-    lista_sekcji_impl,
-    pliki_zgloszenia_impl,
-    pobierz_numer_impl,
-    pobierz_publikacje_impl,
-    pobierz_zgloszenie_impl,
-    przytnij,
-    recenzje_zgloszenia_impl,
-    statystyki_publikacji_impl,
-    statystyki_redakcyjne_impl,
-    szukaj_uzytkownikow_impl,
-    szukaj_zgloszen_impl,
-    zarejestruj_odczyt,
+    editorial_stats_impl,
+    get_current_issue_impl,
+    get_issue_impl,
+    get_publication_impl,
+    get_submission_impl,
+    get_submission_reviews_impl,
+    list_dois_impl,
+    list_issues_impl,
+    list_journals_impl,
+    list_reviewers_impl,
+    list_sections_impl,
+    list_submission_files_impl,
+    publication_stats_impl,
+    register_read_tools,
+    search_submissions_impl,
+    search_users_impl,
+    trim,
+    whoami_impl,
 )
 
-BAZA = "https://x.edu/index.php/rocznik/api/v1"
+BASE = "https://x.edu/index.php/annual/api/v1"
 
 
-def _zestaw():
-    cfg = Config(base_url="https://x.edu", journal="rocznik")
-    klient = OjsClient(cfg, TokenAuth("tok"))
-    return klient, Katalog(klient, cfg)
+def _setup():
+    cfg = Config(base_url="https://x.edu", journal="annual")
+    client = OjsClient(cfg, TokenAuth("tok"))
+    return client, Catalog(client, cfg)
 
 
 class _FakeMcp:
-    """Atrapa serwera MCP zbierająca narzędzia zarejestrowane przez `.tool()`."""
+    """An MCP server stub collecting tools registered via `.tool()`."""
 
     def __init__(self) -> None:
-        self.narzedzia: dict[str, Any] = {}
+        self.tools: dict[str, Any] = {}
 
     def tool(self):
-        def rejestrator(fn):
-            self.narzedzia[fn.__name__] = fn
+        def register(fn):
+            self.tools[fn.__name__] = fn
             return fn
 
-        return rejestrator
+        return register
 
 
-# --- przytnij -----------------------------------------------------------------
+# --- trim -----------------------------------------------------------------
 
 
-def test_przytnij_zostawia_tylko_wskazane_pola():
-    assert przytnij({"id": 1, "x": 2, "y": 3}, ("id", "y")) == {"id": 1, "y": 3}
+def test_trim_keeps_only_the_given_fields():
+    assert trim({"id": 1, "x": 2, "y": 3}, ("id", "y")) == {"id": 1, "y": 3}
 
 
-def test_przytnij_pomija_brakujace_pola():
-    assert przytnij({"id": 1}, ("id", "brak")) == {"id": 1}
+def test_trim_skips_missing_fields():
+    assert trim({"id": 1}, ("id", "missing")) == {"id": 1}
 
 
-def test_przytnij_jest_reeksportowany_z_pola():
-    # tools_read.przytnij i pola.przytnij muszą być tym samym obiektem —
-    # narzędzia zapisu (Task 13) będą importować z pola.py wprost.
-    assert przytnij is przytnij_z_pola
+def test_trim_is_re_exported_from_fields():
+    # tools_read.trim and fields.trim must be the same object — the
+    # write tools (Task 13) import from fields.py directly.
+    assert trim is trim_from_fields
 
 
-# --- szukaj_zgloszen ------------------------------------------------------------
+# --- search_submissions ------------------------------------------------------------
 
 
 @respx.mock
-async def test_szukaj_zgloszen_tlumaczy_nazwy_slowne():
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+async def test_search_submissions_translates_word_level_names():
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    await szukaj_zgloszen_impl(
-        klient, katalog, status=["opublikowane"], etap=["redakcja"]
+    client, catalog = _setup()
+    await search_submissions_impl(
+        client, catalog, status=["published"], stage=["editing"]
     )
-    zapytanie = trasa.calls.last.request.url.params
-    assert zapytanie["status"] == "3"
-    assert zapytanie["stageIds"] == "4"
-    await klient.aclose()
+    query = route.calls.last.request.url.params
+    assert query["status"] == "3"
+    assert query["stageIds"] == "4"
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_zgloszen_domyslnie_sortuje_po_lastactivity():
-    # Regresja: wcześniejsza domyślna wartość ("dateLastActivity") była nazwą
-    # POLA odpowiedzi, nie dozwoloną wartością orderBy — spec §3.10 wymaga
-    # "lastActivity". Ten test byłby czerwony na starej wartości domyślnej.
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+async def test_search_submissions_defaults_to_sorting_by_lastactivity():
+    # Regression: the earlier default value ("dateLastActivity") was the
+    # name of a response FIELD, not a valid orderBy value — spec §3.10
+    # requires "lastActivity". This test would be red on the old default.
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    await szukaj_zgloszen_impl(klient, katalog)
-    zapytanie = trasa.calls.last.request.url.params
-    assert zapytanie["orderBy"] == "lastActivity"
-    assert zapytanie["orderDirection"] == "DESC"
-    await klient.aclose()
+    client, catalog = _setup()
+    await search_submissions_impl(client, catalog)
+    query = route.calls.last.request.url.params
+    assert query["orderBy"] == "lastActivity"
+    assert query["orderDirection"] == "DESC"
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_zgloszen_odrzuca_nieznana_wartosc_sortowania():
-    klient, katalog = _zestaw()
+async def test_search_submissions_rejects_an_unknown_sort_value():
+    client, catalog = _setup()
     with pytest.raises(ValueError) as exc:
-        await szukaj_zgloszen_impl(klient, katalog, sortuj="dateLastActivity")
+        await search_submissions_impl(client, catalog, sort_by="dateLastActivity")
     assert "lastActivity" in str(exc.value)
-    await klient.aclose()
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_zgloszen_odrzuca_nieznany_status():
-    klient, katalog = _zestaw()
+async def test_search_submissions_rejects_an_unknown_status():
+    client, catalog = _setup()
     with pytest.raises(ValueError) as exc:
-        await szukaj_zgloszen_impl(klient, katalog, status=["bzdura"])
-    assert "opublikowane" in str(exc.value)
-    await klient.aclose()
+        await search_submissions_impl(client, catalog, status=["nonsense"])
+    assert "published" in str(exc.value)
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_zgloszen_filtruje_po_sekcji():
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+async def test_search_submissions_filters_by_section():
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    await szukaj_zgloszen_impl(klient, katalog, sekcja=[3, 7])
-    assert trasa.calls.last.request.url.params["sectionIds"] == "3,7"
-    await klient.aclose()
+    client, catalog = _setup()
+    await search_submissions_impl(client, catalog, section=[3, 7])
+    assert route.calls.last.request.url.params["sectionIds"] == "3,7"
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_zgloszen_filtruje_daty_po_stronie_klienta():
-    # GET /submissions NIE MA filtrów dat — robimy to u siebie.
-    respx.get(f"{BAZA}/submissions").mock(
+async def test_search_submissions_filters_dates_on_the_client_side():
+    # GET /submissions has NO date filters — we do it ourselves.
+    respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -150,22 +150,22 @@ async def test_szukaj_zgloszen_filtruje_daty_po_stronie_klienta():
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await szukaj_zgloszen_impl(klient, katalog, zlozone_od="2026-01-01")
-    assert [p["id"] for p in wynik["zgloszenia"]] == [1]
-    # Cały zbiór (2 pozycje) zmieścił się w jednej stronie — nic nie mogło
-    # zostać odcięte przed zastosowaniem filtra dat.
-    assert wynik["filtrowanie_dat_niepelne"] is False
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await search_submissions_impl(client, catalog, submitted_from="2026-01-01")
+    assert [p["id"] for p in result["submissions"]] == [1]
+    # The whole set (2 items) fit on a single page — nothing could have
+    # been truncated before the date filter was applied.
+    assert result["date_filtering_incomplete"] is False
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_zgloszen_sygnalizuje_mozliwe_uciecie_przy_filtrze_dat():
-    # limit=1 -> limit_stron=1 -> co najwyżej 100 pozycji pobranych. Jeśli
-    # dostaliśmy dokładnie 100, prawdopodobnie stanęliśmy na suficie stron,
-    # a nie dlatego, że zgłoszenia się skończyły — filtr dat mógł pominąć
-    # starsze pozycje, których nie zdążyliśmy pobrać.
-    respx.get(f"{BAZA}/submissions").mock(
+async def test_search_submissions_flags_a_possible_truncation_with_a_date_filter():
+    # limit=1 -> page_limit=1 -> at most 100 items fetched. If we got
+    # exactly 100, we probably hit the page ceiling, not because
+    # submissions ran out — the date filter may have missed older items
+    # we did not get to fetch.
+    respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -177,17 +177,17 @@ async def test_szukaj_zgloszen_sygnalizuje_mozliwe_uciecie_przy_filtrze_dat():
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await szukaj_zgloszen_impl(
-        klient, katalog, limit=1, zlozone_od="2020-01-01"
+    client, catalog = _setup()
+    result = await search_submissions_impl(
+        client, catalog, limit=1, submitted_from="2020-01-01"
     )
-    assert wynik["filtrowanie_dat_niepelne"] is True
-    await klient.aclose()
+    assert result["date_filtering_incomplete"] is True
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_zgloszen_wyciaga_tytul_i_autorow_z_ostatniej_publikacji():
-    respx.get(f"{BAZA}/submissions").mock(
+async def test_search_submissions_pulls_title_and_authors_from_the_latest_publication():
+    respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -198,10 +198,10 @@ async def test_szukaj_zgloszen_wyciaga_tytul_i_autorow_z_ostatniej_publikacji():
                         "status": 3,
                         "stageId": 4,
                         "publications": [
-                            {"title": {"en": "Wersja robocza"}},
+                            {"title": {"en": "Draft version"}},
                             {
-                                "title": {"pl": "Tytuł ostateczny"},
-                                "authorsStringShort": "Kowalski, J.",
+                                "title": {"pl": "Final title"},
+                                "authorsStringShort": "Smith, J.",
                             },
                         ],
                     }
@@ -209,172 +209,169 @@ async def test_szukaj_zgloszen_wyciaga_tytul_i_autorow_z_ostatniej_publikacji():
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await szukaj_zgloszen_impl(klient, katalog)
-    pozycja = wynik["zgloszenia"][0]
-    assert pozycja["tytul"] == "Tytuł ostateczny"
-    assert pozycja["autorzy"] == "Kowalski, J."
-    assert pozycja["status_nazwa"] == "opublikowane"
-    assert pozycja["etap_nazwa"] == "redakcja"
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await search_submissions_impl(client, catalog)
+    item = result["submissions"][0]
+    assert item["title"] == "Final title"
+    assert item["authors"] == "Smith, J."
+    assert item["status_name"] == "published"
+    assert item["stage_name"] == "editing"
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_zgloszen_bez_publikacji_nie_dodaje_tytulu():
-    # Defensywnie: brak `publications` w odpowiedzi nie może wywalić
-    # narzędzia — pola `tytul`/`autorzy` po prostu się nie pojawiają.
-    respx.get(f"{BAZA}/submissions").mock(
+async def test_search_submissions_without_publications_does_not_add_a_title():
+    # Defensively: a missing `publications` in the response must not
+    # crash the tool — the `title`/`authors` fields simply do not appear.
+    respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(
             200,
             json={"itemsMax": 1, "items": [{"id": 1, "status": 1}]},
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await szukaj_zgloszen_impl(klient, katalog)
-    pozycja = wynik["zgloszenia"][0]
-    assert "tytul" not in pozycja
-    assert "autorzy" not in pozycja
-    assert pozycja["status_nazwa"] == "w_toku"
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await search_submissions_impl(client, catalog)
+    item = result["submissions"][0]
+    assert "title" not in item
+    assert "authors" not in item
+    assert item["status_name"] == "queued"
+    await client.aclose()
 
 
-# --- lista_czasopism ------------------------------------------------------------
+# --- list_journals ------------------------------------------------------------
 
 
 @respx.mock
-async def test_lista_czasopism_zwraca_katalog():
-    respx.get(f"{BAZA}/contexts").mock(
+async def test_list_journals_returns_the_catalog():
+    respx.get(f"{BASE}/contexts").mock(
         return_value=httpx.Response(
             200,
             json={
                 "itemsMax": 1,
-                "items": [{"urlPath": "rocznik", "name": {"pl": "Rocznik"}}],
+                "items": [{"urlPath": "annual", "name": {"pl": "Rocznik"}}],
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await lista_czasopism_impl(klient, katalog)
-    assert wynik == {"czasopisma": [{"sciezka": "rocznik", "nazwa": "Rocznik"}]}
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await list_journals_impl(client, catalog)
+    assert result == {"journals": [{"path": "annual", "name": "Rocznik"}]}
+    await client.aclose()
 
 
-# --- kim_jestem -----------------------------------------------------------------
+# --- whoami -----------------------------------------------------------------
 
 
 @respx.mock
-async def test_kim_jestem_zwraca_uwierzytelniony_gdy_sonda_przechodzi():
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+async def test_whoami_returns_authenticated_when_the_probe_passes():
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    wynik = await kim_jestem_impl(klient, katalog)
-    assert wynik["uwierzytelniony"] is True
-    assert wynik["tozsamosc"] is None
-    assert trasa.calls.last.request.url.params["count"] == "1"
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await whoami_impl(client, catalog)
+    assert result["authenticated"] is True
+    assert result["identity"] is None
+    assert route.calls.last.request.url.params["count"] == "1"
+    await client.aclose()
 
 
 @respx.mock
-async def test_kim_jestem_zwraca_false_gdy_token_nieprawidlowy():
-    respx.get(f"{BAZA}/submissions").mock(
-        return_value=httpx.Response(401, json={"error": "Brak uprawnień."})
+async def test_whoami_returns_false_when_the_token_is_invalid():
+    respx.get(f"{BASE}/submissions").mock(
+        return_value=httpx.Response(401, json={"error": "Access denied."})
     )
-    klient, katalog = _zestaw()
-    wynik = await kim_jestem_impl(klient, katalog)
-    assert wynik["uwierzytelniony"] is False
-    assert wynik["tozsamosc"] is None
-    # Regresja (grupa E, recenzja): `kim_jestem` gubił `str(exc)` — to
-    # narzędzie ma DIAGNOZOWAĆ, więc treść wyjątku musi trafić do `uwaga`.
-    assert "Brak uprawnień." in wynik["uwaga"]
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await whoami_impl(client, catalog)
+    assert result["authenticated"] is False
+    assert result["identity"] is None
+    # Regression (group E, review): `whoami` used to lose `str(exc)` —
+    # this tool is meant to DIAGNOSE, so the exception's message must
+    # reach `note`.
+    assert "Access denied." in result["note"]
+    await client.aclose()
 
 
 @respx.mock
-async def test_kim_jestem_dla_sesji_zwraca_tozsamosc_z_pkp_current_user():
-    """W7 (recenzja): `kim_jestem` dawniej zgłaszał "niezaimplementowane"
-    dla ścieżki sesyjnej, mimo że `SessionAuth` już zna tożsamość
-    zalogowanego użytkownika (`pkp.currentUser`, zapamiętana z `zaloguj()`).
-    Sonda (`GET /submissions?count=1`) przechodzi przez PRAWDZIWY
-    `SessionAuth.async_auth_flow` — wstępnie "zalogowany" (csrf ustawiony
-    z góry), więc nie próbuje prawdziwej sekwencji logowania.
+async def test_whoami_for_a_session_returns_identity_from_pkp_current_user():
+    """W7 (review): `whoami` used to report "not implemented" for the
+    session path, even though `SessionAuth` already knows the logged-in
+    user's identity (`pkp.currentUser`, remembered from `login()`). The
+    probe (`GET /submissions?count=1`) goes through the REAL
+    `SessionAuth.async_auth_flow` — pre-"logged in" (csrf set up front),
+    so it does not attempt a real login sequence.
 
-    BLOKADA scalenia, Runda 2 recenzji W7: `pkp.currentUser` SUROWY niesie
-    `csrfToken` — żywy token CSRF sesji, tym samym, którym `SessionAuth`
-    autoryzuje zapisy — więc atrapa tożsamości niżej ZAWIERA go (jak
-    prawdziwy OJS), a asercja przez PEŁNĄ równość (jak D8) dowodzi, że
-    `kim_jestem` go przycina razem z każdym innym polem spoza
-    `pola.POLA_TOZSAMOSCI`.
+    MERGE BLOCKER, Round 2 of the W7 review: the RAW `pkp.currentUser`
+    carries `csrfToken` — a live session CSRF token, the same one
+    `SessionAuth` uses to authorize writes — so the identity stub below
+    DELIBERATELY INCLUDES it (like real OJS), and asserting FULL
+    equality (like D8) proves that `whoami` trims it together with every
+    other field outside `fields.IDENTITY_FIELDS`.
     """
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    cfg = Config(
-        base_url="https://x.edu", journal="rocznik", username="u", password="p"
-    )
+    cfg = Config(base_url="https://x.edu", journal="annual", username="u", password="p")
     auth = SessionAuth(cfg)
-    auth._csrf = "TOKEN-SESJI"
-    auth._uzytkownik = {
+    auth._csrf = "SESSION-TOKEN"
+    auth._user = {
         "id": 42,
-        "username": "redaktor",
-        "fullName": "Redaktor Testowy",
+        "username": "editor",
+        "fullName": "Test Editor",
         "roles": [16, 65536],
-        "role_nazwy": ["menedżer czasopisma", "autor"],
-        # SEKRET — nie może przeciekać do modelu (patrz docstring testu).
-        "csrfToken": "TOKEN-SESJI",
+        "role_names": ["journal manager", "author"],
+        # SECRET — must not leak to the model (see the test's docstring).
+        "csrfToken": "SESSION-TOKEN",
     }
-    klient = OjsClient(cfg, auth)
-    klient.sciezka_auth = "sesja"
-    katalog = Katalog(klient, cfg)
+    client = OjsClient(cfg, auth)
+    client.auth_mode = "session"
+    catalog = Catalog(client, cfg)
 
-    wynik = await kim_jestem_impl(klient, katalog)
+    result = await whoami_impl(client, catalog)
 
-    assert trasa.called
-    assert wynik["uwierzytelniony"] is True
-    assert wynik["tozsamosc"] == {
+    assert route.called
+    assert result["authenticated"] is True
+    assert result["identity"] == {
         "id": 42,
-        "username": "redaktor",
-        "fullName": "Redaktor Testowy",
+        "username": "editor",
+        "fullName": "Test Editor",
         "roles": [16, 65536],
-        "role_nazwy": ["menedżer czasopisma", "autor"],
+        "role_names": ["journal manager", "author"],
     }
-    assert "csrfToken" not in wynik["tozsamosc"]
-    await klient.aclose()
+    assert "csrfToken" not in result["identity"]
+    await client.aclose()
 
 
 @respx.mock
-async def test_kim_jestem_dla_sesji_bez_wczesniejszego_logowania_zwraca_none():
-    """Zanim COKOLWIEK wymusi logowanie (sonda w `kim_jestem_impl` sama to
-    robi), `SessionAuth.uzytkownik` jest `None` — narzędzie ma to zwrócić,
-    nie wywalić się.
+async def test_whoami_for_a_session_without_a_prior_login_returns_none():
+    """Before ANYTHING forces a login (the probe in `whoami_impl` does
+    that itself), `SessionAuth.user` is `None` — the tool must return
+    that, not crash.
     """
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    cfg = Config(
-        base_url="https://x.edu", journal="rocznik", username="u", password="p"
-    )
+    cfg = Config(base_url="https://x.edu", journal="annual", username="u", password="p")
     auth = SessionAuth(cfg)
-    # `_csrf` wstępnie ustawiony — jak wyżej, żeby uniknąć realnej sekwencji
-    # logowania, której ten test nie mockuje.
-    auth._csrf = "TOKEN-SESJI"
-    klient = OjsClient(cfg, auth)
-    klient.sciezka_auth = "sesja"
-    katalog = Katalog(klient, cfg)
+    # `_csrf` pre-set — as above, to avoid the real login sequence this
+    # test does not mock.
+    auth._csrf = "SESSION-TOKEN"
+    client = OjsClient(cfg, auth)
+    client.auth_mode = "session"
+    catalog = Catalog(client, cfg)
 
-    wynik = await kim_jestem_impl(klient, katalog)
+    result = await whoami_impl(client, catalog)
 
-    assert trasa.called
-    assert wynik["uwierzytelniony"] is True
-    assert wynik["tozsamosc"] is None
-    await klient.aclose()
+    assert route.called
+    assert result["authenticated"] is True
+    assert result["identity"] is None
+    await client.aclose()
 
 
-# --- pobierz_zgloszenie ----------------------------------------------------------
+# --- get_submission ----------------------------------------------------------
 
 
 @respx.mock
-async def test_pobierz_zgloszenie_woła_wlasciwy_endpoint_i_przycina_publikacje():
-    respx.get(f"{BAZA}/submissions/42").mock(
+async def test_get_submission_calls_the_right_endpoint_and_trims_publications():
+    respx.get(f"{BASE}/submissions/42").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -383,29 +380,29 @@ async def test_pobierz_zgloszenie_woła_wlasciwy_endpoint_i_przycina_publikacje(
                 "stageId": 4,
                 "currentPublicationId": 100,
                 "publications": [
-                    {"id": 100, "title": {"pl": "Tytuł"}, "sekret": "wewnetrzne"}
+                    {"id": 100, "title": {"pl": "Tytuł"}, "secret": "internal"}
                 ],
                 "reviewRounds": [{"id": 1}],
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await pobierz_zgloszenie_impl(klient, katalog, zgloszenie=42)
-    assert wynik["id"] == 42
-    assert wynik["currentPublicationId"] == 100
-    assert wynik["publications"] == [{"id": 100, "title": {"pl": "Tytuł"}}]
-    assert wynik["status_nazwa"] == "opublikowane"
-    assert wynik["etap_nazwa"] == "redakcja"
-    assert "reviewRounds" not in wynik
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await get_submission_impl(client, catalog, submission=42)
+    assert result["id"] == 42
+    assert result["currentPublicationId"] == 100
+    assert result["publications"] == [{"id": 100, "title": {"pl": "Tytuł"}}]
+    assert result["status_name"] == "published"
+    assert result["stage_name"] == "editing"
+    assert "reviewRounds" not in result
+    await client.aclose()
 
 
-# --- pobierz_publikacje -----------------------------------------------------------
+# --- get_publication -----------------------------------------------------------
 
 
 @respx.mock
-async def test_pobierz_publikacje_zwraca_szczegoly_pominiete_na_liscie():
-    trasa = respx.get(f"{BAZA}/submissions/42/publications/100").mock(
+async def test_get_publication_returns_details_omitted_from_the_list():
+    route = respx.get(f"{BASE}/submissions/42/publications/100").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -413,7 +410,7 @@ async def test_pobierz_publikacje_zwraca_szczegoly_pominiete_na_liscie():
                 "submissionId": 42,
                 "status": 3,
                 "abstract": {"pl": "Streszczenie."},
-                "keywords": {"pl": ["słowo1", "słowo2"]},
+                "keywords": {"pl": ["word1", "word2"]},
                 "doiId": 9,
                 "pages": "12-20",
                 "articleNumber": "e12345",
@@ -422,65 +419,63 @@ async def test_pobierz_publikacje_zwraca_szczegoly_pominiete_na_liscie():
                         "id": 1,
                         "fullName": "Jan Kowalski",
                         "email": "jan@example.edu",
-                        "orcidAccessToken": "sekret-oauth",
+                        "orcidAccessToken": "oauth-secret",
                     }
                 ],
                 "galleys": [
                     {
                         "id": 5,
                         "label": "PDF",
-                        "urlPublished": "https://x.edu/rocznik/article/view/1/5",
+                        "urlPublished": "https://x.edu/annual/article/view/1/5",
                         "seq": 1,
                         "file": {
                             "id": 50,
                             "mimetype": "application/pdf",
-                            "url": "https://x.edu/rocznik/article/download/1/5",
-                            "path": "wewnetrzna/sciezka/na/dysku",
+                            "url": "https://x.edu/annual/article/download/1/5",
+                            "path": "internal/disk/path",
                         },
-                        "wewnetrzne_pole_ui": True,
+                        "internal_ui_field": True,
                     }
                 ],
-                "cos_wiecej": 1,
+                "something_else": 1,
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await pobierz_publikacje_impl(
-        klient, katalog, zgloszenie=42, publikacja=100
-    )
-    assert trasa.called
-    assert wynik["id"] == 100
-    assert wynik["abstract"] == {"pl": "Streszczenie."}
-    assert wynik["keywords"] == {"pl": ["słowo1", "słowo2"]}
-    assert wynik["doiId"] == 9
-    assert wynik["pages"] == "12-20"
-    assert wynik["articleNumber"] == "e12345"
-    assert wynik["authors"] == [
+    client, catalog = _setup()
+    result = await get_publication_impl(client, catalog, submission=42, publication=100)
+    assert route.called
+    assert result["id"] == 100
+    assert result["abstract"] == {"pl": "Streszczenie."}
+    assert result["keywords"] == {"pl": ["word1", "word2"]}
+    assert result["doiId"] == 9
+    assert result["pages"] == "12-20"
+    assert result["articleNumber"] == "e12345"
+    assert result["authors"] == [
         {"id": 1, "fullName": "Jan Kowalski", "email": "jan@example.edu"}
     ]
-    assert wynik["galleys"] == [
+    assert result["galleys"] == [
         {
             "id": 5,
             "label": "PDF",
-            "urlPublished": "https://x.edu/rocznik/article/view/1/5",
+            "urlPublished": "https://x.edu/annual/article/view/1/5",
             "seq": 1,
             "file": {
                 "id": 50,
                 "mimetype": "application/pdf",
-                "url": "https://x.edu/rocznik/article/download/1/5",
+                "url": "https://x.edu/annual/article/download/1/5",
             },
         }
     ]
-    assert "cos_wiecej" not in wynik
-    await klient.aclose()
+    assert "something_else" not in result
+    await client.aclose()
 
 
-# --- pliki_zgloszenia --------------------------------------------------------------
+# --- list_submission_files --------------------------------------------------------
 
 
 @respx.mock
-async def test_pliki_zgloszenia_woła_wlasciwy_endpoint():
-    respx.get(f"{BAZA}/submissions/42/files").mock(
+async def test_list_submission_files_calls_the_right_endpoint():
+    respx.get(f"{BASE}/submissions/42/files").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -489,21 +484,21 @@ async def test_pliki_zgloszenia_woła_wlasciwy_endpoint():
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await pliki_zgloszenia_impl(klient, katalog, zgloszenie=42)
-    assert wynik["znaleziono"] == 1
-    assert wynik["pliki"][0]["id"] == 1
+    client, catalog = _setup()
+    result = await list_submission_files_impl(client, catalog, submission=42)
+    assert result["found"] == 1
+    assert result["files"][0]["id"] == 1
     # fileStage=2 == SUBMISSION_FILE_SUBMISSION (SubmissionFile.php:29).
-    assert wynik["pliki"][0]["etap_pliku_nazwa"] == "zgloszenie"
-    await klient.aclose()
+    assert result["files"][0]["file_stage_name"] == "submission"
+    await client.aclose()
 
 
-# --- recenzje_zgloszenia -----------------------------------------------------------
+# --- get_submission_reviews -----------------------------------------------------
 
 
 @respx.mock
-async def test_recenzje_zgloszenia_wyciaga_pola_z_pelnego_zgloszenia():
-    respx.get(f"{BAZA}/submissions/42").mock(
+async def test_get_submission_reviews_pulls_fields_from_the_full_submission():
+    respx.get(f"{BASE}/submissions/42").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -515,161 +510,162 @@ async def test_recenzje_zgloszenia_wyciaga_pola_z_pelnego_zgloszenia():
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await recenzje_zgloszenia_impl(klient, katalog, zgloszenie=42)
-    assert wynik["rundy_recenzji"] == [{"id": 1, "round": 1, "stageId": 3, "status": 2}]
-    assert wynik["przypisania_recenzji"] == [
+    client, catalog = _setup()
+    result = await get_submission_reviews_impl(client, catalog, submission=42)
+    assert result["review_rounds"] == [{"id": 1, "round": 1, "stageId": 3, "status": 2}]
+    assert result["review_assignments"] == [
         {"id": 5, "reviewerId": 9, "status": 4, "declined": False}
     ]
-    await klient.aclose()
+    await client.aclose()
 
 
-# --- lista_numerow -------------------------------------------------------------------
+# --- list_issues -------------------------------------------------------------------
 
 
 @respx.mock
-async def test_lista_numerow_przekazuje_parametry():
-    trasa = respx.get(f"{BAZA}/issues").mock(
+async def test_list_issues_passes_the_parameters():
+    route = respx.get(f"{BASE}/issues").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    await lista_numerow_impl(klient, katalog, tylko_opublikowane=True, fraza="rok 2026")
-    zapytanie = trasa.calls.last.request.url.params
-    assert zapytanie["isPublished"] == "1"
-    assert zapytanie["searchPhrase"] == "rok 2026"
-    # OJS ignoruje orderDirection dla /issues (Collector.php ustala kierunek
-    # sam) — narzędzie świadomie go nie wysyła.
-    assert "orderDirection" not in zapytanie
-    await klient.aclose()
+    client, catalog = _setup()
+    await list_issues_impl(client, catalog, published_only=True, phrase="year 2026")
+    query = route.calls.last.request.url.params
+    assert query["isPublished"] == "1"
+    assert query["searchPhrase"] == "year 2026"
+    # OJS ignores orderDirection for /issues (Collector.php decides the
+    # direction itself) — the tool deliberately does not send it.
+    assert "orderDirection" not in query
+    await client.aclose()
 
 
 @respx.mock
-async def test_lista_numerow_odrzuca_nieznana_wartosc_sortowania():
-    klient, katalog = _zestaw()
+async def test_list_issues_rejects_an_unknown_sort_value():
+    client, catalog = _setup()
     with pytest.raises(ValueError) as exc:
-        await lista_numerow_impl(klient, katalog, sortuj="dateSubmitted")
+        await list_issues_impl(client, catalog, sort_by="dateSubmitted")
     assert "datePublished" in str(exc.value)
-    await klient.aclose()
+    await client.aclose()
 
 
-# --- biezacy_numer -------------------------------------------------------------------
+# --- get_current_issue -------------------------------------------------------------
 
 
 @respx.mock
-async def test_biezacy_numer_zwraca_numer_gdy_istnieje():
-    respx.get(f"{BAZA}/issues/current").mock(
+async def test_get_current_issue_returns_the_issue_when_it_exists():
+    respx.get(f"{BASE}/issues/current").mock(
         return_value=httpx.Response(
             200, json={"id": 7, "volume": 1, "number": 2, "year": 2026, "hidden": True}
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await biezacy_numer_impl(klient, katalog)
-    assert wynik["numer"]["id"] == 7
-    assert "hidden" not in wynik["numer"]
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await get_current_issue_impl(client, catalog)
+    assert result["issue"]["id"] == 7
+    assert "hidden" not in result["issue"]
+    await client.aclose()
 
 
 @respx.mock
-async def test_biezacy_numer_zwraca_none_gdy_404_z_trescia_json():
-    # 404 Z treścią JSON = czasopismo istnieje, ale nie ma numeru bieżącego.
-    respx.get(f"{BAZA}/issues/current").mock(
-        return_value=httpx.Response(404, json={"error": "Brak numeru bieżącego."})
+async def test_get_current_issue_returns_none_on_a_404_with_json_content():
+    # A 404 WITH JSON content = the journal exists, but has no current issue.
+    respx.get(f"{BASE}/issues/current").mock(
+        return_value=httpx.Response(404, json={"error": "No current issue."})
     )
-    klient, katalog = _zestaw()
-    wynik = await biezacy_numer_impl(klient, katalog)
-    assert wynik == {"czasopismo": "rocznik", "numer": None}
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await get_current_issue_impl(client, catalog)
+    assert result == {"journal": "annual", "issue": None}
+    await client.aclose()
 
 
 @respx.mock
-async def test_biezacy_numer_404_bez_json_to_blad_nie_brak_numeru():
-    # 404 BEZ treści JSON (strona HTML z routingu OJS) = nieznane czasopismo
-    # — literówka w OJS_JOURNAL nie może wyglądać jak poprawne "brak numeru".
-    respx.get(f"{BAZA}/issues/current").mock(
+async def test_get_current_issue_404_without_json_is_an_error_not_a_missing_issue():
+    # A 404 WITHOUT JSON content (an HTML page from OJS routing) = an
+    # unknown journal — a typo in OJS_JOURNAL must not look like a valid
+    # "no current issue".
+    respx.get(f"{BASE}/issues/current").mock(
         return_value=httpx.Response(404, html="<html>Not Found</html>")
     )
-    klient, katalog = _zestaw()
-    with pytest.raises(BladOjs):
-        await biezacy_numer_impl(klient, katalog)
-    await klient.aclose()
+    client, catalog = _setup()
+    with pytest.raises(OjsError):
+        await get_current_issue_impl(client, catalog)
+    await client.aclose()
 
 
-# --- pobierz_numer -------------------------------------------------------------------
+# --- get_issue -------------------------------------------------------------------
 
 
 @respx.mock
-async def test_pobierz_numer_woła_wlasciwy_endpoint():
-    trasa = respx.get(f"{BAZA}/issues/7").mock(
+async def test_get_issue_calls_the_right_endpoint():
+    route = respx.get(f"{BASE}/issues/7").mock(
         return_value=httpx.Response(200, json={"id": 7, "volume": 1})
     )
-    klient, katalog = _zestaw()
-    wynik = await pobierz_numer_impl(klient, katalog, numer=7)
-    assert trasa.called
-    assert wynik["id"] == 7
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await get_issue_impl(client, catalog, issue=7)
+    assert route.called
+    assert result["id"] == 7
+    await client.aclose()
 
 
-# --- lista_sekcji --------------------------------------------------------------------
+# --- list_sections --------------------------------------------------------------------
 
 
 @respx.mock
-async def test_lista_sekcji_filtruje_aktywne():
-    trasa = respx.get(f"{BAZA}/sections").mock(
+async def test_list_sections_filters_active():
+    route = respx.get(f"{BASE}/sections").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    await lista_sekcji_impl(klient, katalog, tylko_aktywne=True)
-    assert trasa.calls.last.request.url.params["isInactive"] == "0"
-    await klient.aclose()
+    client, catalog = _setup()
+    await list_sections_impl(client, catalog, active_only=True)
+    assert route.calls.last.request.url.params["isInactive"] == "0"
+    await client.aclose()
 
 
-# --- szukaj_uzytkownikow ------------------------------------------------------
+# --- search_users ------------------------------------------------------
 
 
 @respx.mock
-async def test_szukaj_uzytkownikow_tlumaczy_role():
-    trasa = respx.get(f"{BAZA}/users").mock(
+async def test_search_users_translates_roles():
+    route = respx.get(f"{BASE}/users").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    await szukaj_uzytkownikow_impl(klient, katalog, rola=["recenzent"])
-    zapytanie = trasa.calls.last.request.url.params
-    assert zapytanie["roleIds"] == "4096"
-    assert zapytanie["status"] == "active"
-    await klient.aclose()
+    client, catalog = _setup()
+    await search_users_impl(client, catalog, role=["reviewer"])
+    query = route.calls.last.request.url.params
+    assert query["roleIds"] == "4096"
+    assert query["status"] == "active"
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_uzytkownikow_rola_uzywa_nazw_bez_diakrytykow():
-    trasa = respx.get(f"{BAZA}/users").mock(
+async def test_search_users_role_uses_accent_free_names():
+    route = respx.get(f"{BASE}/users").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    await szukaj_uzytkownikow_impl(klient, katalog, rola=["redaktor_dzialu"])
-    assert trasa.calls.last.request.url.params["roleIds"] == "17"
-    await klient.aclose()
+    client, catalog = _setup()
+    await search_users_impl(client, catalog, role=["sub_editor"])
+    assert route.calls.last.request.url.params["roleIds"] == "17"
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_uzytkownikow_odrzuca_nieznany_status():
-    klient, katalog = _zestaw()
+async def test_search_users_rejects_an_unknown_status():
+    client, catalog = _setup()
     with pytest.raises(ValueError) as exc:
-        await szukaj_uzytkownikow_impl(klient, katalog, status="zly")
+        await search_users_impl(client, catalog, status="wrong")
     assert "active" in str(exc.value)
-    await klient.aclose()
+    await client.aclose()
 
 
 @respx.mock
-async def test_szukaj_uzytkownikow_pomija_sekrety_orcid():
-    """D8 (recenzja): `pola.py` gwarantuje w docstringu, że sekrety OAuth
-    ORCID (`orcidAccessToken` i pokrewne) nie trafiają do ŻADNEJ krotki pól
-    — ale dla `POLA_UZYTKOWNIKA` (użytej tu przez `szukaj_uzytkownikow`)
-    nic tego nie sprawdzało: dopisanie `orcidAccessToken` do tej krotki nie
-    wywalało żadnego testu (w przeciwieństwie do `POLA_AUTORA_PUBLIKACJI`,
-    chronionej asercją przez pełną równość w
-    `test_pobierz_publikacje_zwraca_szczegoly_pominiete_na_liscie`).
+async def test_search_users_omits_orcid_secrets():
+    """D8 (review): `fields.py`'s docstring guarantees that ORCID OAuth
+    secrets (`orcidAccessToken` and related) do not reach ANY field
+    tuple — but for `USER_FIELDS` (used here by `search_users`) nothing
+    checked that: adding `orcidAccessToken` to that tuple did not fail
+    any test (unlike `PUBLICATION_AUTHOR_FIELDS`, protected by a full-
+    equality assertion in
+    `test_get_publication_returns_details_omitted_from_the_list`).
     """
-    respx.get(f"{BAZA}/users").mock(
+    respx.get(f"{BASE}/users").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -679,27 +675,27 @@ async def test_szukaj_uzytkownikow_pomija_sekrety_orcid():
                         "id": 7,
                         "userName": "jnowak",
                         "email": "j@example.edu",
-                        "orcidAccessToken": "sekret-oauth",
-                        "orcidRefreshToken": "tez-sekret",
+                        "orcidAccessToken": "oauth-secret",
+                        "orcidRefreshToken": "also-secret",
                     }
                 ],
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await szukaj_uzytkownikow_impl(klient, katalog)
-    assert wynik["uzytkownicy"] == [
+    client, catalog = _setup()
+    result = await search_users_impl(client, catalog)
+    assert result["users"] == [
         {"id": 7, "userName": "jnowak", "email": "j@example.edu"}
     ]
-    await klient.aclose()
+    await client.aclose()
 
 
-# --- lista_recenzentow --------------------------------------------------------
+# --- list_reviewers --------------------------------------------------------
 
 
 @respx.mock
-async def test_lista_recenzentow_woła_wlasciwy_endpoint():
-    respx.get(f"{BAZA}/users/reviewers").mock(
+async def test_list_reviewers_calls_the_right_endpoint():
+    respx.get(f"{BASE}/users/reviewers").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -710,18 +706,19 @@ async def test_lista_recenzentow_woła_wlasciwy_endpoint():
                         "userName": "jkowalski",
                         "reviewsCompleted": 5,
                         "reviewerRating": 4,
-                        # D8 (recenzja): sekret OAuth ORCID w danych źródłowych
-                        # — musi zostać przycięty przez POLA_RECENZENTA, tak
-                        # jak wszędzie indziej (patrz pola.py, docstring modułu).
-                        "orcidAccessToken": "sekret-oauth",
+                        # D8 (review): an ORCID OAuth secret in the source
+                        # data — must be trimmed by REVIEWER_FIELDS, just
+                        # like everywhere else (see fields.py's module
+                        # docstring).
+                        "orcidAccessToken": "oauth-secret",
                     }
                 ],
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await lista_recenzentow_impl(klient, katalog)
-    assert wynik["recenzenci"] == [
+    client, catalog = _setup()
+    result = await list_reviewers_impl(client, catalog)
+    assert result["reviewers"] == [
         {
             "id": 3,
             "userName": "jkowalski",
@@ -729,15 +726,15 @@ async def test_lista_recenzentow_woła_wlasciwy_endpoint():
             "reviewerRating": 4,
         }
     ]
-    await klient.aclose()
+    await client.aclose()
 
 
-# --- statystyki_publikacji ----------------------------------------------------
+# --- publication_stats ----------------------------------------------------
 
 
 @respx.mock
-async def test_statystyki_publikacji_ranking_przycina_zagniezdzona_publikacje():
-    respx.get(f"{BAZA}/stats/publications").mock(
+async def test_publication_stats_ranking_trims_the_nested_publication():
+    respx.get(f"{BASE}/stats/publications").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -752,50 +749,50 @@ async def test_statystyki_publikacji_ranking_przycina_zagniezdzona_publikacje():
                         "publication": {
                             "id": 1,
                             "fullTitle": "Tytuł",
-                            "urlWorkflow": "https://x.edu/wewnetrzne",
+                            "urlWorkflow": "https://x.edu/internal",
                             "_href": "https://x.edu/api/...",
                         },
-                        "cos_wiecej": True,
+                        "something_else": True,
                     }
                 ],
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await statystyki_publikacji_impl(klient, katalog)
-    pozycja = wynik["publikacje"][0]
-    assert pozycja["abstractViews"] == 10
-    assert "cos_wiecej" not in pozycja
-    assert pozycja["publication"] == {"id": 1, "fullTitle": "Tytuł"}
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await publication_stats_impl(client, catalog)
+    item = result["publications"][0]
+    assert item["abstractViews"] == 10
+    assert "something_else" not in item
+    assert item["publication"] == {"id": 1, "fullTitle": "Tytuł"}
+    await client.aclose()
 
 
 @respx.mock
-async def test_statystyki_publikacji_oś_czasu():
-    trasa = respx.get(f"{BAZA}/stats/publications/timeline").mock(
+async def test_publication_stats_timeline():
+    route = respx.get(f"{BASE}/stats/publications/timeline").mock(
         return_value=httpx.Response(200, json=[{"date": "2026-01-01", "value": 3}])
     )
-    klient, katalog = _zestaw()
-    wynik = await statystyki_publikacji_impl(klient, katalog, os_czasu=True)
-    assert wynik["punkty"] == [{"date": "2026-01-01", "value": 3}]
-    assert trasa.calls.last.request.url.params["timelineInterval"] == "day"
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await publication_stats_impl(client, catalog, timeline=True)
+    assert result["points"] == [{"date": "2026-01-01", "value": 3}]
+    assert route.calls.last.request.url.params["timelineInterval"] == "day"
+    await client.aclose()
 
 
 @respx.mock
-async def test_statystyki_publikacji_odrzuca_zly_interwal():
-    klient, katalog = _zestaw()
+async def test_publication_stats_rejects_an_invalid_interval():
+    client, catalog = _setup()
     with pytest.raises(ValueError):
-        await statystyki_publikacji_impl(klient, katalog, os_czasu=True, interwal="rok")
-    await klient.aclose()
+        await publication_stats_impl(client, catalog, timeline=True, interval="year")
+    await client.aclose()
 
 
-# --- statystyki_redakcyjne ----------------------------------------------------
+# --- editorial_stats ----------------------------------------------------
 
 
 @respx.mock
-async def test_statystyki_redakcyjne_zwraca_liste_kluczy():
-    respx.get(f"{BAZA}/stats/editorial").mock(
+async def test_editorial_stats_returns_the_list_of_keys():
+    respx.get(f"{BASE}/stats/editorial").mock(
         return_value=httpx.Response(
             200,
             json=[
@@ -808,84 +805,84 @@ async def test_statystyki_redakcyjne_zwraca_liste_kluczy():
             ],
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await statystyki_redakcyjne_impl(klient, katalog)
-    assert wynik["statystyki"] == [
+    client, catalog = _setup()
+    result = await editorial_stats_impl(client, catalog)
+    assert result["stats"] == [
         {"key": "submissionsAccepted", "name": "Przyjęte", "value": 5}
     ]
-    await klient.aclose()
+    await client.aclose()
 
 
 @respx.mock
-async def test_statystyki_redakcyjne_podnosi_blad_przy_nieoczekiwanym_ksztalcie():
-    # Zamiast cicho zwrócić "brak statystyk" przy nieoczekiwanym kształcie
-    # odpowiedzi (np. {"error": ...} albo inna zmiana API), narzędzie ma
-    # zasygnalizować to jawnym błędem.
-    respx.get(f"{BAZA}/stats/editorial").mock(
-        return_value=httpx.Response(200, json={"nie": "lista"})
+async def test_editorial_stats_raises_an_error_on_an_unexpected_shape():
+    # Instead of silently returning "no statistics" for an unexpected
+    # response shape (e.g. {"error": ...} or another API change), the
+    # tool must signal it with an explicit error.
+    respx.get(f"{BASE}/stats/editorial").mock(
+        return_value=httpx.Response(200, json={"not": "a list"})
     )
-    klient, katalog = _zestaw()
-    with pytest.raises(BladOjs):
-        await statystyki_redakcyjne_impl(klient, katalog)
-    await klient.aclose()
+    client, catalog = _setup()
+    with pytest.raises(OjsError):
+        await editorial_stats_impl(client, catalog)
+    await client.aclose()
 
 
-# --- lista_doi ----------------------------------------------------------------
+# --- list_dois ----------------------------------------------------------------
 
 
 @respx.mock
-async def test_lista_doi_tlumaczy_status():
-    trasa = respx.get(f"{BAZA}/dois").mock(
+async def test_list_dois_translates_status():
+    route = respx.get(f"{BASE}/dois").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    klient, katalog = _zestaw()
-    await lista_doi_impl(klient, katalog, status=["zarejestrowane"])
-    assert trasa.calls.last.request.url.params["status"] == "3"
-    await klient.aclose()
+    client, catalog = _setup()
+    await list_dois_impl(client, catalog, status=["registered"])
+    assert route.calls.last.request.url.params["status"] == "3"
+    await client.aclose()
 
 
 @respx.mock
-async def test_lista_doi_odrzuca_nieznany_status():
-    klient, katalog = _zestaw()
+async def test_list_dois_rejects_an_unknown_status():
+    client, catalog = _setup()
     with pytest.raises(ValueError):
-        await lista_doi_impl(klient, katalog, status=["bzdura"])
-    await klient.aclose()
+        await list_dois_impl(client, catalog, status=["nonsense"])
+    await client.aclose()
 
 
-# --- zarejestruj_odczyt --------------------------------------------------------
+# --- register_read_tools --------------------------------------------------------
 
 
 @respx.mock
-async def test_zarejestruj_odczyt_rejestruje_wszystkie_narzedzia_i_dziala():
-    klient, katalog = _zestaw()
+async def test_register_read_tools_registers_all_tools_and_works():
+    client, catalog = _setup()
     mcp = _FakeMcp()
-    zarejestruj_odczyt(mcp, klient, katalog)
+    register_read_tools(mcp, client, catalog)
 
-    oczekiwane_narzedzia = {
-        "lista_czasopism",
-        "kim_jestem",
-        "szukaj_zgloszen",
-        "pobierz_zgloszenie",
-        "pobierz_publikacje",
-        "pliki_zgloszenia",
-        "recenzje_zgloszenia",
-        "lista_numerow",
-        "biezacy_numer",
-        "pobierz_numer",
-        "lista_sekcji",
-        "szukaj_uzytkownikow",
-        "lista_recenzentow",
-        "statystyki_publikacji",
-        "statystyki_redakcyjne",
-        "lista_doi",
+    expected_tools = {
+        "list_journals",
+        "whoami",
+        "search_submissions",
+        "get_submission",
+        "get_publication",
+        "list_submission_files",
+        "get_submission_reviews",
+        "list_issues",
+        "get_current_issue",
+        "get_issue",
+        "list_sections",
+        "search_users",
+        "list_reviewers",
+        "publication_stats",
+        "editorial_stats",
+        "list_dois",
     }
-    assert set(mcp.narzedzia) == oczekiwane_narzedzia
-    assert len(mcp.narzedzia) == 16
+    assert set(mcp.tools) == expected_tools
+    assert len(mcp.tools) == 16
 
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    wynik = await mcp.narzedzia["szukaj_zgloszen"](status=["opublikowane"])
-    assert trasa.calls.last.request.url.params["status"] == "3"
-    assert wynik["czasopismo"] == "rocznik"
-    await klient.aclose()
+    result = await mcp.tools["search_submissions"](status=["published"])
+    assert route.calls.last.request.url.params["status"] == "3"
+    assert result["journal"] == "annual"
+    await client.aclose()

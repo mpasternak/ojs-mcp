@@ -1,5 +1,5 @@
-# Wykluczone z paczki `.mcpb`. Runtime `uv` rozwiązuje zależności z dołączonego
-# pyproject.toml, więc wirtualne środowisko NIE może być wysyłane.
+# Excluded from the `.mcpb` package. The `uv` runtime resolves dependencies
+# from the bundled pyproject.toml, so the virtual environment must NOT be shipped.
 .git/
 .github/
 .venv/
@@ -20,6 +20,6 @@ site/
 .superpowers/
 .pre-commit-config.yaml
 *.mcpb
-# Poświadczenia lokalne — nigdy do paczki (recenzja: W8 załatało
-# `.gitignore`, ale nie tę listę osobną).
+# Local credentials — never into the package (review: W8 patched
+# `.gitignore`, but not this separate list).
 .env*

@@ -1,3 +1,6 @@
+> Historical design document in Polish, predating the project's rename of
+> its code and public API to English; kept as-is for the record.
+
 # ojs-mcp — projekt serwera MCP dla Open Journal Systems
 
 Data: 2026-09-08

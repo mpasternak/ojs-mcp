@@ -6,115 +6,117 @@ import pytest
 import respx
 
 from ojs_mcp.auth import TokenAuth
-from ojs_mcp.bledy import BladWejscia
-from ojs_mcp.catalog import Katalog
+from ojs_mcp.catalog import Catalog
 from ojs_mcp.client import OjsClient
 from ojs_mcp.config import Config
+from ojs_mcp.exceptions import InputError
 from ojs_mcp.tools_write import (
-    POLA_EDYTOWALNE,
-    cofnij_impl,
-    dodaj_decyzje_impl,
-    edytuj_metadane_impl,
-    opublikuj_impl,
-    utworz_ogloszenie_impl,
-    zarejestruj_zapis,
+    EDITABLE_FIELDS,
+    add_editorial_decision_impl,
+    create_announcement_impl,
+    edit_publication_metadata_impl,
+    publish_publication_impl,
+    register_write_tools,
+    unpublish_publication_impl,
 )
 
-BAZA = "https://x.edu/index.php/rocznik/api/v1"
+BASE = "https://x.edu/index.php/annual/api/v1"
 
 
-def _zestaw():
-    cfg = Config(base_url="https://x.edu", journal="rocznik", allow_writes=True)
-    klient = OjsClient(cfg, TokenAuth("tok"))
-    return klient, Katalog(klient, cfg)
+def _setup():
+    cfg = Config(base_url="https://x.edu", journal="annual", allow_writes=True)
+    client = OjsClient(cfg, TokenAuth("tok"))
+    return client, Catalog(client, cfg)
 
 
 class _FakeMcp:
-    """Atrapa serwera MCP zbierająca narzędzia zarejestrowane przez `.tool()`."""
+    """An MCP server stub collecting tools registered via `.tool()`."""
 
     def __init__(self) -> None:
-        self.narzedzia: dict[str, Any] = {}
+        self.tools: dict[str, Any] = {}
 
     def tool(self):
-        def rejestrator(fn):
-            self.narzedzia[fn.__name__] = fn
+        def register(fn):
+            self.tools[fn.__name__] = fn
             return fn
 
-        return rejestrator
+        return register
 
 
-# --- dodaj_decyzje_redakcyjna --------------------------------------------------
+# --- add_editorial_decision --------------------------------------------------
 
 
 @respx.mock
-async def test_decyzja_tlumaczona_na_liczbe():
-    trasa = respx.post(f"{BAZA}/submissions/7/decisions").mock(
+async def test_decision_is_translated_to_a_number():
+    route = respx.post(f"{BASE}/submissions/7/decisions").mock(
         return_value=httpx.Response(200, json={"id": 1, "decision": 6})
     )
-    klient, katalog = _zestaw()
-    await dodaj_decyzje_impl(klient, katalog, zgloszenie=7, decyzja="odrzuc")
-    cialo = trasa.calls.last.request.content.decode()
-    assert '"decision": 6' in cialo or '"decision":6' in cialo
-    # stageId wylicza serwer z typu decyzji — nie wolno go wysyłać.
-    assert "stageId" not in cialo
-    await klient.aclose()
+    client, catalog = _setup()
+    await add_editorial_decision_impl(client, catalog, submission=7, decision="decline")
+    body = route.calls.last.request.content.decode()
+    assert '"decision": 6' in body or '"decision":6' in body
+    # stageId is computed by the server from the decision type — must not be sent.
+    assert "stageId" not in body
+    await client.aclose()
 
 
 @respx.mock
-async def test_nieznana_decyzja_wymienia_dozwolone_i_nie_dotyka_sieci():
-    # D9, recenzja Rundy 1 Tasku 13: trasa jest ZAREJESTROWANA, żeby móc
-    # asertować wprost, że NIE została wywołana — sam brak `@respx.mock`
-    # dowodziłby braku żądania tylko pośrednio (przez to, że test by się
-    # wywalił/zawiesił, gdyby żądanie faktycznie poleciało).
-    trasa = respx.post(f"{BAZA}/submissions/7/decisions").mock(
+async def test_unknown_decision_lists_the_allowed_ones_and_does_not_touch_the_network():
+    # D9, Round 1 review of Task 13: the route is REGISTERED, so we can
+    # explicitly assert it was NOT called — the mere absence of
+    # `@respx.mock` would only prove the lack of a request indirectly
+    # (by the test failing/hanging if the request actually went out).
+    route = respx.post(f"{BASE}/submissions/7/decisions").mock(
         return_value=httpx.Response(200, json={"id": 1})
     )
-    klient, katalog = _zestaw()
-    with pytest.raises(BladWejscia) as exc:
-        await dodaj_decyzje_impl(klient, katalog, zgloszenie=7, decyzja="bzdura")
-    assert "akceptuj" in str(exc.value)
-    assert trasa.called is False
-    await klient.aclose()
+    client, catalog = _setup()
+    with pytest.raises(InputError) as exc:
+        await add_editorial_decision_impl(
+            client, catalog, submission=7, decision="nonsense"
+        )
+    assert "accept" in str(exc.value)
+    assert route.called is False
+    await client.aclose()
 
 
 @respx.mock
-async def test_decyzja_z_runda_recenzji_i_akcjami_w_ciele():
-    trasa = respx.post(f"{BAZA}/submissions/7/decisions").mock(
+async def test_decision_with_review_round_and_actions_in_the_body():
+    route = respx.post(f"{BASE}/submissions/7/decisions").mock(
         return_value=httpx.Response(200, json={"id": 1, "decision": 4})
     )
-    klient, katalog = _zestaw()
-    await dodaj_decyzje_impl(
-        klient,
-        katalog,
-        zgloszenie=7,
-        decyzja="wymagane_poprawki",
-        runda_recenzji=42,
-        akcje=[{"id": "sendEmail"}],
+    client, catalog = _setup()
+    await add_editorial_decision_impl(
+        client,
+        catalog,
+        submission=7,
+        decision="pending_revisions",
+        review_round=42,
+        actions=[{"id": "sendEmail"}],
     )
-    cialo = json.loads(trasa.calls.last.request.content)
-    assert cialo == {
+    body = json.loads(route.calls.last.request.content)
+    assert body == {
         "decision": 4,
         "reviewRoundId": 42,
         "actions": [{"id": "sendEmail"}],
     }
-    await klient.aclose()
+    await client.aclose()
 
 
 @respx.mock
-async def test_decyzja_bez_opcjonalnych_pol_nie_wysyla_ich():
-    trasa = respx.post(f"{BAZA}/submissions/7/decisions").mock(
+async def test_decision_without_optional_fields_does_not_send_them():
+    route = respx.post(f"{BASE}/submissions/7/decisions").mock(
         return_value=httpx.Response(200, json={"id": 1, "decision": 2})
     )
-    klient, katalog = _zestaw()
-    await dodaj_decyzje_impl(klient, katalog, zgloszenie=7, decyzja="akceptuj")
-    cialo = json.loads(trasa.calls.last.request.content)
-    assert cialo == {"decision": 2}
-    await klient.aclose()
+    client, catalog = _setup()
+    await add_editorial_decision_impl(client, catalog, submission=7, decision="accept")
+    body = json.loads(route.calls.last.request.content)
+    assert body == {"decision": 2}
+    await client.aclose()
 
 
 @respx.mock
-async def test_decyzja_tlumaczy_odpowiedz_na_nazwy():
-    respx.post(f"{BAZA}/submissions/7/decisions").mock(
+async def test_decision_translates_the_response_to_names():
+    respx.post(f"{BASE}/submissions/7/decisions").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -126,100 +128,108 @@ async def test_decyzja_tlumaczy_odpowiedz_na_nazwy():
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await dodaj_decyzje_impl(klient, katalog, zgloszenie=7, decyzja="odrzuc")
-    assert wynik["decyzja_nazwa"] == "odrzuc"
-    assert wynik["etap_nazwa"] == "redakcja"
-    # `_href` nie jest w POLA_DECYZJI — nie ma powodu pokazywać modelowi URL-a.
-    assert "_href" not in wynik
-    assert wynik["czasopismo"] == "rocznik"
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await add_editorial_decision_impl(
+        client, catalog, submission=7, decision="decline"
+    )
+    assert result["decision_name"] == "decline"
+    assert result["stage_name"] == "editing"
+    # `_href` is not in DECISION_FIELDS — no reason to show the model a URL.
+    assert "_href" not in result
+    assert result["journal"] == "annual"
+    await client.aclose()
 
 
-# --- edytuj_metadane_publikacji -------------------------------------------------
+# --- edit_publication_metadata -------------------------------------------------
 
 
 @respx.mock
-async def test_edycja_odrzuca_pole_spoza_listy_i_nie_dotyka_sieci():
-    trasa = respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+async def test_edit_rejects_a_field_outside_the_list_and_does_not_touch_the_network():
+    route = respx.put(f"{BASE}/submissions/1/publications/2").mock(
         return_value=httpx.Response(200, json={"id": 2})
     )
-    klient, katalog = _zestaw()
-    with pytest.raises(BladWejscia) as exc:
-        await edytuj_metadane_impl(
-            klient, katalog, zgloszenie=1, publikacja=2, pola={"id": 99}
+    client, catalog = _setup()
+    with pytest.raises(InputError) as exc:
+        await edit_publication_metadata_impl(
+            client, catalog, submission=1, publication=2, fields={"id": 99}
         )
     assert "id" in str(exc.value)
-    for nazwa in POLA_EDYTOWALNE:
-        assert nazwa in str(exc.value)
-    assert trasa.called is False
-    await klient.aclose()
+    for name in EDITABLE_FIELDS:
+        assert name in str(exc.value)
+    assert route.called is False
+    await client.aclose()
 
 
 @respx.mock
-async def test_edycja_odrzuca_pusty_slownik_pol_i_nie_dotyka_sieci():
-    # D1, recenzja Rundy 1 Tasku 13: `pola={}` przechodziłoby walidację
-    # kluczy (zbiór pusty nie zawiera nic spoza listy) i wysyłałoby
-    # bezsensowny `PUT` z pustym ciałem do produkcji.
-    trasa = respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+async def test_edit_rejects_an_empty_field_dict_and_does_not_touch_the_network():
+    # D1, Round 1 review of Task 13: `fields={}` would pass key validation
+    # (an empty set contains nothing outside the list) and would send a
+    # meaningless `PUT` with an empty body to production.
+    route = respx.put(f"{BASE}/submissions/1/publications/2").mock(
         return_value=httpx.Response(200, json={"id": 2})
     )
-    klient, katalog = _zestaw()
-    with pytest.raises(BladWejscia):
-        await edytuj_metadane_impl(klient, katalog, zgloszenie=1, publikacja=2, pola={})
-    assert trasa.called is False
-    await klient.aclose()
+    client, catalog = _setup()
+    with pytest.raises(InputError):
+        await edit_publication_metadata_impl(
+            client, catalog, submission=1, publication=2, fields={}
+        )
+    assert route.called is False
+    await client.aclose()
 
 
 @respx.mock
-async def test_edycja_odrzuca_pole_readonly_mimo_ze_wygladajace_na_metadane():
-    # `categoryIds`, `citationsRaw`, `locale` są w schemacie publication.json
-    # (pkp-lib, gałąź main) oznaczone `readOnly` — patrz uzasadnienie przy
-    # `POLA_EDYTOWALNE` w tools_write.py. Nie mogą przejść mimo że brzmią
-    # jak zwykłe metadane.
-    trasa = respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+async def test_edit_rejects_a_readonly_field_despite_looking_like_metadata():
+    # `categoryIds`, `citationsRaw`, `locale` are flagged `readOnly` in
+    # the publication.json schema (pkp-lib, main branch) — see the
+    # reasoning at `EDITABLE_FIELDS` in tools_write.py. They must not
+    # pass despite sounding like plain metadata.
+    route = respx.put(f"{BASE}/submissions/1/publications/2").mock(
         return_value=httpx.Response(200, json={"id": 2})
     )
-    klient, katalog = _zestaw()
-    for pole in ("categoryIds", "citationsRaw", "locale"):
-        with pytest.raises(BladWejscia) as exc:
-            await edytuj_metadane_impl(
-                klient, katalog, zgloszenie=1, publikacja=2, pola={pole: "x"}
+    client, catalog = _setup()
+    for field in ("categoryIds", "citationsRaw", "locale"):
+        with pytest.raises(InputError) as exc:
+            await edit_publication_metadata_impl(
+                client, catalog, submission=1, publication=2, fields={field: "x"}
             )
-        assert pole in str(exc.value)
-    assert trasa.called is False
-    await klient.aclose()
+        assert field in str(exc.value)
+    assert route.called is False
+    await client.aclose()
 
 
 @respx.mock
-async def test_edycja_pole_wielojezyczne_bez_znieksztalcenia():
-    trasa = respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+async def test_edit_multilingual_field_without_distortion():
+    route = respx.put(f"{BASE}/submissions/1/publications/2").mock(
         return_value=httpx.Response(200, json={"id": 2, "title": {"pl": "Tytuł"}})
     )
-    klient, katalog = _zestaw()
-    pola = {"title": {"pl": "Tytuł testowy", "en": "Test title"}}
-    await edytuj_metadane_impl(klient, katalog, zgloszenie=1, publikacja=2, pola=pola)
-    cialo = json.loads(trasa.calls.last.request.content)
-    assert cialo == pola
-    await klient.aclose()
+    client, catalog = _setup()
+    fields = {"title": {"pl": "Tytuł testowy", "en": "Test title"}}
+    await edit_publication_metadata_impl(
+        client, catalog, submission=1, publication=2, fields=fields
+    )
+    body = json.loads(route.calls.last.request.content)
+    assert body == fields
+    await client.aclose()
 
 
 @respx.mock
-async def test_edycja_wysyla_dokladnie_podane_pola():
-    trasa = respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+async def test_edit_sends_exactly_the_given_fields():
+    route = respx.put(f"{BASE}/submissions/1/publications/2").mock(
         return_value=httpx.Response(200, json={"id": 2})
     )
-    klient, katalog = _zestaw()
-    pola = {"sectionId": 3, "pages": "12-34", "copyrightYear": 2026}
-    await edytuj_metadane_impl(klient, katalog, zgloszenie=1, publikacja=2, pola=pola)
-    cialo = json.loads(trasa.calls.last.request.content)
-    assert cialo == pola
-    await klient.aclose()
+    client, catalog = _setup()
+    fields = {"sectionId": 3, "pages": "12-34", "copyrightYear": 2026}
+    await edit_publication_metadata_impl(
+        client, catalog, submission=1, publication=2, fields=fields
+    )
+    body = json.loads(route.calls.last.request.content)
+    assert body == fields
+    await client.aclose()
 
 
 @respx.mock
-async def test_edycja_przycina_odpowiedz_i_tlumaczy_status():
-    respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+async def test_edit_trims_the_response_and_translates_status():
+    respx.put(f"{BASE}/submissions/1/publications/2").mock(
         return_value=httpx.Response(
             200,
             json={
@@ -232,100 +242,107 @@ async def test_edycja_przycina_odpowiedz_i_tlumaczy_status():
             },
         )
     )
-    klient, katalog = _zestaw()
-    wynik = await edytuj_metadane_impl(
-        klient, katalog, zgloszenie=1, publikacja=2, pola={"sectionId": 1}
+    client, catalog = _setup()
+    result = await edit_publication_metadata_impl(
+        client, catalog, submission=1, publication=2, fields={"sectionId": 1}
     )
-    assert wynik["status_nazwa"] == "opublikowane"
-    assert "_href" not in wynik
-    assert wynik["authors"] == [
+    assert result["status_name"] == "published"
+    assert "_href" not in result
+    assert result["authors"] == [
         {"id": 5, "fullName": "Jan Kowalski", "email": "j@x.edu"}
     ]
-    assert wynik["czasopismo"] == "rocznik"
-    await klient.aclose()
+    assert result["journal"] == "annual"
+    await client.aclose()
 
 
-# --- opublikuj_publikacje / cofnij_publikacje -----------------------------------
+# --- publish_publication / unpublish_publication -----------------------------------
 
 
 @respx.mock
-async def test_opublikuj_wysyla_put_bez_ciala():
-    trasa = respx.put(f"{BAZA}/submissions/1/publications/2/publish").mock(
+async def test_publish_sends_a_put_without_a_body():
+    route = respx.put(f"{BASE}/submissions/1/publications/2/publish").mock(
         return_value=httpx.Response(200, json={"id": 2, "status": 3})
     )
-    klient, katalog = _zestaw()
-    wynik = await opublikuj_impl(klient, katalog, zgloszenie=1, publikacja=2)
-    zadanie = trasa.calls.last.request
-    assert zadanie.content == b""
-    assert "content-type" not in zadanie.headers
-    assert wynik["status_nazwa"] == "opublikowane"
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await publish_publication_impl(
+        client, catalog, submission=1, publication=2
+    )
+    request = route.calls.last.request
+    assert request.content == b""
+    assert "content-type" not in request.headers
+    assert result["status_name"] == "published"
+    await client.aclose()
 
 
 @respx.mock
-async def test_cofnij_wysyla_put_bez_ciala():
-    trasa = respx.put(f"{BAZA}/submissions/1/publications/2/unpublish").mock(
+async def test_unpublish_sends_a_put_without_a_body():
+    route = respx.put(f"{BASE}/submissions/1/publications/2/unpublish").mock(
         return_value=httpx.Response(200, json={"id": 2, "status": 1})
     )
-    klient, katalog = _zestaw()
-    wynik = await cofnij_impl(klient, katalog, zgloszenie=1, publikacja=2)
-    zadanie = trasa.calls.last.request
-    assert zadanie.content == b""
-    assert "content-type" not in zadanie.headers
-    assert wynik["status_nazwa"] == "w_toku"
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await unpublish_publication_impl(
+        client, catalog, submission=1, publication=2
+    )
+    request = route.calls.last.request
+    assert request.content == b""
+    assert "content-type" not in request.headers
+    assert result["status_name"] == "queued"
+    await client.aclose()
 
 
 @respx.mock
-async def test_opublikuj_bez_tresci_odpowiedzi_daje_jawne_potwierdzenie():
-    # D7, recenzja Rundy 1 Tasku 13: pusta odpowiedź OJS nie może zwracać
-    # modelowi samego `{"czasopismo": ...}` — nieodróżnialnego od pomyłki.
-    respx.put(f"{BAZA}/submissions/1/publications/2/publish").mock(
+async def test_publish_without_a_response_body_gives_an_explicit_confirmation():
+    # D7, Round 1 review of Task 13: an empty OJS response must not
+    # return the model just `{"journal": ...}` — indistinguishable from a
+    # bug in our trimming code.
+    respx.put(f"{BASE}/submissions/1/publications/2/publish").mock(
         return_value=httpx.Response(200, content=b"")
     )
-    klient, katalog = _zestaw()
-    wynik = await opublikuj_impl(klient, katalog, zgloszenie=1, publikacja=2)
-    assert wynik["wykonano"] is True
-    assert wynik["uwaga"]
-    assert wynik["czasopismo"] == "rocznik"
-    await klient.aclose()
+    client, catalog = _setup()
+    result = await publish_publication_impl(
+        client, catalog, submission=1, publication=2
+    )
+    assert result["completed"] is True
+    assert result["note"]
+    assert result["journal"] == "annual"
+    await client.aclose()
 
 
-# --- utworz_ogloszenie ----------------------------------------------------------
+# --- create_announcement ----------------------------------------------------------
 
 
 @respx.mock
-async def test_utworz_ogloszenie_wysyla_tytul_i_nigdy_nie_wysyla_maila():
-    # W1, recenzja Rundy 1 Tasku 13: `wyslij_email` usunięty z sygnatury —
-    # `sendEmail` idzie na sztywno jako `False` (klucz zostaje, bo OJS czyta
-    # go bez wartości domyślnej).
-    trasa = respx.post(f"{BAZA}/announcements").mock(
+async def test_create_announcement_sends_the_title_and_never_sends_an_email():
+    # W1, Round 1 review of Task 13: `send_email` removed from the
+    # signature — `sendEmail` is hardcoded as `False` (the key stays,
+    # because OJS reads it without a default value).
+    route = respx.post(f"{BASE}/announcements").mock(
         return_value=httpx.Response(200, json={"id": 3, "title": {"pl": "Nabór"}})
     )
-    klient, katalog = _zestaw()
-    await utworz_ogloszenie_impl(klient, katalog, tytul={"pl": "Nabór"})
-    cialo = json.loads(trasa.calls.last.request.content)
-    assert cialo == {"title": {"pl": "Nabór"}, "sendEmail": False}
-    await klient.aclose()
+    client, catalog = _setup()
+    await create_announcement_impl(client, catalog, title={"pl": "Nabór"})
+    body = json.loads(route.calls.last.request.content)
+    assert body == {"title": {"pl": "Nabór"}, "sendEmail": False}
+    await client.aclose()
 
 
 @respx.mock
-async def test_utworz_ogloszenie_z_opcjonalnymi_polami():
-    trasa = respx.post(f"{BAZA}/announcements").mock(
+async def test_create_announcement_with_optional_fields():
+    route = respx.post(f"{BASE}/announcements").mock(
         return_value=httpx.Response(200, json={"id": 3})
     )
-    klient, katalog = _zestaw()
-    await utworz_ogloszenie_impl(
-        klient,
-        katalog,
-        tytul={"pl": "Nabór"},
-        tresc={"pl": "Treść"},
-        streszczenie={"pl": "Skrót"},
-        typ_id=2,
-        data_wygasniecia="2026-12-31",
+    client, catalog = _setup()
+    await create_announcement_impl(
+        client,
+        catalog,
+        title={"pl": "Nabór"},
+        content={"pl": "Treść"},
+        summary={"pl": "Skrót"},
+        type_id=2,
+        expiry_date="2026-12-31",
     )
-    cialo = json.loads(trasa.calls.last.request.content)
-    assert cialo == {
+    body = json.loads(route.calls.last.request.content)
+    assert body == {
         "title": {"pl": "Nabór"},
         "sendEmail": False,
         "description": {"pl": "Treść"},
@@ -333,52 +350,50 @@ async def test_utworz_ogloszenie_z_opcjonalnymi_polami():
         "typeId": 2,
         "dateExpire": "2026-12-31",
     }
-    await klient.aclose()
+    await client.aclose()
 
 
 @respx.mock
-async def test_utworz_ogloszenie_wymaga_tytulu_i_nie_dotyka_sieci():
-    trasa = respx.post(f"{BAZA}/announcements").mock(
+async def test_create_announcement_requires_a_title_and_does_not_touch_the_network():
+    route = respx.post(f"{BASE}/announcements").mock(
         return_value=httpx.Response(200, json={"id": 3})
     )
-    klient, katalog = _zestaw()
-    with pytest.raises(BladWejscia):
-        await utworz_ogloszenie_impl(klient, katalog, tytul={})
-    assert trasa.called is False
-    await klient.aclose()
+    client, catalog = _setup()
+    with pytest.raises(InputError):
+        await create_announcement_impl(client, catalog, title={})
+    assert route.called is False
+    await client.aclose()
 
 
-# --- zarejestruj_zapis -----------------------------------------------------------
+# --- register_write_tools -----------------------------------------------------------
 
 
 @respx.mock
-async def test_zarejestruj_zapis_rejestruje_wszystkie_narzedzia_i_dziala():
-    # Rejestracja i jedno funkcjonalne wywołanie na atrapie — sprawdzenie
-    # OPISÓW widocznych dla modelu (ostrzeżenie, nazwy decyzji/pól) mieszka
-    # w `tests/test_server.py` na PRAWDZIWYM serwerze, nie tutaj (D11,
-    # recenzja Rundy 1 Tasku 13: atrapa czyta `fn.__doc__`, co nie jest
-    # gwarantowane tym samym, co `Tool.description`, który realnie widzi
-    # model).
-    klient, katalog = _zestaw()
+async def test_register_write_tools_registers_all_tools_and_works():
+    # Registration and one functional call on the stub — checking the
+    # DESCRIPTIONS visible to the model (the warning, decision/field
+    # names) lives in `tests/test_server.py` on a REAL server, not here
+    # (D11, Round 1 review of Task 13: the stub reads `fn.__doc__`, which
+    # is not guaranteed to be the same as `Tool.description`, which is
+    # what the model actually sees).
+    client, catalog = _setup()
     mcp = _FakeMcp()
-    zarejestruj_zapis(mcp, klient, katalog)
+    register_write_tools(mcp, client, catalog)
 
-    oczekiwane = {
-        "dodaj_decyzje_redakcyjna",
-        "edytuj_metadane_publikacji",
-        "opublikuj_publikacje",
-        "cofnij_publikacje",
-        "utworz_ogloszenie",
+    expected = {
+        "add_editorial_decision",
+        "edit_publication_metadata",
+        "publish_publication",
+        "unpublish_publication",
+        "create_announcement",
     }
-    assert set(mcp.narzedzia) == oczekiwane
-    assert len(mcp.narzedzia) == 5
+    assert set(mcp.tools) == expected
+    assert len(mcp.tools) == 5
 
-    trasa = respx.post(f"{BAZA}/submissions/1/decisions").mock(
+    route = respx.post(f"{BASE}/submissions/1/decisions").mock(
         return_value=httpx.Response(200, json={"id": 1, "decision": 2})
     )
-    wynik = await mcp.narzedzia["dodaj_decyzje_redakcyjna"](
-        zgloszenie=1, decyzja="akceptuj"
-    )
-    assert json.loads(trasa.calls.last.request.content) == {"decision": 2}
-    assert wynik["decyzja_nazwa"] == "akceptuj"
-    await klient.aclose()
+    result = await mcp.tools["add_editorial_decision"](submission=1, decision="accept")
+    assert json.loads(route.calls.last.request.content) == {"decision": 2}
+    assert result["decision_name"] == "accept"
+    await client.aclose()

@@ -1,52 +1,69 @@
 # ojs-mcp
 
-Serwer [MCP](https://modelcontextprotocol.io/) dający modelowi językowemu
-dostęp do uwierzytelnionego REST API instancji
-[Open Journal Systems](https://pkp.sfu.ca/ojs/) (OJS). Przez niego model
-może przeszukiwać zgłoszenia, czytać recenzje i numery, sprawdzać
-statystyki redakcyjne — a przy jawnie włączonym zapisie także podejmować
-decyzje redakcyjne, publikować i edytować metadane.
+An [MCP](https://modelcontextprotocol.io/) server that gives a language
+model access to the authenticated REST API of an
+[Open Journal Systems](https://pkp.sfu.ca/ojs/) (OJS) instance. Through
+it, the model can search submissions, read reviews and issues, and check
+editorial statistics — and, with writes explicitly enabled, also make
+editorial decisions, publish, and edit metadata.
 
-Ta dokumentacja jest dla administratora czasopisma, który zna OJS, ale
-niekoniecznie zna MCP.
+This documentation is written for a journal administrator who knows OJS
+but not necessarily MCP.
 
-**Zakres wersji: OJS 3.5 i 3.6.** Fakty o kształcie API opisane w tej
-dokumentacji zweryfikowano wobec gałęzi rozwojowej `main` projektów
-`pkp/pkp-lib` i `pkp/ojs` (odpowiadającej wydaniu 3.6). Na starszych
-wydaniach (3.5 i wcześniejszych) część endpointów opisanych w
-[Narzędziach](narzedzia.md) może nie istnieć — serwer i tak to wykryje
-(OJS odpowiada wtedy `404 api.404.endpointNotFound`), ale nie było to
-testowane na żywej instancji każdej z tych wersji. OJS 3.4 i starsze mają
-inną architekturę API i nie są objęte tym serwerem.
+## Status: Alpha — not yet verified against a live OJS instance
 
-## Zanim zaczniesz
+This project has not yet talked to a running OJS instance. All 280 tests
+run against stubbed HTTP responses (via `respx`); the facts about the API
+— endpoint shapes, status codes, field names, workflow-stage and
+decision constants — were read directly from the PKP source (`pkp-lib`,
+`pkp/ojs`) rather than observed against a live server. The behavior
+described in this documentation should be accurate, but it has not been
+exercised end-to-end against real OJS. Treat it accordingly, especially
+before pointing it at production data with `OJS_ALLOW_WRITES=1` — verify
+each tool's effect on a test journal first.
 
-REST API OJS wymaga dwóch rzeczy, których serwer nie potrafi obejść:
+**Version scope: OJS 3.5 and 3.6.** The API shape described in this
+documentation was verified against the `main` development branch of the
+`pkp/pkp-lib` and `pkp/ojs` projects (corresponding to the 3.6 release).
+On older releases (3.5 and earlier) some of the endpoints described in
+[Tools](tools.md) may not exist — the server detects this at runtime
+(OJS then responds with `404 api.404.endpointNotFound`), but this has not
+been tested against a live instance of every one of those versions. OJS
+3.4 and earlier have a different API architecture and are not covered by
+this server.
 
-1. **`api_key_secret` ustawiony w `config.inc.php`** po stronie instancji
-   OJS — bez niego token API w ogóle nie zadziała (OJS odpowie błędem
-   500 na każde żądanie z tokenem). To ustawienie musi wprowadzić
-   administrator serwera OJS, nie da się go włączyć z zewnątrz.
-2. **Konto z rolą w konkretnym czasopiśmie** — samo posiadanie konta w
-   OJS nie wystarczy. Prawie każdy endpoint API wymaga jakiejś roli
-   (menedżera, redaktora, recenzenta...); konto bez żadnej roli w danym
-   czasopiśmie dostanie odmowę (401) przy niemal każdym wywołaniu.
+## Before you start
 
-Bez tych dwóch warunków serwer się uruchomi, ale każde narzędzie sięgające
-do OJS zwróci błąd uwierzytelnienia. Szczegóły w
-[Uwierzytelnianiu](uwierzytelnianie.md).
+The OJS REST API requires two things the server cannot work around:
 
-## Gdzie zacząć
+1. **`api_key_secret` set in `config.inc.php`** on the OJS instance side —
+   without it, API tokens don't work at all (OJS responds with a 500
+   error to every request that carries a token). This setting must be
+   made by the OJS server administrator; it cannot be turned on from the
+   outside.
+2. **An account with a role in the specific journal** — merely having an
+   OJS account is not enough. Almost every API endpoint requires some
+   role (manager, editor, reviewer...); an account with no role in the
+   given journal gets denied (401) on almost every call.
 
-- [Instalacja](instalacja.md) — `uvx`, bundle MCPB albo instalacja z PyPI.
-- [Konfiguracja](konfiguracja.md) — komplet zmiennych środowiskowych.
-- [Uwierzytelnianie](uwierzytelnianie.md) — token API kontra login i
-  hasło, i dlaczego jedno z nich czasem nie zadziała.
-- [Narzędzia](narzedzia.md) — pełna lista narzędzi, zasobów i promptów
-  serwera.
-- [Hosting](hosting.md) — jak (i dlaczego ostrożnie) postawić serwer w
-  trybie sieciowym dla wielu użytkowników naraz.
+Without these two conditions the server will start, but every tool that
+reaches into OJS will return an authentication error. Details, including
+the login/password alternative and its limitations, are in
+[Authentication](authentication.md).
 
-## Licencja
+## Where to start
 
-MIT. Kod źródłowy: [github.com/mpasternak/ojs-mcp](https://github.com/mpasternak/ojs-mcp).
+- [Installation](installation.md) — `uvx`, the MCPB bundle, or installing
+  from PyPI.
+- [Configuration](configuration.md) — the full list of environment
+  variables.
+- [Authentication](authentication.md) — API token versus login and
+  password, and why one of them sometimes won't work.
+- [Tools](tools.md) — the full list of the server's tools, resources, and
+  prompts.
+- [Hosting](hosting.md) — how (and why carefully) to run the server in
+  network mode for multiple users at once.
+
+## License
+
+MIT. Source code: [github.com/mpasternak/ojs-mcp](https://github.com/mpasternak/ojs-mcp).

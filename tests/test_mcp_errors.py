@@ -1,13 +1,14 @@
-"""Testy `mcp_errors.z_czytelnym_bledem` na PRAWDZIWYM `MCPServer`.
+"""Tests for `mcp_errors.with_readable_error` on a REAL `MCPServer`.
 
-Atrapa `_FakeMcp` używana w `test_tools_read.py`/`test_tools_write.py` do
-testowania rejestracji tylko ZBIERA funkcje — nie odtwarza zachowania
-`mcp.server.mcpserver.tools.base.Tool.run()`, które w prawdziwym SDK
-zamienia KAŻDY wyjątek inny niż `ToolError`/`ResourceError`/`MCPError` na
-generyczny `Error executing tool <nazwa>` bez treści oryginału (patrz
-docstring modułu `mcp_errors.py` i raport Tasku 13). Stąd te testy budują
-prawdziwy `MCPServer` — inaczej nie wykryłyby regresji w samym mechanizmie,
-który naprawia `z_czytelnym_bledem`.
+The `_FakeMcp` stub used in `test_tools_read.py`/`test_tools_write.py`
+for testing registration only COLLECTS functions — it does not reproduce
+the behavior of `mcp.server.mcpserver.tools.base.Tool.run()`, which in
+the real SDK turns EVERY exception other than
+`ToolError`/`ResourceError`/`MCPError` into a generic
+`Error executing tool <name>` without the original's content (see the
+`mcp_errors.py` module docstring and the Task 13 report). Hence these
+tests build a real `MCPServer` — otherwise they would not catch a
+regression in the very mechanism `with_readable_error` fixes.
 """
 
 from __future__ import annotations
@@ -16,108 +17,114 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
-from ojs_mcp.bledy import BladOjs, BladWalidacji, BladWejscia, BladZapisWylaczony
-from ojs_mcp.config import BrakKonfiguracji
-from ojs_mcp.mcp_errors import jest_opakowana, z_czytelnym_bledem
+from ojs_mcp.config import MissingConfiguration
+from ojs_mcp.exceptions import (
+    InputError,
+    OjsError,
+    ValidationError,
+    WritesDisabledError,
+)
+from ojs_mcp.mcp_errors import is_wrapped, with_readable_error
 
 
 @pytest.mark.parametrize(
-    "wyjatek",
-    [BladOjs, BladWalidacji, BladWejscia, BladZapisWylaczony, BrakKonfiguracji],
+    "exception",
+    [OjsError, ValidationError, InputError, WritesDisabledError, MissingConfiguration],
 )
-async def test_bledy_domenowe_docieraja_do_modelu_z_trescia(wyjatek):
+async def test_domain_errors_reach_the_model_with_their_message(exception):
     mcp = MCPServer("test")
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def zawodne() -> dict:
-        """Narzędzie testowe podnoszące wyjątek domenowy."""
-        raise wyjatek("KOMUNIKAT PO POLSKU: dozwolone wartości to a, b, c.")
+    @with_readable_error
+    async def failing() -> dict:
+        """Test tool raising a domain exception."""
+        raise exception("A MESSAGE: allowed values are a, b, c.")
 
     with pytest.raises(ToolError) as exc:
-        await mcp.call_tool("zawodne", {})
-    assert "KOMUNIKAT PO POLSKU: dozwolone wartości to a, b, c." in str(exc.value)
+        await mcp.call_tool("failing", {})
+    assert "A MESSAGE: allowed values are a, b, c." in str(exc.value)
 
 
-@pytest.mark.parametrize("wyjatek", [ValueError, PermissionError])
-async def test_goly_wbudowany_wyjatek_zostaje_crashem(wyjatek):
-    """W3, recenzja Rundy 1 Tasku 13: `BLEDY_DOMENOWE` CELOWO nie zawiera
-    gołych `ValueError`/`PermissionError` — tylko ich WŁASNE podklasy
-    (`BladWejscia`, `BladZapisWylaczony`). Gdyby zawierało, przypadkowy
-    `ValueError`/`PermissionError` z usterki programistycznej trafiałby do
-    modelu jako rzekomo świadomy komunikat. Ten test dowodzi, że zawężenie
-    faktycznie zadziałało — nie tylko że nowe klasy są łapane (test wyżej),
-    ale że ich WBUDOWANE bazy naprawdę już NIE SĄ.
+@pytest.mark.parametrize("exception", [ValueError, PermissionError])
+async def test_a_bare_builtin_exception_becomes_a_crash(exception):
+    """W3, Round 1 review of Task 13: `DOMAIN_ERRORS` DELIBERATELY does
+    not contain bare `ValueError`/`PermissionError` — only their OWN
+    subclasses (`InputError`, `WritesDisabledError`). If it did, an
+    accidental `ValueError`/`PermissionError` from a programming defect
+    would reach the model as if it were a deliberate message. This test
+    proves the narrowing actually worked — not just that the new classes
+    are caught (test above), but that their BUILTIN bases really are NOT.
     """
     mcp = MCPServer("test")
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def zawodne() -> dict:
-        """Narzędzie testowe podnoszące goły wyjątek wbudowany."""
-        raise wyjatek("KOMUNIKAT PO POLSKU")
+    @with_readable_error
+    async def failing() -> dict:
+        """Test tool raising a bare builtin exception."""
+        raise exception("A MESSAGE")
 
     with pytest.raises(UnexpectedToolError) as exc:
-        await mcp.call_tool("zawodne", {})
-    assert "KOMUNIKAT PO POLSKU" not in str(exc.value)
+        await mcp.call_tool("failing", {})
+    assert "A MESSAGE" not in str(exc.value)
 
 
-async def test_bez_dekoratora_komunikat_by_zaginal():
-    """Kontrola: to samo narzędzie BEZ `z_czytelnym_bledem` gubi treść —
-    dowód, że dekorator faktycznie coś naprawia, nie duplikuje istniejące
-    zachowanie SDK."""
+async def test_without_the_decorator_the_message_would_be_lost():
+    """Control: the same tool WITHOUT `with_readable_error` loses the
+    content — proof that the decorator actually fixes something, rather
+    than duplicating existing SDK behavior."""
     mcp = MCPServer("test")
 
     @mcp.tool()
-    async def zawodne_bez_opakowania() -> dict:
-        """Narzędzie testowe bez dekoratora."""
-        raise BladWejscia("KOMUNIKAT PO POLSKU")
+    async def failing_unwrapped() -> dict:
+        """Test tool without the decorator."""
+        raise InputError("A MESSAGE")
 
     with pytest.raises(UnexpectedToolError) as exc:
-        await mcp.call_tool("zawodne_bez_opakowania", {})
-    assert "KOMUNIKAT PO POLSKU" not in str(exc.value)
+        await mcp.call_tool("failing_unwrapped", {})
+    assert "A MESSAGE" not in str(exc.value)
 
 
-async def test_niedomenowy_wyjatek_zostaje_crashem():
-    """`z_czytelnym_bledem` opakowuje TYLKO `BLEDY_DOMENOWE` — usterka
-    programistyczna (np. `KeyError` z błędu w kodzie) ma zostać prawdziwym
-    "crashem" SDK: generyczny komunikat dla modelu, pełny traceback w logu
-    serwera. Ukrywanie takich błędów byłoby regresją, nie naprawą."""
+async def test_a_non_domain_error_becomes_a_crash():
+    """`with_readable_error` wraps ONLY `DOMAIN_ERRORS` — a programming
+    defect (e.g. a `KeyError` from a bug in the code) is meant to become
+    a genuine SDK "crash": a generic message for the model, a full
+    traceback in the server log. Hiding such errors would be a
+    regression, not a fix."""
     mcp = MCPServer("test")
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def zawodne_inaczej() -> dict:
-        """Narzędzie testowe z nieoczekiwanym wyjątkiem."""
-        raise KeyError("nieoczekiwany-klucz")
+    @with_readable_error
+    async def failing_differently() -> dict:
+        """Test tool with an unexpected exception."""
+        raise KeyError("unexpected-key")
 
     with pytest.raises(UnexpectedToolError) as exc:
-        await mcp.call_tool("zawodne_inaczej", {})
-    assert "nieoczekiwany-klucz" not in str(exc.value)
+        await mcp.call_tool("failing_differently", {})
+    assert "unexpected-key" not in str(exc.value)
 
 
-async def test_dekorator_zachowuje_sygnature_docstring_i_dzialanie():
+async def test_the_decorator_preserves_signature_docstring_and_behavior():
     mcp = MCPServer("test")
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def z_parametrami(a: int, b: str = "x") -> dict:
-        """Docstring narzędzia testowego."""
+    @with_readable_error
+    async def with_params(a: int, b: str = "x") -> dict:
+        """Test tool docstring."""
         return {"a": a, "b": b}
 
-    (narzedzie,) = await mcp.list_tools()
-    assert narzedzie.name == "z_parametrami"
-    assert narzedzie.description == "Docstring narzędzia testowego."
-    assert set(narzedzie.input_schema["properties"]) == {"a", "b"}
+    (tool,) = await mcp.list_tools()
+    assert tool.name == "with_params"
+    assert tool.description == "Test tool docstring."
+    assert set(tool.input_schema["properties"]) == {"a", "b"}
 
-    wynik = await mcp.call_tool("z_parametrami", {"a": 1})
-    assert wynik.is_error is False
+    result = await mcp.call_tool("with_params", {"a": 1})
+    assert result.is_error is False
 
 
-def test_jest_opakowana_odroznia_opakowane_od_zwyklych():
-    async def zwykla() -> None:
+def test_is_wrapped_distinguishes_wrapped_from_plain():
+    async def plain() -> None:
         return None
 
-    opakowana = z_czytelnym_bledem(zwykla)
-    assert jest_opakowana(opakowana) is True
-    assert jest_opakowana(zwykla) is False
+    wrapped = with_readable_error(plain)
+    assert is_wrapped(wrapped) is True
+    assert is_wrapped(plain) is False

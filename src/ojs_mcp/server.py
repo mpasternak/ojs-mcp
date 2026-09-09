@@ -1,4 +1,4 @@
-"""Montaż serwera MCP i punkt wejścia CLI."""
+"""Assembling the MCP server and the CLI entry point."""
 
 from __future__ import annotations
 
@@ -10,69 +10,71 @@ import anyio
 from mcp.server.mcpserver import MCPServer
 
 from . import __version__
-from .auth import zbuduj_auth, zbuduj_auth_http
-from .bledy import BladUwierzytelnienia
-from .catalog import Katalog
+from .auth import build_auth, build_auth_http
+from .catalog import Catalog
 from .client import OjsClient
-from .config import BrakKonfiguracji, Config
-from .passthrough import zarejestruj_furtke
-from .prompts import zarejestruj_prompty
-from .resources import zarejestruj_zasoby
-from .tools_read import zarejestruj_odczyt
+from .config import Config, MissingConfiguration
+from .exceptions import AuthenticationError
+from .passthrough import register_gateway
+from .prompts import register_prompts
+from .resources import register_resources
+from .tools_read import register_read_tools
 
 logger = logging.getLogger(__name__)
 
 
-def zbuduj_serwer(config: Config) -> tuple[MCPServer, OjsClient]:
-    """Złóż serwer MCP wraz z klientem HTTP.
+def build_server(config: Config) -> tuple[MCPServer, OjsClient]:
+    """Assemble the MCP server together with the HTTP client.
 
-    Narzędzia zapisu są rejestrowane WYŁĄCZNIE przy ``allow_writes`` — brak
-    rejestracji oznacza, że model ich nie widzi i nie może ich zaproponować.
-    To mocniejsza gwarancja niż odmowa w czasie wywołania.
+    Write tools are registered EXCLUSIVELY when ``allow_writes`` is set —
+    not registering them means the model does not see them and cannot
+    propose them. That is a stronger guarantee than a call-time refusal.
 
-    Strategia uwierzytelniania zależy od transportu: w trybie ``http`` token
-    pochodzi wyłącznie z nagłówka bieżącego żądania (``zbuduj_auth_http``),
-    w pozostałych — z otoczenia procesu (``zbuduj_auth``). Patrz docstring
-    modułu ``auth`` po uzasadnienie tego rozdzielenia.
+    The authentication strategy depends on the transport: in ``http``
+    mode the token comes exclusively from the current request's header
+    (``build_auth_http``), otherwise — from the process environment
+    (``build_auth``). See the ``auth`` module docstring for the reasoning
+    behind this split.
     """
     mcp = MCPServer("ojs-mcp", version=__version__)
     if config.transport == "http":
-        auth = zbuduj_auth_http(config)
+        auth = build_auth_http(config)
     else:
-        auth = zbuduj_auth(config)
+        auth = build_auth(config)
     client = OjsClient(config, auth)
-    # W trybie http token zawsze pochodzi z nagłówka żądania, niezależnie od
-    # tego, czy OJS_API_TOKEN jest ustawione w otoczeniu procesu — inaczej
-    # `sciezka_auth` fałszywie wskazywałaby "sesja" i psuła komunikaty przy
-    # błędach 401/403 (patrz zastrzeżenie do Tasku 9).
-    client.sciezka_auth = (
-        "token" if config.transport == "http" or config.api_token else "sesja"
+    # In http mode the token always comes from the request header,
+    # regardless of whether OJS_API_TOKEN is set in the process
+    # environment — otherwise `auth_mode` would falsely say "session" and
+    # break the 401/403 error messages (see the caveat on Task 9).
+    client.auth_mode = (
+        "token" if config.transport == "http" or config.api_token else "session"
     )
-    katalog = Katalog(client, config)
+    catalog = Catalog(client, config)
 
-    zarejestruj_odczyt(mcp, client, katalog)
-    zarejestruj_furtke(mcp, client, katalog, config)
-    # Zasoby i prompty rejestrujemy ZAWSZE, niezależnie od `allow_writes` —
-    # nic nie modyfikują (patrz docstringi `resources.py`/`prompts.py`).
-    zarejestruj_zasoby(mcp, katalog)
-    zarejestruj_prompty(mcp)
+    register_read_tools(mcp, client, catalog)
+    register_gateway(mcp, client, catalog, config)
+    # Resources and prompts are registered ALWAYS, regardless of
+    # `allow_writes` — they modify nothing (see the `resources.py`/
+    # `prompts.py` docstrings).
+    register_resources(mcp, catalog)
+    register_prompts(mcp)
 
     if config.allow_writes:
-        from .tools_write import zarejestruj_zapis
+        from .tools_write import register_write_tools
 
-        zarejestruj_zapis(mcp, client, katalog)
+        register_write_tools(mcp, client, catalog)
         logger.warning(
-            "OJS_ALLOW_WRITES=1 — narzędzia modyfikujące dane czasopisma są aktywne."
+            "OJS_ALLOW_WRITES=1 — tools that modify journal data are active."
         )
 
     return mcp, client
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Punkt wejścia ``ojs-mcp``."""
+    """Entry point for ``ojs-mcp``."""
     parser = argparse.ArgumentParser(
         prog="ojs-mcp",
-        description="Serwer MCP dla REST API Open Journal Systems.",
+        description="MCP server for the Open Journal Systems REST API.",
     )
     parser.add_argument("--version", action="version", version=f"ojs-mcp {__version__}")
     parser.parse_args(argv)
@@ -81,48 +83,49 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         config = Config.from_env()
-    except BrakKonfiguracji as exc:
+    except MissingConfiguration as exc:
         print(str(exc), file=sys.stderr)
         return 2
 
     if config.transport == "http":
-        # Import lokalny i wyłącznie w tej gałęzi: moduł `http_transport`
-        # powstaje dopiero w Task 12. Tryb stdio (domyślny) musi działać
-        # bez niego.
-        from .http_transport import uruchom_http
+        # Local import, and only in this branch: the `http_transport`
+        # module only appears in Task 12. Stdio mode (the default) must
+        # work without it.
+        from .http_transport import run_http
 
-        return uruchom_http(config)
+        return run_http(config)
 
     try:
-        mcp, client = zbuduj_serwer(config)
-    except BladUwierzytelnienia as exc:
-        # W2 (recenzja): brak poświadczeń w trybie stdio jest DRUGĄ
-        # najczęstszą pomyłką konfiguracyjną (po `OJS_BASE_URL`) — a w
-        # bundlu MCPB pole tokenu jest opcjonalne, więc użytkownik, który
-        # zostawi je puste, dostawał tu surowy traceback w logu klienta
-        # zamiast czytelnego komunikatu. Ten sam kod wyjścia co przy
-        # `BrakKonfiguracji` — obie przyczyny są tej samej natury: serwer
-        # nie ma prawa zgadywać.
+        mcp, client = build_server(config)
+    except AuthenticationError as exc:
+        # W2 (review): missing credentials in stdio mode is the SECOND
+        # most common configuration mistake (after `OJS_BASE_URL`) — and
+        # in the MCPB bundle the token field is optional, so a user who
+        # leaves it blank got a raw traceback in the client's log here
+        # instead of a readable message. Same exit code as
+        # `MissingConfiguration` — both causes are of the same nature:
+        # the server has no right to guess.
         print(str(exc), file=sys.stderr)
         return 2
-    anyio.run(_uruchom_stdio_i_zamknij, mcp, client)
+    anyio.run(_run_stdio_and_close, mcp, client)
     return 0
 
 
-async def _uruchom_stdio_i_zamknij(mcp: MCPServer, client: OjsClient) -> None:
-    """Uruchom serwer w trybie stdio i zamknij klienta w TEJ SAMEJ pętli.
+async def _run_stdio_and_close(mcp: MCPServer, client: OjsClient) -> None:
+    """Run the server in stdio mode and close the client in the SAME event
+    loop.
 
-    Nie wolno zastąpić tego przez ``mcp.run()`` (synchroniczne, owija się
-    we własne ``anyio.run``) plus osobne ``asyncio.run(client.aclose())`` po
-    nim — httpx/httpcore trzymają połączenia keep-alive powiązane z pętlą
-    zdarzeń, w której powstały. Po zamknięciu tamtej pętli przez `mcp.run()`
-    próba zamknięcia transportu w NOWEJ pętli kończy się
-    ``RuntimeError: Event loop is closed`` (transport wywołuje wewnętrznie
-    ``call_soon`` na już nieistniejącej pętli) — i to dopiero po pierwszym
-    realnym żądaniu HTTP, bo puste połączenie nie ma czego zamykać. Gorzej:
-    ten `RuntimeError` z bloku zamykającego przykrywa prawdziwy wyjątek,
-    gdyby ``mcp.run()`` sam padł. Jedna wspólna pętla (`anyio.run` tutaj,
-    `run_stdio_async` w środku) eliminuje oba problemy.
+    Must not be replaced by ``mcp.run()`` (synchronous, wraps itself in
+    its own ``anyio.run()``) plus a separate ``asyncio.run(client.aclose())``
+    afterward — httpx/httpcore hold keep-alive connections tied to the
+    event loop they were created in. After that loop is closed by
+    `mcp.run()`, trying to close the transport in a NEW loop ends with
+    ``RuntimeError: Event loop is closed`` (the transport internally calls
+    ``call_soon`` on an already-gone loop) — and only after the first real
+    HTTP request, because an empty connection pool has nothing to close.
+    Worse: that `RuntimeError` from the closing block masks the real
+    exception, should ``mcp.run()`` itself have failed. One shared loop
+    (`anyio.run` here, `run_stdio_async` inside) eliminates both problems.
     """
     try:
         await mcp.run_stdio_async()
@@ -130,12 +133,11 @@ async def _uruchom_stdio_i_zamknij(mcp: MCPServer, client: OjsClient) -> None:
         try:
             await client.aclose()
         except Exception:
-            # Nie propagujemy: gdyby `run_stdio_async()` powyżej padło
-            # własnym wyjątkiem, wyjątek z zamykania zasobu zastąpiłby go
-            # (Python podmienia typ w locie, a oryginał trafia tylko do
-            # `__context__` — niewidoczny dla kodu patrzącego na typ
-            # wyjątku). Zamykanie zasobu nie ma prawa przykryć błędu, który
-            # je wywołał — logujemy z pełnym tracebackiem zamiast podnosić.
-            logger.exception(
-                "Nie udało się zamknąć klienta HTTP po zakończeniu serwera"
-            )
+            # Not propagated: had `run_stdio_async()` above failed with
+            # its own exception, an exception from closing the resource
+            # would replace it (Python swaps the type in flight, and the
+            # original only ends up in `__context__` — invisible to code
+            # looking at the exception's type). Closing a resource has no
+            # right to mask the error that caused it — we log with a
+            # full traceback instead of raising.
+            logger.exception("Could not close the HTTP client after the server stopped")

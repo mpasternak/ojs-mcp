@@ -1,4 +1,4 @@
-"""Katalog czasopism instancji i rozwiązywanie nazwy na ``contextPath``."""
+"""Journal catalog for the instance and resolving a name to ``contextPath``."""
 
 from __future__ import annotations
 
@@ -6,224 +6,228 @@ import asyncio
 import logging
 from contextvars import ContextVar
 
-from .auth import token_zadania
-from .bledy import BladOjs
+from .auth import request_token
 from .client import OjsClient
-from .config import KONTEKST_WITRYNY, Config
+from .config import SITE_CONTEXT, Config
+from .exceptions import OjsError
 
 logger = logging.getLogger(__name__)
 
 
-def _nazwa(pozycja: dict) -> str:
-    """Wyciągnij nazwę czasopisma z pola wielojęzycznego."""
-    nazwa = pozycja.get("name")
-    if isinstance(nazwa, dict):
-        for klucz in ("pl", "en", "en_US"):
-            if nazwa.get(klucz):
-                return str(nazwa[klucz])
-        if nazwa:
-            return str(next(iter(nazwa.values())))
-    if isinstance(nazwa, str) and nazwa:
-        return nazwa
-    return str(pozycja.get("urlPath") or "")
+def _name(item: dict) -> str:
+    """Extract a journal's name from a multilingual field."""
+    name = item.get("name")
+    if isinstance(name, dict):
+        for key in ("pl", "en", "en_US"):
+            if name.get(key):
+                return str(name[key])
+        if name:
+            return str(next(iter(name.values())))
+    if isinstance(name, str) and name:
+        return name
+    return str(item.get("urlPath") or "")
 
 
-class Katalog:
-    """Lista czasopism widocznych dla BIEŻĄCEGO żądania, z cache PER ŻĄDANIE.
+class Catalog:
+    """List of journals visible to the CURRENT request, with a PER-REQUEST
+    cache.
 
-    Od Rundy 2 Tasku 12 ``Katalog`` jest obiektem WSPÓLNYM dla całego
-    procesu (budowanym raz, jak ``OjsClient`` — patrz ``http_transport.py``),
-    a nie tworzonym na nowo przy każdym żądaniu. Gdyby cache był zwykłym
-    atrybutem instancji (jak przed Rundą 3), pierwszy użytkownik, który go
-    wypełni, narzucałby SWÓJ katalog wszystkim kolejnym — aż do restartu
-    procesu. To była usterka N2 z recenzji Rundy 2: token bez uprawnień do
-    listy czasopism zapisywał awaryjny, jednoelementowy katalog (patrz
-    ``czasopisma()``) na resztę życia procesu, a KOLEJNI użytkownicy —
-    nawet administratorzy z pełnymi uprawnieniami — dostawali błąd przy
-    każdym innym czasopiśmie. Odmowa usługi między użytkownikami.
+    Since Round 2 of Task 12, ``Catalog`` has been an object SHARED by
+    the whole process (built once, like ``OjsClient`` — see
+    ``http_transport.py``), rather than created anew on every request.
+    Were the cache a plain instance attribute (as before Round 3), the
+    first user to fill it would impose THEIR catalog on every subsequent
+    one — until the process restarted. That was defect N2 from the Round
+    2 review: a token without permission to list journals stored an
+    emergency, single-entry catalog (see ``journals()``) for the rest of
+    the process's life, and EVERY SUBSEQUENT user — even administrators
+    with full permissions — got an error for every other journal. Denial
+    of service between users.
 
-    Naprawa: cache mieszka w ``ContextVar`` WŁASNYM dla tej instancji
-    (utworzonym w ``__init__``, nie na poziomie modułu — inaczej różne
-    instancje ``Katalog`` w tym samym kontekście dzieliłyby cache między
-    sobą, co ma znaczenie w testach tworzących po kilka instancji). To
-    dokładnie ten sam mechanizm, co token bieżącego żądania w
-    ``auth.token_zadania`` — w trybie http, dzięki ``stateless_http=True``,
-    każde żądanie ASGI trafia do świeżo tworzonego zadania (anyio kopiuje
-    kontekst przy starcie zadania), więc cache nigdy nie przecieka między
-    użytkownikami, a każdy widzi katalog policzony WŁASNYM tokenem —
-    dokładnie semantyka Rundy 1, tyle że bez przebudowy całego serwera.
+    Fix: the cache lives in a ``ContextVar`` OWNED by this instance
+    (created in ``__init__``, not at module level — otherwise different
+    ``Catalog`` instances in the same context would share a cache with
+    each other, which matters in tests that create several instances).
+    This is exactly the same mechanism as the current request's token in
+    ``auth.request_token`` — in http mode, thanks to
+    ``stateless_http=True``, every ASGI request lands in a freshly
+    created task (anyio copies the context at task start), so the cache
+    never leaks between users, and each one sees a catalog computed with
+    THEIR OWN token — exactly the Round 1 semantics, just without
+    rebuilding the whole server.
 
-    Kosztowna była budowa ``MCPServer``/``OjsClient`` (rejestracja
-    siedemnastu narzędzi, ~16 ms CPU — patrz raport Task 12, Runda 2), NIE
-    ``Katalog``: to pusty obiekt bez własnego stanu procesowego poza samym
-    cache'em, więc przeniesienie go do ``ContextVar`` nic nie kosztuje.
+    Building ``MCPServer``/``OjsClient`` was expensive (registering
+    seventeen tools, ~16 ms of CPU — see the Task 12 report, Round 2),
+    NOT ``Catalog``: it is an empty object with no process-level state of
+    its own besides the cache itself, so moving it to a ``ContextVar``
+    costs nothing.
 
-    **Blokada NIE jest per instancja** (poprawka Rundy 4, recenzja Rundy 3)
-    — jest kluczowana tokenem bieżącego żądania (patrz
-    ``_pozyskaj_blokade``). Pojedyncza, wspólna blokada dla całej instancji
-    wyglądałaby na bezpieczną (chroni tylko fazę „cache pusty → pobierz”),
-    ale w praktyce SZEREGOWAŁA ruch niepowiązanych użytkowników: dziesięciu
-    użytkowników z różnymi, nigdy niecache'owanymi tokenami czekało jeden
-    na drugiego, mimo że każdy z nich i tak dostawał WŁASNY wynik z
-    WŁASNEGO, izolowanego cache'u — zmierzone 3,6 s zamiast ~0,3 s dla
-    atrapy z opóźnieniem 0,3 s. Kluczowanie tokenem jest tu bezpieczne
-    (w przeciwieństwie do kluczowania nim CACHE'U, odrzuconego w Rundzie 3)
-    — wpisy w słowniku blokad żyją wyłącznie przez czas AKTYWNEGO pobrania
-    i są usuwane zaraz po nim (licznik odwołań), więc słownik nie rośnie
-    bez ograniczeń mimo wielu różnych tokenów w ciągu życia procesu.
+    **The lock is NOT per instance** (Round 4 fix, Round 3 review) — it
+    is keyed by the current request's token (see ``_acquire_lock``). A
+    single, shared lock for the whole instance would look safe (it only
+    protects the "cache empty -> fetch" phase), but in practice it
+    SERIALIZED traffic from unrelated users: ten users with different,
+    never-cached tokens waited for one another, even though each of them
+    got their OWN result from their OWN, isolated cache anyway —
+    measured at 3.6 s instead of ~0.3 s for a stub with a 0.3 s delay.
+    Keying by token is safe here (unlike keying the CACHE by it, rejected
+    in Round 3) — entries in the lock dict live only for the duration of
+    an ACTIVE fetch and are removed right after it (a reference count),
+    so the dict does not grow without bound despite many different tokens
+    over the process's lifetime.
     """
 
     def __init__(self, client: OjsClient, config: Config) -> None:
         self._client = client
         self._config = config
-        # ContextVar WŁASNY dla TEJ instancji — patrz docstring klasy.
+        # A ContextVar OWNED by THIS instance — see the class docstring.
         self._cache: ContextVar[list[dict] | None] = ContextVar(
-            f"ojs_mcp_katalog_{id(self)}", default=None
+            f"ojs_mcp_catalog_{id(self)}", default=None
         )
-        # Blokady KLUCZOWANE tokenem bieżącego żądania (``None`` poza
-        # trybem http — patrz ``auth.token_zadania``), nie jedna blokada na
-        # całą instancję. Runda 4 (recenzja Rundy 3): pojedyncza blokada
-        # per-instancja serializowała ruch NIEPOWIĄZANYCH użytkowników —
-        # zmierzone: dziesięciu użytkowników z różnymi, nigdy
-        # niecache'owanymi tokenami i atrapą z opóźnieniem 0,3 s dawało
-        # 3,6 s zamiast ~0,3 s. ``ContextVar`` (jak dla cache'u) by tu NIE
-        # zadziałał: `asyncio.gather`/`create_task` kopiuje kontekst PRZY
-        # STARCIE zadania, więc zadania-rodzeństwo dostają NIEZALEŻNE kopie
-        # i nigdy nie zobaczyłyby SIEBIE nawzajem w jednej `ContextVar` —
-        # blokada musi żyć w zwykłym, współdzielonym atrybucie instancji,
-        # a KLUCZ (nie sama blokada) ma zależeć od kontekstu.
+        # Locks KEYED by the current request's token (``None`` outside
+        # http mode — see ``auth.request_token``), not a single lock for
+        # the whole instance. Round 4 (Round 3 review): a single
+        # per-instance lock serialized traffic from UNRELATED users —
+        # measured: ten users with different, never-cached tokens and a
+        # stub with a 0.3 s delay gave 3.6 s instead of ~0.3 s. A
+        # ``ContextVar`` (as for the cache) would NOT work here:
+        # `asyncio.gather`/`create_task` copies the context AT TASK
+        # START, so sibling tasks get INDEPENDENT copies and would never
+        # see EACH OTHER in one ``ContextVar`` — the lock has to live in
+        # a plain, shared instance attribute, with the KEY (not the lock
+        # itself) depending on the context.
         #
-        # Słownik jest samoczyszczący (licznik oczekujących obok blokady):
-        # wpis istnieje wyłącznie przez czas trwania AKTYWNEGO pobrania dla
-        # danego klucza, więc — w przeciwieństwie do cache'u (patrz N2) —
-        # NIE rośnie bez ograniczeń mimo kluczowania wartością pochodną od
-        # tokenu.
-        self._blokady_w_locie: dict[str | None, tuple[asyncio.Lock, int]] = {}
+        # The dict is self-cleaning (a waiter count next to the lock): an
+        # entry exists only for the duration of an ACTIVE fetch for a
+        # given key, so — unlike the cache (see N2) — it does NOT grow
+        # without bound despite being keyed by a value derived from the
+        # token.
+        self._locks_in_flight: dict[str | None, tuple[asyncio.Lock, int]] = {}
 
-    def _pozyskaj_blokade(self, klucz: str | None) -> asyncio.Lock:
-        """Zwróć blokadę dla ``klucz`` i zarejestruj jedno jej użycie.
+    def _acquire_lock(self, key: str | None) -> asyncio.Lock:
+        """Return the lock for ``key`` and register one use of it.
 
-        Bez ``await`` w środku — cała operacja wykonuje się w jednym
-        „obrocie” pętli zdarzeń, więc nie ma wyścigu między
-        sprawdzeniem a wstawieniem do słownika mimo braku osobnej blokady
-        chroniącej sam słownik.
+        No ``await`` inside — the whole operation runs in a single
+        "turn" of the event loop, so there is no race between checking
+        and inserting into the dict despite there being no separate lock
+        protecting the dict itself.
         """
-        blokada, licznik = self._blokady_w_locie.get(klucz, (None, 0))
-        if blokada is None:
-            blokada = asyncio.Lock()
-        self._blokady_w_locie[klucz] = (blokada, licznik + 1)
-        return blokada
+        lock, count = self._locks_in_flight.get(key, (None, 0))
+        if lock is None:
+            lock = asyncio.Lock()
+        self._locks_in_flight[key] = (lock, count + 1)
+        return lock
 
-    def _zwolnij_blokade(self, klucz: str | None) -> None:
-        """Wyrejestruj jedno użycie blokady ``klucz``, usuwając wpis, gdy
-        nikt już jej nie potrzebuje — patrz ``_pozyskaj_blokade``."""
-        blokada, licznik = self._blokady_w_locie[klucz]
-        if licznik <= 1:
-            del self._blokady_w_locie[klucz]
+    def _release_lock(self, key: str | None) -> None:
+        """Unregister one use of the ``key`` lock, removing the entry once
+        nobody needs it any more — see ``_acquire_lock``."""
+        lock, count = self._locks_in_flight[key]
+        if count <= 1:
+            del self._locks_in_flight[key]
         else:
-            self._blokady_w_locie[klucz] = (blokada, licznik - 1)
+            self._locks_in_flight[key] = (lock, count - 1)
 
-    async def czasopisma(self) -> list[dict]:
-        """Zwróć listę ``{"sciezka", "nazwa"}`` dla BIEŻĄCEGO kontekstu.
+    async def journals(self) -> list[dict]:
+        """Return the list of ``{"path", "name"}`` for the CURRENT context.
 
-        Kolejność prób jest podyktowana uprawnieniami: endpoint w kontekście
-        czasopisma działa dla menedżera, a poziom witryny wymaga roli
-        administratora — i dla użytkownika bez niej potrafi zwrócić 500
-        zamiast odmowy (HasRoles woła ``$context->getId()`` bez nullsafe).
+        The order of attempts is dictated by permissions: the endpoint at
+        the journal-context level works for a manager, while the site
+        level requires an administrator role — and for a user without it
+        may return 500 instead of a denial (HasRoles calls
+        ``$context->getId()`` without a nullsafe operator).
         """
-        wynik = self._cache.get()
-        if wynik is not None:
-            return wynik
+        result = self._cache.get()
+        if result is not None:
+            return result
 
-        klucz = token_zadania()
-        blokada = self._pozyskaj_blokade(klucz)
+        key = request_token()
+        lock = self._acquire_lock(key)
         try:
-            async with blokada:
-                # UWAGA (recenzja, W6): to sprawdzenie NIE MOŻE dziś nic
-                # złapać — zmierzone: 10 równoległych pobrań, zero trafień.
-                # Cache mieszka w `ContextVar` (patrz `__init__`), a każde
-                # zadanie równoległe (`asyncio.gather`/`create_task`)
-                # dostaje WŁASNĄ kopię kontekstu przy STARCIE zadania — nie
-                # widzi zmian, jakie w SWOJEJ kopii `ContextVar` robi inne
-                # zadanie. W obrębie JEDNEGO zadania wykonanie jest z kolei
-                # ściśle sekwencyjne (jeden wątek, współpraca przez await)
-                # — więc "ktoś inny" nigdy nie zdąży wypełnić TEJ SAMEJ
-                # kopii cache'u między pierwszym sprawdzeniem na początku
-                # tej metody a przejęciem tej blokady. Krótko: przy tej
-                # architekturze cache'u nie ma który scenariusz miałby to
-                # sprawdzenie uruchomić — to nie "niedorobiona deduplikacja", tylko
-                # martwa gałąź, strukturalnie niemożliwa do trafienia (patrz
-                # też docs/hosting.md). Zostaje jako tania siatka
-                # bezpieczeństwa na wypadek PRZYSZŁEJ zmiany modelu
-                # współbieżności (np. cache'u współdzielonego między
-                # zadaniami zamiast per-`ContextVar`) — nie dlatego, że coś
-                # łapie dzisiaj.
-                wynik = self._cache.get()
-                if wynik is not None:
-                    return wynik
+            async with lock:
+                # NOTE (review, W6): this check CANNOT catch anything
+                # today — measured: 10 concurrent fetches, zero hits. The
+                # cache lives in a `ContextVar` (see `__init__`), and
+                # every concurrent task (`asyncio.gather`/`create_task`)
+                # gets its OWN copy of the context AT TASK START — it does
+                # not see changes another task makes to ITS copy of the
+                # `ContextVar`. Within a SINGLE task, execution is in turn
+                # strictly sequential (one thread, cooperation via await)
+                # — so "someone else" never gets a chance to fill THAT
+                # SAME copy of the cache between this method's first
+                # check and acquiring this lock. In short: with this
+                # architecture there is no scenario that would trigger
+                # this check — it is not "an incomplete deduplication",
+                # but a dead branch, structurally impossible to hit (see
+                # also docs/hosting.md). It stays as a cheap safety net in
+                # case of a FUTURE change to the concurrency model (e.g. a
+                # cache shared between tasks instead of per-`ContextVar`)
+                # — not because anything catches it today.
+                result = self._cache.get()
+                if result is not None:
+                    return result
 
-                kontekst = self._config.journal or KONTEKST_WITRYNY
+                context = self._config.journal or SITE_CONTEXT
                 try:
-                    pozycje = await self._client.pobierz_wszystko(
-                        "contexts", parametry={"isEnabled": 1}, czasopismo=kontekst
+                    items = await self._client.get_all(
+                        "contexts", params={"isEnabled": 1}, journal=context
                     )
-                except BladOjs as exc:
+                except OjsError as exc:
                     if self._config.journal:
-                        # Znamy czasopismo z konfiguracji — brak katalogu
-                        # nie jest powodem, żeby zablokować całe TO
-                        # żądanie. Ten fallback jest nieszkodliwy dla
-                        # innych użytkowników — żyje wyłącznie w
-                        # kontekście TEGO żądania (patrz docstring klasy,
+                        # We know the journal from the configuration — a
+                        # missing catalog is not a reason to block THIS
+                        # whole request. This fallback is harmless to
+                        # other users — it lives exclusively within THIS
+                        # request's context (see the class docstring,
                         # N2).
                         logger.warning(
-                            "Nie udało się pobrać katalogu czasopism (%s); "
-                            "używam OJS_JOURNAL=%s",
+                            "Could not fetch the journal catalog (%s); "
+                            "using OJS_JOURNAL=%s",
                             exc,
                             self._config.journal,
                         )
-                        wynik = [
+                        result = [
                             {
-                                "sciezka": self._config.journal,
-                                "nazwa": self._config.journal,
+                                "path": self._config.journal,
+                                "name": self._config.journal,
                             }
                         ]
-                        self._cache.set(wynik)
-                        return wynik
-                    raise BladOjs(
-                        "Nie udało się pobrać listy czasopism, a OJS_JOURNAL "
-                        "nie jest ustawione. Pobranie katalogu na poziomie "
-                        "witryny wymaga roli administratora — ustaw "
-                        "OJS_JOURNAL na adres swojego czasopisma. Przyczyna: "
-                        f"{exc}"
+                        self._cache.set(result)
+                        return result
+                    raise OjsError(
+                        "Could not fetch the list of journals, and "
+                        "OJS_JOURNAL is not set. Fetching the catalog at "
+                        "the site level requires an administrator role — "
+                        "set OJS_JOURNAL to your journal's path segment "
+                        f"(urlPath). Cause: {exc}"
                     ) from exc
 
-                wynik = [
-                    {"sciezka": str(p.get("urlPath") or ""), "nazwa": _nazwa(p)}
-                    for p in pozycje
+                result = [
+                    {"path": str(p.get("urlPath") or ""), "name": _name(p)}
+                    for p in items
                     if p.get("urlPath")
                 ]
-                self._cache.set(wynik)
-                return wynik
+                self._cache.set(result)
+                return result
         finally:
-            self._zwolnij_blokade(klucz)
+            self._release_lock(key)
 
-    async def rozwiaz(self, nazwa: str | None) -> str:
-        """Zamień nazwę czasopisma albo ``contextPath`` na ``contextPath``."""
-        if nazwa is None:
+    async def resolve(self, name: str | None) -> str:
+        """Turn a journal name or ``contextPath`` into a ``contextPath``."""
+        if name is None:
             if not self._config.journal:
-                raise BladOjs(
-                    "Nie wskazano czasopisma. Ustaw OJS_JOURNAL albo podaj "
-                    "parametr `czasopismo`; listę zwraca `lista_czasopism`."
+                raise OjsError(
+                    "No journal was given. Set OJS_JOURNAL or pass the "
+                    "`journal` parameter; `list_journals` returns the list."
                 )
             return self._config.journal
-        if nazwa == KONTEKST_WITRYNY:
-            return nazwa
+        if name == SITE_CONTEXT:
+            return name
 
-        pozycje = await self.czasopisma()
-        for pozycja in pozycje:
-            if nazwa in (pozycja["sciezka"], pozycja["nazwa"]):
-                return pozycja["sciezka"]
+        items = await self.journals()
+        for item in items:
+            if name in (item["path"], item["name"]):
+                return item["path"]
 
-        # Nieznana nazwa nie jest zgadywana — lepiej powiedzieć, co jest.
-        dostepne = ", ".join(p["sciezka"] for p in pozycje) or "(brak)"
-        raise BladOjs(f"Nie ma czasopisma {nazwa!r}. Dostępne: {dostepne}.")
+        # An unknown name is not guessed at — better to say what is available.
+        available = ", ".join(p["path"] for p in items) or "(none)"
+        raise OjsError(f"No journal {name!r}. Available: {available}.")

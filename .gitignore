@@ -12,10 +12,10 @@ dist/
 venv/
 .python-version
 
-# dokumentacja (MkDocs build)
+# documentation (MkDocs build)
 site/
 
-# testy / narzędzia
+# tests / tooling
 .pytest_cache/
 .ruff_cache/
 .coverage
@@ -27,10 +27,10 @@ htmlcov/
 .vscode/
 .DS_Store
 
-# Poświadczenia lokalne (repozytorium jest publiczne; projekt konfiguruje
-# się wyłącznie zmiennymi środowiskowymi — patrz docs/instalacja.md).
-# `.env*` (nie goły `.env`), żeby złapać też `.env.local`/`.env.production`.
+# Local credentials (the repository is public; the project is configured
+# exclusively through environment variables — see docs/installation.md).
+# `.env*` (not a bare `.env`), to also catch `.env.local`/`.env.production`.
 .env*
 
-# Bundle MCPB zbudowany lokalnie (patrz docs/instalacja.md, wariant 2).
+# MCPB bundle built locally (see docs/installation.md, option 2).
 *.mcpb

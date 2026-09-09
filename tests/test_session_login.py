@@ -2,357 +2,344 @@ import httpx
 import pytest
 import respx
 
-from ojs_mcp.bledy import BladLogowania
 from ojs_mcp.config import Config
+from ojs_mcp.exceptions import LoginError
 from ojs_mcp.session_login import (
-    wykryj_captcha,
-    wyluskaj_csrf_z_formularza,
-    wyluskaj_current_user,
-    zaloguj,
+    detect_captcha,
+    extract_csrf_from_form,
+    extract_current_user,
+    login,
 )
 
-BAZA = "https://x.edu/index.php/rocznik"
-CFG = Config(base_url="https://x.edu", journal="rocznik", username="u", password="p")
+BASE = "https://x.edu/index.php/annual"
+CFG = Config(base_url="https://x.edu", journal="annual", username="u", password="p")
 
-STRONA_LOGOWANIA = """
-<html><form method="post" action="/index.php/rocznik/login/signIn">
-<input type="hidden" name="csrfToken" value="TOKEN-Z-FORMULARZA" />
+LOGIN_PAGE = """
+<html><form method="post" action="/index.php/annual/login/signIn">
+<input type="hidden" name="csrfToken" value="TOKEN-FROM-FORM" />
 <input type="text" name="username"><input type="password" name="password">
 </form></html>
 """
 
-STRONA_PULPITU = """
+DASHBOARD_PAGE = """
 <html><script>
-pkp.currentUser = {"csrfToken":"TOKEN-SESJI","id":42,"roles":[16,65536],
-"username":"redaktor"};
+pkp.currentUser = {"csrfToken":"SESSION-TOKEN","id":42,"roles":[16,65536],
+"username":"editor"};
 </script></html>
 """
 
 
-def test_wyluskaj_csrf_z_formularza():
-    assert wyluskaj_csrf_z_formularza(STRONA_LOGOWANIA) == "TOKEN-Z-FORMULARZA"
+def test_extract_csrf_from_form():
+    assert extract_csrf_from_form(LOGIN_PAGE) == "TOKEN-FROM-FORM"
 
 
-def test_wyluskaj_csrf_zwraca_none_gdy_brak():
-    assert wyluskaj_csrf_z_formularza("<html></html>") is None
+def test_extract_csrf_returns_none_when_missing():
+    assert extract_csrf_from_form("<html></html>") is None
 
 
-def test_wyluskaj_current_user():
-    dane = wyluskaj_current_user(STRONA_PULPITU)
-    assert dane["csrfToken"] == "TOKEN-SESJI"
-    assert dane["id"] == 42
-    assert dane["roles"] == [16, 65536]
+def test_extract_current_user():
+    data = extract_current_user(DASHBOARD_PAGE)
+    assert data["csrfToken"] == "SESSION-TOKEN"
+    assert data["id"] == 42
+    assert data["roles"] == [16, 65536]
 
 
-def test_wyluskaj_current_user_niepoprawny_json_daje_none():
-    # `pkp.currentUser` w niespodziewanym formacie: nie wywalamy sekwencji
-    # tu, tylko logujemy i zwracamy None — zaloguj() ma zdefiniowaną ścieżkę
-    # zapasową i jawny błąd, gdy obie strategie zawiodą.
-    html = "<script>pkp.currentUser = {niepoprawny json};</script>"
-    assert wyluskaj_current_user(html) is None
+def test_extract_current_user_invalid_json_gives_none():
+    # `pkp.currentUser` in an unexpected format: we do not abort the
+    # sequence here, just log and return None — login() has a defined
+    # fallback path and an explicit error when both strategies fail.
+    html = "<script>pkp.currentUser = {invalid json};</script>"
+    assert extract_current_user(html) is None
 
 
 @pytest.mark.parametrize(
-    "html,oczekiwana",
+    "html,expected",
     [
         ('<div class="g-recaptcha"></div>', "reCAPTCHA"),
         ("<altcha-widget challengeurl='x'></altcha-widget>", "ALTCHA"),
-        ("<html>nic</html>", None),
+        ("<html>nothing</html>", None),
     ],
 )
-def test_wykryj_captcha(html, oczekiwana):
-    assert wykryj_captcha(html) == oczekiwana
+def test_detect_captcha(html, expected):
+    assert detect_captcha(html) == expected
 
 
 @respx.mock
-async def test_pelna_sekwencja_logowania():
-    strona = respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+async def test_full_login_sequence():
+    page = respx.get(f"{BASE}/login").mock(
+        return_value=httpx.Response(200, html=LOGIN_PAGE)
     )
-    signin = respx.post(f"{BAZA}/login/signIn").mock(
-        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
+    signin = respx.post(f"{BASE}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BASE}/dashboard"})
     )
-    respx.get(f"{BAZA}/dashboard/editorial").mock(
-        return_value=httpx.Response(200, html=STRONA_PULPITU)
+    respx.get(f"{BASE}/dashboard/editorial").mock(
+        return_value=httpx.Response(200, html=DASHBOARD_PAGE)
     )
 
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        wynik = await zaloguj(klient, CFG, "rocznik")
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        result = await login(client, CFG, "annual")
 
-    assert strona.called
-    # KRYTYCZNE: Validation::login() woła checkCSRF() — POST bez csrfToken
-    # zawodzi zawsze i jest nieodróżnialny od złego hasła.
-    wyslane = signin.calls.last.request.content.decode()
-    assert "csrfToken=TOKEN-Z-FORMULARZA" in wyslane
-    assert wynik["csrf"] == "TOKEN-SESJI"
-    assert wynik["uzytkownik"]["id"] == 42
-    # slowniki.ROLE użyty do czytelnego opisu ról — nie jest martwym kodem.
-    assert wynik["uzytkownik"]["role_nazwy"] == ["menedżer czasopisma", "autor"]
+    assert page.called
+    # CRITICAL: Validation::login() calls checkCSRF() — a POST without
+    # csrfToken always fails and is indistinguishable from a wrong password.
+    sent = signin.calls.last.request.content.decode()
+    assert "csrfToken=TOKEN-FROM-FORM" in sent
+    assert result["csrf"] == "SESSION-TOKEN"
+    assert result["user"]["id"] == 42
+    # dictionaries.ROLES used for a readable role description — not dead code.
+    assert result["user"]["role_names"] == ["journal manager", "author"]
 
 
 @respx.mock
-async def test_200_z_formularzem_to_porazka():
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+async def test_200_with_form_is_a_failure():
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(
+        return_value=httpx.Response(200, html=LOGIN_PAGE)
     )
-    respx.post(f"{BAZA}/login/signIn").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
-    )
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        with pytest.raises(BladLogowania) as exc:
-            await zaloguj(klient, CFG, "rocznik")
-    # Komunikat musi wymieniać wszystkie trzy przyczyny — OJS ich nie rozróżnia.
-    tresc = str(exc.value)
-    assert "hasł" in tresc.lower()
-    assert "limit" in tresc.lower()
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(LoginError) as exc:
+            await login(client, CFG, "annual")
+    # The message must list all three causes — OJS does not distinguish them.
+    detail = str(exc.value)
+    assert "password" in detail.lower()
+    assert "limit" in detail.lower()
 
 
 @respx.mock
-async def test_przekierowanie_na_changepassword_to_porazka():
-    """Regresja W5 (recenzja): adres CELOWO bez `/login` — dawna atrapa
-    (`/login/changePassword/u`) zawierała już podciąg `/login`, więc
-    usunięcie warunku `and "changepassword" not in lokalizacja.lower()`
-    nie wywalało tego testu (zawiodłoby i tak przez sam `/login`). Ten
-    adres izoluje sprawdzenie zmiany hasła od sprawdzenia `/login`.
+async def test_redirect_to_changepassword_is_a_failure():
+    """Regression W5 (review): the address is DELIBERATELY without
+    `/login` — the earlier stub (`/login/changePassword/u`) already
+    contained the `/login` substring, so removing the
+    `and "changepassword" not in location.lower()` condition did not
+    fail this test (it would have failed anyway, through the bare
+    `/login` match). This address isolates the password-change check
+    from the `/login` check.
     """
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
-    )
-    respx.post(f"{BAZA}/login/signIn").mock(
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(
         return_value=httpx.Response(
-            302, headers={"Location": f"{BAZA}/user/changePassword"}
+            302, headers={"Location": f"{BASE}/user/changePassword"}
         )
     )
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        with pytest.raises(BladLogowania) as exc:
-            await zaloguj(klient, CFG, "rocznik")
-    assert "hasł" in str(exc.value).lower()
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(LoginError) as exc:
+            await login(client, CFG, "annual")
+    assert "password" in str(exc.value).lower()
 
 
 @respx.mock
-async def test_lokalizacja_z_login_jako_czescia_slowa_nie_jest_odrzucana():
-    """Regresja W5 (recenzja, druga część): dopasowanie `"/login" in
-    lokalizacja` było podciągiem — poprawny adres docelowy zawierający
-    "login" jako CZĘŚĆ innego słowa (np. `/loginHistory`) byłby błędnie
-    odrzucony jako powrót na stronę logowania. Musi być odrzucany tylko
-    `/login` jako WŁASNY segment ścieżki.
+async def test_location_with_login_as_part_of_a_word_is_not_rejected():
+    """Regression W5 (review, second part): the `"/login" in location`
+    match was a substring check — a valid target address containing
+    "login" as PART of another word (e.g. `/loginHistory`) would be
+    incorrectly rejected as a bounce back to the login page. Only
+    `/login` as its OWN path segment must be rejected.
     """
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
-    )
-    respx.post(f"{BAZA}/login/signIn").mock(
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(
         return_value=httpx.Response(
-            302, headers={"Location": f"{BAZA}/user/loginHistory"}
+            302, headers={"Location": f"{BASE}/user/loginHistory"}
         )
     )
-    respx.get(f"{BAZA}/dashboard/editorial").mock(
-        return_value=httpx.Response(200, html=STRONA_PULPITU)
+    respx.get(f"{BASE}/dashboard/editorial").mock(
+        return_value=httpx.Response(200, html=DASHBOARD_PAGE)
     )
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        wynik = await zaloguj(klient, CFG, "rocznik")
-    assert wynik["csrf"] == "TOKEN-SESJI"
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        result = await login(client, CFG, "annual")
+    assert result["csrf"] == "SESSION-TOKEN"
 
 
 @respx.mock
-async def test_captcha_przerywa_bez_wyslania_hasla():
-    """Regresja W3 (recenzja): atrapa BEZ `csrfToken` sprawiała, że nawet
-    całkowita likwidacja wykrywania CAPTCHA (`mechanizm = None`) nie
-    wywalała tego testu — bez gałęzi CAPTCHA sekwencja i tak padała w
-    NASTĘPNYM kroku (brak `csrfToken` na stronie logowania), a TAMTEN
-    komunikat też zawiera "OJS_API_TOKEN". Strona atrapy musi mieć
-    poprawne pole `csrfToken`, żeby JEDYNĄ możliwą przyczyną przerwania
-    była CAPTCHA — i asertujemy nazwę mechanizmu, nie tylko wzmiankę
-    o tokenie.
+async def test_captcha_aborts_without_sending_the_password():
+    """Regression W3 (review): a stub WITHOUT `csrfToken` meant that even
+    completely removing CAPTCHA detection (`mechanism = None`) did not
+    fail this test — without the CAPTCHA branch, the sequence still
+    failed at the NEXT step (no `csrfToken` on the login page), and THAT
+    message also contains "OJS_API_TOKEN". The stub page must have a
+    valid `csrfToken` field, so the ONLY possible cause of the abort is
+    CAPTCHA — and we assert the mechanism's name, not just a mention of
+    the token.
     """
-    respx.get(f"{BAZA}/login").mock(
+    respx.get(f"{BASE}/login").mock(
         return_value=httpx.Response(
-            200, html='<div class="g-recaptcha"></div>' + STRONA_LOGOWANIA
+            200, html='<div class="g-recaptcha"></div>' + LOGIN_PAGE
         )
     )
-    signin = respx.post(f"{BAZA}/login/signIn")
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        with pytest.raises(BladLogowania) as exc:
-            await zaloguj(klient, CFG, "rocznik")
-    tresc = str(exc.value)
-    assert "reCAPTCHA" in tresc
-    assert "OJS_API_TOKEN" in tresc
-    # Hasło NIE zostało wysłane.
+    signin = respx.post(f"{BASE}/login/signIn")
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(LoginError) as exc:
+            await login(client, CFG, "annual")
+    detail = str(exc.value)
+    assert "reCAPTCHA" in detail
+    assert "OJS_API_TOKEN" in detail
+    # The password was NOT sent.
     assert not signin.called
 
 
 @respx.mock
-async def test_brak_csrf_na_stronie_logowania_to_jawny_blad():
-    respx.get(f"{BAZA}/login").mock(
+async def test_no_csrf_on_login_page_is_an_explicit_error():
+    respx.get(f"{BASE}/login").mock(
         return_value=httpx.Response(200, html="<html></html>")
     )
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        with pytest.raises(BladLogowania) as exc:
-            await zaloguj(klient, CFG, "rocznik")
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(LoginError) as exc:
+            await login(client, CFG, "annual")
     assert "csrf" in str(exc.value).lower()
 
 
 @respx.mock
-async def test_fallback_na_kolejne_pulpity():
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+async def test_falls_back_to_the_next_dashboard():
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BASE}/dashboard"})
     )
-    respx.post(f"{BAZA}/login/signIn").mock(
-        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
+    respx.get(f"{BASE}/dashboard/editorial").mock(return_value=httpx.Response(403))
+    respx.get(f"{BASE}/dashboard/reviewAssignments").mock(
+        return_value=httpx.Response(200, html=DASHBOARD_PAGE)
     )
-    respx.get(f"{BAZA}/dashboard/editorial").mock(return_value=httpx.Response(403))
-    respx.get(f"{BAZA}/dashboard/reviewAssignments").mock(
-        return_value=httpx.Response(200, html=STRONA_PULPITU)
-    )
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        wynik = await zaloguj(klient, CFG, "rocznik")
-    assert wynik["csrf"] == "TOKEN-SESJI"
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        result = await login(client, CFG, "annual")
+    assert result["csrf"] == "SESSION-TOKEN"
 
 
 @respx.mock
-async def test_brak_hasla_nie_wola_do_sieci():
-    cfg_bez_hasla = Config(base_url="https://x.edu", journal="rocznik", username="u")
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        with pytest.raises(BladLogowania) as exc:
-            await zaloguj(klient, cfg_bez_hasla, "rocznik")
+async def test_missing_password_does_not_call_the_network():
+    cfg_no_password = Config(base_url="https://x.edu", journal="annual", username="u")
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(LoginError) as exc:
+            await login(client, cfg_no_password, "annual")
     assert "OJS_PASSWORD" in str(exc.value)
 
 
 @pytest.mark.parametrize(
     "html",
     [
-        # Kolejność odwrócona: value przed name.
+        # Reversed order: value before name.
         '<input type="hidden" value="TOK" name="csrfToken" />',
-        # Atrybut id pośrodku, między name a value.
+        # An id attribute in the middle, between name and value.
         '<input name="csrfToken" id="csrf" value="TOK" />',
-        # Spacje wokół znaku równości.
+        # Spaces around the equals sign.
         '<input name = "csrfToken" value = "TOK" />',
     ],
 )
-def test_wyluskaj_csrf_niezalezny_od_kolejnosci_atrybutow(html):
-    assert wyluskaj_csrf_z_formularza(html) == "TOK"
+def test_extract_csrf_independent_of_attribute_order(html):
+    assert extract_csrf_from_form(html) == "TOK"
 
 
 @respx.mock
-async def test_3xx_bez_location_to_porazka():
-    # K1: 304 z pamięci podręcznej / zapory aplikacyjnej / nietypowego proxy
-    # nie niesie nagłówka Location — to NIE jest sukces logowania, tylko
-    # brak informacji. Bez sprawdzenia `bool(lokalizacja)` taki 3xx
-    # przechodziłby jako udane logowanie (pusty string nie zawiera "/login").
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
-    )
-    respx.post(f"{BAZA}/login/signIn").mock(return_value=httpx.Response(304))
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        with pytest.raises(BladLogowania) as exc:
-            await zaloguj(klient, CFG, "rocznik")
-    assert "hasł" in str(exc.value).lower()
+async def test_3xx_without_location_is_a_failure():
+    # K1: a cached 304 / application firewall / unusual proxy does not
+    # carry a Location header — that is NOT a successful login, just
+    # missing information. Without checking `bool(location)`, such a 3xx
+    # would pass through as a successful login (an empty string does not
+    # contain "/login").
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(return_value=httpx.Response(304))
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(LoginError) as exc:
+            await login(client, CFG, "annual")
+    assert "password" in str(exc.value).lower()
 
 
 @respx.mock
-async def test_krok1_nie_podaza_za_wlasnym_follow_redirects_klienta():
-    """Regresja na decyzję własną `follow_redirects=False` w kroku 1.
+async def test_step1_does_not_follow_the_clients_own_follow_redirects():
+    """Regression on the deliberate `follow_redirects=False` decision in
+    step 1.
 
-    Klient tu ma WŁĄCZONE globalne podążanie za przekierowaniami — tak jak
-    produkcyjny `OjsClient` (`client.py:47`), w odróżnieniu od pozostałych
-    testów w tym pliku. Cel przekierowania z logowania jest zamockowany
-    jako 200 ze stroną logowania — pułapka, w którą wpadłby kod, gdyby
-    POST /login/signIn podążył za przekierowaniem automatycznie zamiast
-    zobaczyć surowy nagłówek `Location`. Bez jawnego `follow_redirects=False`
-    na tym żądaniu ten test kończy się `BladLogowania` zamiast zwrócić
-    poprawny wynik logowania.
+    The client here has global redirect-following TURNED ON — just like
+    the production `OjsClient` (`client.py:47`), unlike the other tests
+    in this file. The login redirect's target is stubbed as 200 with the
+    login page — a trap that would catch the code if `POST
+    /login/signIn` followed the redirect automatically instead of seeing
+    the raw `Location` header. Without an explicit
+    `follow_redirects=False` on this request, this test would end with
+    `LoginError` instead of returning a correct login result.
     """
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BASE}/dashboard"})
     )
-    respx.post(f"{BAZA}/login/signIn").mock(
-        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
+    # Trap: if the POST followed the redirect, it would land here.
+    respx.get(f"{BASE}/dashboard").mock(
+        return_value=httpx.Response(200, html=LOGIN_PAGE)
     )
-    # Pułapka: gdyby POST podążył za przekierowaniem, wylądowałby tutaj.
-    respx.get(f"{BAZA}/dashboard").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    respx.get(f"{BASE}/dashboard/editorial").mock(
+        return_value=httpx.Response(200, html=DASHBOARD_PAGE)
     )
-    respx.get(f"{BAZA}/dashboard/editorial").mock(
-        return_value=httpx.Response(200, html=STRONA_PULPITU)
-    )
-    async with httpx.AsyncClient(follow_redirects=True) as klient:
-        wynik = await zaloguj(klient, CFG, "rocznik")
-    assert wynik["csrf"] == "TOKEN-SESJI"
+    async with httpx.AsyncClient(follow_redirects=True) as client:
+        result = await login(client, CFG, "annual")
+    assert result["csrf"] == "SESSION-TOKEN"
 
 
 @respx.mock
-async def test_pulpit_przekierowany_na_login_nie_daje_falszywego_sukcesu():
-    """Regresja na K2: sesja martwa między krokiem 1 a 2.
+async def test_dashboard_redirected_to_login_does_not_give_a_false_success():
+    """Regression on K2: the session is dead between step 1 and step 2.
 
-    OJS przekierowuje GET pulpitu na `/login`; httpx podąża (bo krok 2
-    celowo ma `follow_redirects=True`) i ląduje na stronie logowania ze
-    statusem 200. Ta strona MA własne ukryte pole csrfToken — to token do
-    (kolejnego) logowania, nie token sesji. Zwrócenie go jako sukces byłoby
-    tym samym cichym fałszywym „tak", przed którym broni spec. dla
-    wyłuskiwania tokenu sesji.
+    OJS redirects a dashboard GET to `/login`; httpx follows it (because
+    step 2 deliberately has `follow_redirects=True`) and lands on the
+    login page with a 200 status. This page HAS its own hidden csrfToken
+    field — that is a token for (another) login, not a session token.
+    Returning it as a success would be the same silent false "yes" the
+    spec guards against for extracting the session token.
     """
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BASE}/dashboard"})
     )
-    respx.post(f"{BAZA}/login/signIn").mock(
-        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
-    )
-    for pulpit in (
+    for dashboard in (
         "dashboard/editorial",
         "dashboard/reviewAssignments",
         "dashboard/mySubmissions",
     ):
-        respx.get(f"{BAZA}/{pulpit}").mock(
-            return_value=httpx.Response(302, headers={"Location": f"{BAZA}/login"})
+        respx.get(f"{BASE}/{dashboard}").mock(
+            return_value=httpx.Response(302, headers={"Location": f"{BASE}/login"})
         )
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        with pytest.raises(BladLogowania) as exc:
-            await zaloguj(klient, CFG, "rocznik")
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(LoginError) as exc:
+            await login(client, CFG, "annual")
     assert "csrf" in str(exc.value).lower()
 
 
 @respx.mock
-async def test_fallback_na_ukryte_pole_gdy_brak_pkp_current_user():
-    # D5: strona pulpitu bez literału pkp.currentUser (np. wersja OJS, w
-    # której backend nie osadza tożsamości na tej konkretnej podstronie),
-    # ale z ukrytym polem csrfToken — druga, zapasowa strategia wyłuskania.
-    strona_bez_literalu = (
-        '<html><input type="hidden" name="csrfToken" value="ZAPASOWY" /></html>'
+async def test_falls_back_to_the_hidden_field_when_no_pkp_current_user():
+    # D5: a dashboard page without the pkp.currentUser literal (e.g. an
+    # OJS version where the backend does not embed the identity on this
+    # particular subpage), but with a hidden csrfToken field — the
+    # second, fallback extraction strategy.
+    page_without_literal = (
+        '<html><input type="hidden" name="csrfToken" value="FALLBACK" /></html>'
     )
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BASE}/dashboard"})
     )
-    respx.post(f"{BAZA}/login/signIn").mock(
-        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
+    respx.get(f"{BASE}/dashboard/editorial").mock(
+        return_value=httpx.Response(200, html=page_without_literal)
     )
-    respx.get(f"{BAZA}/dashboard/editorial").mock(
-        return_value=httpx.Response(200, html=strona_bez_literalu)
-    )
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        wynik = await zaloguj(klient, CFG, "rocznik")
-    assert wynik["csrf"] == "ZAPASOWY"
-    assert wynik["uzytkownik"] is None
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        result = await login(client, CFG, "annual")
+    assert result["csrf"] == "FALLBACK"
+    assert result["user"] is None
 
 
 @respx.mock
-async def test_zaden_pulpit_bez_tokenu_to_jawny_blad():
-    # D5: wszystkie trzy pulpity odpowiadają 200, ale żaden nie niesie ani
-    # pkp.currentUser, ani ukrytego pola — musi paść jawny BladLogowania
-    # (linia z komunikatem o OJS_API_TOKEN), nigdy ciche None.
-    respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+async def test_no_dashboard_without_a_token_is_an_explicit_error():
+    # D5: all three dashboards respond 200, but none carries either
+    # pkp.currentUser or the hidden field — must fail with an explicit
+    # LoginError (a message about OJS_API_TOKEN), never a silent None.
+    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html=LOGIN_PAGE))
+    respx.post(f"{BASE}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BASE}/dashboard"})
     )
-    respx.post(f"{BAZA}/login/signIn").mock(
-        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
-    )
-    for pulpit in (
+    for dashboard in (
         "dashboard/editorial",
         "dashboard/reviewAssignments",
         "dashboard/mySubmissions",
     ):
-        respx.get(f"{BAZA}/{pulpit}").mock(
-            return_value=httpx.Response(200, html="<html>brak tokenu</html>")
+        respx.get(f"{BASE}/{dashboard}").mock(
+            return_value=httpx.Response(200, html="<html>no token</html>")
         )
-    async with httpx.AsyncClient(follow_redirects=False) as klient:
-        with pytest.raises(BladLogowania) as exc:
-            await zaloguj(klient, CFG, "rocznik")
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        with pytest.raises(LoginError) as exc:
+            await login(client, CFG, "annual")
     assert "OJS_API_TOKEN" in str(exc.value)
