@@ -1,9 +1,10 @@
-"""Strategie uwierzytelniania i przenoszenie tokenu bieżącego żądania.
+"""Authentication strategies and carrying the current request's token.
 
-Źródła zależą od transportu — patrz spec §6.1. Najkrócej: w `stdio`
-poświadczenia pochodzą z otoczenia procesu, w `http` WYŁĄCZNIE z nagłówka
-bieżącego żądania MCP. Bez tej separacji hostowany serwer po jednym błędzie
-konfiguracji staje się kontem serwisowym dla każdego, kto zna URL.
+Sources depend on the transport — see spec §6.1. In short: in `stdio`,
+credentials come from the process environment; in `http`, EXCLUSIVELY
+from the current MCP request's header. Without this separation, a
+hosted server becomes a service account for anyone who knows the URL
+after a single configuration mistake.
 """
 
 from __future__ import annotations
@@ -13,56 +14,56 @@ from contextvars import ContextVar
 
 import httpx
 
-from .bledy import BladUwierzytelnienia
 from .config import Config
+from .exceptions import AuthenticationError
 
-# Token bieżącego żądania MCP w trybie http.
+# Current MCP request's token in http mode.
 #
-# UWAGA: nie używać `get_access_token()` z SDK — w stateful streamable HTTP
-# zwraca token z chwili `initialize`, czyli nieaktualny przy wielu
-# użytkownikach. Token bierzemy z `ctx.request_context.request` i mostkujemy
-# tutaj.
-_token_zadania: ContextVar[str | None] = ContextVar("ojs_mcp_token", default=None)
+# NOTE: do not use the SDK's `get_access_token()` — in stateful streamable
+# HTTP it returns the token from the `initialize` call, i.e. stale with
+# multiple users. We take the token from `ctx.request_context.request` and
+# bridge it here.
+_request_token: ContextVar[str | None] = ContextVar("ojs_mcp_token", default=None)
 
 
-def ustaw_token_zadania(token: str | None) -> None:
-    """Zapisz token bieżącego żądania w kontekście."""
-    _token_zadania.set(token)
+def set_request_token(token: str | None) -> None:
+    """Store the current request's token in the context."""
+    _request_token.set(token)
 
 
-def token_zadania() -> str | None:
-    """Zwróć token bieżącego żądania (``None`` poza trybem http)."""
-    return _token_zadania.get()
+def request_token() -> str | None:
+    """Return the current request's token (``None`` outside http mode)."""
+    return _request_token.get()
 
 
-def token_z_naglowka(request) -> str | None:
-    """Wyłuskaj token ze schematu ``Bearer`` w nagłówku ``Authorization``.
+def token_from_header(request) -> str | None:
+    """Extract the ``Bearer`` scheme token from the ``Authorization`` header.
 
-    Nagłówek może nieść kilka metod rozdzielonych przecinkami
-    (``Basic …, Bearer …``); interesuje nas wyłącznie ``Bearer``.
+    The header may carry several methods separated by commas
+    (``Basic …, Bearer …``); only ``Bearer`` is of interest.
     """
     if request is None:
         return None
-    naglowek = request.headers.get("authorization", "")
-    if not naglowek:
+    header = request.headers.get("authorization", "")
+    if not header:
         return None
-    for czlon in naglowek.split(","):
-        # `split(None, 1)` (nie `split(" ")`, grupa E — recenzja): dzieli po
-        # DOWOLNYM ciągu białych znaków, więc `Bearer<spacja><spacja>abc`
-        # dalej daje dwa elementy — gołe `split(" ")` dawało wtedy trzy
-        # (`["Bearer", "", "abc"]`), warunek `len == 2` zawodził, a token
-        # wyglądający na w pełni poprawny cicho ginął jako `None`.
-        czesci = czlon.strip().split(None, 1)
-        if len(czesci) == 2 and czesci[0].lower() == "bearer":
-            return czesci[1].strip()
+    for part in header.split(","):
+        # `split(None, 1)` (not `split(" ")`, group E — review): splits on
+        # ANY run of whitespace, so `Bearer<space><space>abc` still gives
+        # two elements — a bare `split(" ")` gave three then
+        # (`["Bearer", "", "abc"]`), the `len == 2` check failed, and a
+        # token that looked entirely valid silently vanished as `None`.
+        pieces = part.strip().split(None, 1)
+        if len(pieces) == 2 and pieces[0].lower() == "bearer":
+            return pieces[1].strip()
     return None
 
 
 class TokenAuth(httpx.Auth):
-    """Dokłada ``Authorization: Bearer``. Bezstanowa.
+    """Adds ``Authorization: Bearer``. Stateless.
 
-    Sama obecność tego nagłówka sprawia, że OJS traktuje żądanie jako API
-    i pomija weryfikację CSRF (ValidateCsrfToken::isApiRequest).
+    The mere presence of this header makes OJS treat the request as an
+    API call and skip CSRF verification (ValidateCsrfToken::isApiRequest).
     """
 
     def __init__(self, token: str) -> None:
@@ -75,87 +76,88 @@ class TokenAuth(httpx.Auth):
         yield request
 
 
-def zbuduj_auth(config: Config) -> httpx.Auth:
-    """Strategia dla trybu ``stdio``: token, a w jego braku login i hasło.
+def build_auth(config: Config) -> httpx.Auth:
+    """Strategy for ``stdio`` mode: a token, falling back to login and
+    password.
 
-    :raises BladUwierzytelnienia: gdy nie ma ani tokenu, ani pary login/hasło.
+    :raises AuthenticationError: when there is neither a token nor a
+        login/password pair.
     """
     if config.api_token:
         return TokenAuth(config.api_token)
     if config.username and config.password:
-        # Import lokalny: SessionAuth ciągnie parser HTML, a ścieżka tokenowa
-        # nie ma powodu go ładować.
+        # Local import: SessionAuth pulls in an HTML parser, and the token
+        # path has no reason to load it.
         from .session_login import SessionAuth
 
         return SessionAuth(config)
-    raise BladUwierzytelnienia(
-        "Brak poświadczeń. Ustaw OJS_API_TOKEN (token z profilu użytkownika "
-        "w OJS) albo parę OJS_USERNAME i OJS_PASSWORD."
+    raise AuthenticationError(
+        "No credentials. Set OJS_API_TOKEN (a token from the user's "
+        "profile in OJS) or the OJS_USERNAME/OJS_PASSWORD pair."
     )
 
 
-class TokenZadaniaAuth(httpx.Auth):
-    """Dokłada ``Authorization: Bearer`` z tokenem BIEŻĄCEGO żądania MCP.
+class RequestTokenAuth(httpx.Auth):
+    """Adds ``Authorization: Bearer`` with the CURRENT MCP request's token.
 
-    W przeciwieństwie do ``TokenAuth`` (token zamrożony w konstruktorze),
-    ta strategia czyta ``token_zadania()`` DOPIERO w ``auth_flow`` — czyli
-    w chwili, gdy httpx faktycznie buduje wychodzące żądanie do OJS, a nie
-    gdy ktoś tworzy obiekt tej klasy. Dzięki temu JEDNA instancja (i jeden
-    ``OjsClient``, i jeden ``MCPServer``) może bezpiecznie obsłużyć WIELE
-    różnych żądań, każde z innym tokenem — `zbuduj_serwer` wywołuje się raz,
-    przy starcie procesu, zamiast na każde żądanie ASGI (patrz Runda 2
-    raportu Task 12: przebudowa serwera per żądanie kosztowała ok. 16 ms
-    CPU, blokując pętlę zdarzeń, i uniemożliwiała reużycie połączeń do OJS
-    oraz cache katalogu czasopism).
+    Unlike ``TokenAuth`` (token frozen in the constructor), this strategy
+    reads ``request_token()`` ONLY in ``auth_flow`` — i.e. at the moment
+    httpx actually builds the outgoing request to OJS, not when someone
+    creates an instance of this class. Thanks to that, ONE instance (and
+    one ``OjsClient``, and one ``MCPServer``) can safely serve MANY
+    different requests, each with a different token — `build_server` is
+    called once, at process start, instead of on every ASGI request (see
+    Round 2 of the Task 12 report: rebuilding the server per request cost
+    around 16 ms of CPU, blocking the event loop, and prevented reusing
+    connections to OJS as well as the journal-catalog cache).
 
-    Poprawność przy wielu użytkownikach naraz zależy od tego, że token w
-    kontekście ustawiony przez warstwę pośredniczącą (``TokenMiddleware``)
-    faktycznie dociera do TEGO wywołania ``auth_flow`` — a więc od tego, że
-    SDK niesie migawkę kontekstu nadawcy PER WIADOMOŚĆ (potwierdzone
-    testami z realną rozmową MCP, m.in.
-    ``test_izolacja_tokenow_pod_wymuszonym_przeplotem_30_rownoleglych`` w
-    ``tests/test_http_transport.py``). Uwaga: `http_transport.py` mimo to
-    używa `stateless_http=True` — z powodów operacyjnych (brak przypinania
-    sesji, prostsze skalowanie poziome), NIE dlatego, że w trybie stanowym
-    ten mechanizm by nie zadziałał — patrz docstring modułu
-    ``http_transport`` po pełne uzasadnienie i zastrzeżenie, że wariant
-    stanowy nie jest tu w ogóle testowany.
+    Correctness with multiple concurrent users depends on the token set in
+    context by the middleware layer (``TokenMiddleware``) actually
+    reaching THIS call to ``auth_flow`` — i.e. on the SDK carrying a
+    snapshot of the sender's context PER MESSAGE (confirmed by tests using
+    a real MCP conversation, including
+    ``test_token_isolation_under_30_forced_concurrent_interleaving`` in
+    ``tests/test_http_transport.py``). Note: `http_transport.py` still
+    uses `stateless_http=True` regardless — for operational reasons (no
+    session affinity, simpler horizontal scaling), NOT because this
+    mechanism would fail to work in stateful mode — see the
+    ``http_transport`` module docstring for the full reasoning and the
+    caveat that the stateful variant is not tested here at all.
     """
 
     def auth_flow(
         self, request: httpx.Request
     ) -> Generator[httpx.Request, httpx.Response, None]:
-        token = token_zadania()
+        token = request_token()
         if not token:
-            # Siatka bezpieczeństwa: w normalnej pracy `TokenMiddleware`
-            # gwarantuje token w kontekście, zanim cokolwiek zdąży wywołać
-            # narzędzie — to miejsce nie powinno się uruchomić bez tokenu.
-            # Podnosimy PRZED `yield`, więc httpx nigdy nie otwiera
-            # połączenia do OJS z tym żądaniem.
-            raise BladUwierzytelnienia(
-                "Żądanie nie zawiera nagłówka `Authorization: Bearer <token "
-                "OJS>`. W trybie http każdy klient uwierzytelnia się "
-                "własnym tokenem.",
+            # Safety net: in normal operation `TokenMiddleware` guarantees
+            # a token in context before anything can call a tool — this
+            # spot should never run without a token. We raise BEFORE
+            # `yield`, so httpx never opens a connection to OJS with this
+            # request.
+            raise AuthenticationError(
+                "The request carries no `Authorization: Bearer <OJS "
+                "token>` header. In http mode, every client authenticates "
+                "with its own token.",
                 status=401,
             )
         request.headers["Authorization"] = f"Bearer {token}"
         yield request
 
 
-def zbuduj_auth_http(config: Config) -> httpx.Auth:
-    """Strategia dla trybu ``http``: wyłącznie token z kontekstu żądania.
+def build_auth_http(config: Config) -> httpx.Auth:
+    """Strategy for ``http`` mode: only the token from the request context.
 
-    ``OJS_API_TOKEN``, ``OJS_USERNAME`` i ``OJS_PASSWORD`` są tu celowo
-    ignorowane — patrz docstring modułu. ``config`` nie jest tu w ogóle
-    używany (poświadczenia serwera nie mają jak wyciec z tej funkcji) —
-    zostaje w sygnaturze, żeby ``zbuduj_serwer`` mogło wybierać strategię
-    jednym, symetrycznym wywołaniem względem ``zbuduj_auth``.
+    ``OJS_API_TOKEN``, ``OJS_USERNAME`` and ``OJS_PASSWORD`` are
+    deliberately ignored here — see the module docstring. ``config`` is
+    not actually used here (server credentials have no way to leak out of
+    this function) — it stays in the signature so ``build_server`` can
+    pick a strategy with one symmetric call relative to ``build_auth``.
 
-    Token jest odczytywany DOPIERO przy budowaniu KAŻDEGO wychodzącego
-    żądania (``TokenZadaniaAuth.auth_flow``), nie tutaj — to pozwala
-    zbudować serwer i klienta RAZ, przy starcie procesu, a mimo to
-    bezpiecznie obsłużyć wielu użytkowników z różnymi tokenami. Ta funkcja
-    sama w sobie już NIGDY nie podnosi wyjątku z powodu braku tokenu —
-    patrz ``TokenZadaniaAuth`` po ten przypadek.
+    The token is read ONLY when building EACH outgoing request
+    (``RequestTokenAuth.auth_flow``), not here — this lets us build the
+    server and client ONCE, at process start, while still safely serving
+    many users with different tokens. This function itself never raises
+    for a missing token — see ``RequestTokenAuth`` for that case.
     """
-    return TokenZadaniaAuth()
+    return RequestTokenAuth()

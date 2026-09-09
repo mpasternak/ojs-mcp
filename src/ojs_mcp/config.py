@@ -1,7 +1,7 @@
-"""Konfiguracja serwera: adres instancji OJS, poświadczenia i transport.
+"""Server configuration: OJS instance address, credentials, and transport.
 
-Wieloinstancyjność: ta sama binarka obsługuje dowolne wdrożenie OJS,
-różnicowane zmienną ``OJS_BASE_URL``.
+Multi-instance support: the same binary serves any OJS deployment,
+distinguished by the ``OJS_BASE_URL`` environment variable.
 """
 
 from __future__ import annotations
@@ -9,24 +9,26 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-_BRAK_HOSTA = (
-    "Nie ustawiono OJS_BASE_URL — nie wiadomo, z którą instancją OJS rozmawiać.\n"
-    "Podaj adres dokładnie taki, jaki działa w przeglądarce, np.:\n"
-    "    OJS_BASE_URL=https://czasopisma.twoja-uczelnia.pl ojs-mcp\n"
-    "W konfiguracji klienta MCP ustaw tę zmienną w sekcji `env`."
+_MISSING_HOST = (
+    "OJS_BASE_URL is not set — there is no way to know which OJS instance "
+    "to talk to.\n"
+    "Give the exact address that works in a browser, e.g.:\n"
+    "    OJS_BASE_URL=https://journals.your-university.edu ojs-mcp\n"
+    "In your MCP client configuration, set this variable in the `env` "
+    "section."
 )
 
-# Kontekst poziomu witryny w routingu OJS (APIRouter: SITE_CONTEXT_PATH).
-KONTEKST_WITRYNY = "index"
+# Site-level context in OJS routing (APIRouter: SITE_CONTEXT_PATH).
+SITE_CONTEXT = "index"
 
 
-class BrakKonfiguracji(RuntimeError):
-    """Brakuje obowiązkowego ustawienia — serwer nie ma prawa zgadywać."""
+class MissingConfiguration(RuntimeError):
+    """A required setting is missing — the server has no right to guess."""
 
 
 @dataclass(frozen=True)
 class Config:
-    """Niezmienny zestaw ustawień połączenia z instancją OJS."""
+    """Immutable set of settings for connecting to an OJS instance."""
 
     base_url: str
     journal: str | None = None
@@ -41,51 +43,52 @@ class Config:
 
     @classmethod
     def from_env(cls) -> Config:
-        """Zbuduj konfigurację ze zmiennych środowiskowych.
+        """Build a configuration from environment variables.
 
-        :raises BrakKonfiguracji: gdy ``OJS_BASE_URL`` jest pusty lub
-            nieustawiony, albo gdy ``OJS_MCP_HTTP_PORT`` jest ustawiony na
-            wartość, która nie jest liczbą całkowitą albo leży poza
-            zakresem poprawnych portów TCP (1–65535).
+        :raises MissingConfiguration: when ``OJS_BASE_URL`` is empty or
+            unset, or when ``OJS_MCP_HTTP_PORT`` is set to a value that is
+            not an integer, or that falls outside the valid TCP port range
+            (1-65535).
         """
         base = (os.environ.get("OJS_BASE_URL") or "").strip()
         if not base:
-            raise BrakKonfiguracji(_BRAK_HOSTA)
-        # `.strip()` tak samo jak przy pozostałych zmiennych niżej — bez
-        # tego "http " (spacja ze skryptu wdrożeniowego) cicho spada na
-        # `stdio` zamiast `http`.
-        transport_surowy = (os.environ.get("OJS_MCP_TRANSPORT") or "").strip()
-        transport = (transport_surowy or "stdio").lower()
-        # WAŻNE (recenzja): reszta modułu czyta zmienne wzorcem
-        # `(os.environ.get(...) or "").strip() or default` — te dwie tego
-        # nie robiły. `OJS_MCP_HTTP_HOST=` USTAWIONE, ale PUSTE (typowy
-        # efekt podstawienia nieustawionej zmiennej w skrypcie
-        # wdrożeniowym) dawało pusty host, czyli bind na WSZYSTKICH
-        # interfejsach zamiast na pętli zwrotnej — patrz ostrzeżenie w
-        # docs/hosting.md o niewystawianiu portu do internetu.
+            raise MissingConfiguration(_MISSING_HOST)
+        # `.strip()` just like the other variables below — without it,
+        # "http " (a stray space from a deployment script) would silently
+        # fall through to `stdio` instead of `http`.
+        raw_transport = (os.environ.get("OJS_MCP_TRANSPORT") or "").strip()
+        transport = (raw_transport or "stdio").lower()
+        # IMPORTANT (review): the rest of the module reads variables with
+        # the pattern `(os.environ.get(...) or "").strip() or default` —
+        # these two did not. `OJS_MCP_HTTP_HOST=` SET but EMPTY (a typical
+        # effect of substituting an unset variable in a deployment script)
+        # produced an empty host, i.e. binding on ALL interfaces instead of
+        # the loopback — see the warning in docs/hosting.md about not
+        # exposing the port to the internet.
         http_host = (os.environ.get("OJS_MCP_HTTP_HOST") or "").strip() or "127.0.0.1"
-        port_surowy = (os.environ.get("OJS_MCP_HTTP_PORT") or "").strip() or "8000"
+        raw_port = (os.environ.get("OJS_MCP_HTTP_PORT") or "").strip() or "8000"
         try:
-            http_port = int(port_surowy)
+            http_port = int(raw_port)
         except ValueError as exc:
-            raise BrakKonfiguracji(
-                f"OJS_MCP_HTTP_PORT={port_surowy!r} nie jest liczbą całkowitą. "
-                "Ustaw port jako liczbę, np. OJS_MCP_HTTP_PORT=8000, albo "
-                "usuń tę zmienną, żeby użyć domyślnego portu 8000."
+            raise MissingConfiguration(
+                f"OJS_MCP_HTTP_PORT={raw_port!r} is not an integer. "
+                "Set the port as a number, e.g. OJS_MCP_HTTP_PORT=8000, or "
+                "remove this variable to use the default port 8000."
             ) from exc
-        # Zakres portów TCP (recenzja, ta sama klasa co W1): `0`, `-1`,
-        # `99999` przechodziłyby przez samo `int(...)` i wywalały się
-        # dopiero surowym błędem w `socket.bind()`/uvicornie, głęboko w
-        # serwerze, zamiast tu, czytelnie.
+        # TCP port range (review, same class as W1): `0`, `-1`, `99999`
+        # would pass through `int(...)` alone and only fail with a raw
+        # error in `socket.bind()`/uvicorn, deep inside the server,
+        # instead of here, legibly.
         if not (1 <= http_port <= 65535):
-            raise BrakKonfiguracji(
-                f"OJS_MCP_HTTP_PORT={http_port} jest poza zakresem portów "
-                "TCP (1-65535). Ustaw poprawny port, np. OJS_MCP_HTTP_PORT=8000."
+            raise MissingConfiguration(
+                f"OJS_MCP_HTTP_PORT={http_port} is outside the TCP port "
+                "range (1-65535). Set a valid port, e.g. "
+                "OJS_MCP_HTTP_PORT=8000."
             )
         origins = tuple(
-            czesc.strip()
-            for czesc in (os.environ.get("OJS_MCP_ALLOWED_ORIGINS") or "").split(",")
-            if czesc.strip()
+            part.strip()
+            for part in (os.environ.get("OJS_MCP_ALLOWED_ORIGINS") or "").split(",")
+            if part.strip()
         )
         return cls(
             base_url=base.rstrip("/"),
@@ -100,18 +103,19 @@ class Config:
             allowed_origins=origins,
         )
 
-    def api_root(self, czasopismo: str | None = None) -> str:
-        """Korzeń API v1 dla wskazanego czasopisma, bez końcowego ukośnika.
+    def api_root(self, journal: str | None = None) -> str:
+        """API v1 root for the given journal, without a trailing slash.
 
-        ``czasopismo=None`` używa ``OJS_JOURNAL``; ``"index"`` daje poziom
-        witryny. Segment ``index.php`` zostaje zawsze — instancje z włączonym
-        ``restful_urls`` obsługujemy przez podanie pełnego ``OJS_BASE_URL``,
-        a nie przez zgadywanie wariantu.
+        ``journal=None`` uses ``OJS_JOURNAL``; ``"index"`` gives the site
+        level. The ``index.php`` segment always stays — instances with
+        ``restful_urls`` enabled are handled by supplying the full
+        ``OJS_BASE_URL``, not by guessing the variant.
         """
-        kontekst = czasopismo or self.journal
-        if not kontekst:
-            raise BrakKonfiguracji(
-                "Nie wskazano czasopisma. Ustaw OJS_JOURNAL albo podaj parametr "
-                "`czasopismo`. Listę dostępnych zwraca narzędzie `lista_czasopism`."
+        context = journal or self.journal
+        if not context:
+            raise MissingConfiguration(
+                "No journal was given. Set OJS_JOURNAL or pass the "
+                "`journal` parameter. The `list_journals` tool returns the "
+                "available ones."
             )
-        return f"{self.base_url}/index.php/{kontekst}/api/v1"
+        return f"{self.base_url}/index.php/{context}/api/v1"
