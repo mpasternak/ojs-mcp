@@ -762,10 +762,22 @@ async def test_sekwencja_a_401_b_na_jednym_polaczeniu_bez_odwrotu_do_a():
 async def test_brak_przecieku_ciasteczek_pod_obciazeniem_50_uzytkownikow():
     """Punkt 7 weryfikacji obowiązkowej (Runda 3, N1 — KRYTYCZNA): atrapa
     OJS odsyła `Set-Cookie` z sesją; co najmniej 50 różnych użytkowników
-    (różne tokeny), równolegle, z wymuszonym przeplotem (`anyio.sleep` po
-    stronie atrapy — bez tego respx rozwiązuje odpowiedź synchronicznie i
-    zadania nie przeplatają się naprawdę) — ŻADNE wychodzące żądanie nie
-    może nieść cudzego (ani w ogóle żadnego) ciasteczka sesji.
+    (różne tokeny) — ŻADNE wychodzące żądanie nie może nieść cudzego (ani w
+    ogóle żadnego) ciasteczka sesji.
+
+    Runda 4 (recenzja Rundy 3): ROZGRZEWKA SEKWENCYJNA jest tu KLUCZOWA, nie
+    kosmetyczna. Odpalenie wszystkich 50 „zimnych” użytkowników JEDNYM
+    `asyncio.gather` (jak w pierwszej wersji tego testu) NIE ŁAPIE regresji
+    — każde z 50 żądań buduje swoje nagłówki (czyta jeszcze PUSTY magazyn
+    ciasteczek) zanim JAKAKOLWIEK odpowiedź zdąży go wypełnić, więc test
+    przechodził na zielono NAWET z cofniętą poprawką N1 (zweryfikowane
+    empirycznie: 50 zimnych żądań naraz → 0/50 przecieku mimo cofniętej
+    poprawki; 1 rozgrzewka + 49 równoległych → 49/50 przecieku bez
+    poprawki — patrz raport Task 12, Runda 4). Dlatego najpierw JEDNO
+    żądanie w pełni sekwencyjne (dostaje i przetwarza `Set-Cookie`), DOPIERO
+    POTEM fala równoległa — odtwarza realny scenariusz, w którym ktoś już
+    ma ciasteczko w (współdzielonym, źle zaimplementowanym) magazynie,
+    zanim kolejni użytkownicy zaczną wysyłać swoje żądania.
     """
 
     async def _z_ciasteczkiem_sesji(request: httpx.Request) -> httpx.Response:
@@ -788,8 +800,13 @@ async def test_brak_przecieku_ciasteczek_pod_obciazeniem_50_uzytkownikow():
     n = 50
     tokeny = [f"token-{i}" for i in range(n)]
     async with _uruchom_lifespan(aplikacja):
+        # Rozgrzewka SEKWENCYJNA, w pełni zakończona (łącznie z odebraniem
+        # `Set-Cookie`) PRZED falą równoległą — patrz uzasadnienie wyżej.
+        wynik_rozgrzewki = await _wywolaj_kim_jestem(aplikacja, tokeny[0])
+        assert not wynik_rozgrzewki.is_error
+
         wyniki = await asyncio.gather(
-            *[_wywolaj_kim_jestem(aplikacja, t) for t in tokeny]
+            *[_wywolaj_kim_jestem(aplikacja, t) for t in tokeny[1:]]
         )
 
     assert all(not w.is_error for w in wyniki)

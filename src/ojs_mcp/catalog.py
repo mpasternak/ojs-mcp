@@ -6,6 +6,7 @@ import asyncio
 import logging
 from contextvars import ContextVar
 
+from .auth import token_zadania
 from .bledy import BladOjs
 from .client import OjsClient
 from .config import KONTEKST_WITRYNY, Config
@@ -56,6 +57,20 @@ class Katalog:
     szesnastu narzędzi, ~16 ms CPU — patrz raport Task 12, Runda 2), NIE
     ``Katalog``: to pusty obiekt bez własnego stanu procesowego poza samym
     cache'em, więc przeniesienie go do ``ContextVar`` nic nie kosztuje.
+
+    **Blokada NIE jest per instancja** (poprawka Rundy 4, recenzja Rundy 3)
+    — jest kluczowana tokenem bieżącego żądania (patrz
+    ``_pozyskaj_blokade``). Pojedyncza, wspólna blokada dla całej instancji
+    wyglądałaby na bezpieczną (chroni tylko fazę „cache pusty → pobierz”),
+    ale w praktyce SZEREGOWAŁA ruch niepowiązanych użytkowników: dziesięciu
+    użytkowników z różnymi, nigdy niecache'owanymi tokenami czekało jeden
+    na drugiego, mimo że każdy z nich i tak dostawał WŁASNY wynik z
+    WŁASNEGO, izolowanego cache'u — zmierzone 3,6 s zamiast ~0,3 s dla
+    atrapy z opóźnieniem 0,3 s. Kluczowanie tokenem jest tu bezpieczne
+    (w przeciwieństwie do kluczowania nim CACHE'U, odrzuconego w Rundzie 3)
+    — wpisy w słowniku blokad żyją wyłącznie przez czas AKTYWNEGO pobrania
+    i są usuwane zaraz po nim (licznik odwołań), więc słownik nie rośnie
+    bez ograniczeń mimo wielu różnych tokenów w ciągu życia procesu.
     """
 
     def __init__(self, client: OjsClient, config: Config) -> None:
@@ -65,12 +80,48 @@ class Katalog:
         self._cache: ContextVar[list[dict] | None] = ContextVar(
             f"ojs_mcp_katalog_{id(self)}", default=None
         )
-        # Chroni WYŁĄCZNIE przed podwójnym pobraniem w obrębie TEGO SAMEGO
-        # kontekstu (np. gdyby coś kiedyś wywołało `czasopisma()`
-        # równolegle z dwóch miejsc w jednym żądaniu) — między RÓŻNYMI
-        # kontekstami nie ma czego chronić, bo każdy ma własny, izolowany
-        # cache (patrz wyżej); ta blokada nie serializuje różnych żądań.
-        self._blokada = asyncio.Lock()
+        # Blokady KLUCZOWANE tokenem bieżącego żądania (``None`` poza
+        # trybem http — patrz ``auth.token_zadania``), nie jedna blokada na
+        # całą instancję. Runda 4 (recenzja Rundy 3): pojedyncza blokada
+        # per-instancja serializowała ruch NIEPOWIĄZANYCH użytkowników —
+        # zmierzone: dziesięciu użytkowników z różnymi, nigdy
+        # niecache'owanymi tokenami i atrapą z opóźnieniem 0,3 s dawało
+        # 3,6 s zamiast ~0,3 s. ``ContextVar`` (jak dla cache'u) by tu NIE
+        # zadziałał: `asyncio.gather`/`create_task` kopiuje kontekst PRZY
+        # STARCIE zadania, więc zadania-rodzeństwo dostają NIEZALEŻNE kopie
+        # i nigdy nie zobaczyłyby SIEBIE nawzajem w jednej `ContextVar` —
+        # blokada musi żyć w zwykłym, współdzielonym atrybucie instancji,
+        # a KLUCZ (nie sama blokada) ma zależeć od kontekstu.
+        #
+        # Słownik jest samoczyszczący (licznik oczekujących obok blokady):
+        # wpis istnieje wyłącznie przez czas trwania AKTYWNEGO pobrania dla
+        # danego klucza, więc — w przeciwieństwie do cache'u (patrz N2) —
+        # NIE rośnie bez ograniczeń mimo kluczowania wartością pochodną od
+        # tokenu.
+        self._blokady_w_locie: dict[str | None, tuple[asyncio.Lock, int]] = {}
+
+    def _pozyskaj_blokade(self, klucz: str | None) -> asyncio.Lock:
+        """Zwróć blokadę dla ``klucz`` i zarejestruj jedno jej użycie.
+
+        Bez ``await`` w środku — cała operacja wykonuje się w jednym
+        „obrocie” pętli zdarzeń, więc nie ma wyścigu między
+        sprawdzeniem a wstawieniem do słownika mimo braku osobnej blokady
+        chroniącej sam słownik.
+        """
+        blokada, licznik = self._blokady_w_locie.get(klucz, (None, 0))
+        if blokada is None:
+            blokada = asyncio.Lock()
+        self._blokady_w_locie[klucz] = (blokada, licznik + 1)
+        return blokada
+
+    def _zwolnij_blokade(self, klucz: str | None) -> None:
+        """Wyrejestruj jedno użycie blokady ``klucz``, usuwając wpis, gdy
+        nikt już jej nie potrzebuje — patrz ``_pozyskaj_blokade``."""
+        blokada, licznik = self._blokady_w_locie[klucz]
+        if licznik <= 1:
+            del self._blokady_w_locie[klucz]
+        else:
+            self._blokady_w_locie[klucz] = (blokada, licznik - 1)
 
     async def czasopisma(self) -> list[dict]:
         """Zwróć listę ``{"sciezka", "nazwa"}`` dla BIEŻĄCEGO kontekstu.
@@ -84,53 +135,60 @@ class Katalog:
         if wynik is not None:
             return wynik
 
-        async with self._blokada:
-            # Podwójne sprawdzenie: ktoś inny mógł wypełnić cache TEGO
-            # SAMEGO kontekstu, czekając na tę samą blokadę.
-            wynik = self._cache.get()
-            if wynik is not None:
-                return wynik
-
-            kontekst = self._config.journal or KONTEKST_WITRYNY
-            try:
-                pozycje = await self._client.pobierz_wszystko(
-                    "contexts", parametry={"isEnabled": 1}, czasopismo=kontekst
-                )
-            except BladOjs as exc:
-                if self._config.journal:
-                    # Znamy czasopismo z konfiguracji — brak katalogu nie
-                    # jest powodem, żeby zablokować całe TO żądanie. Ten
-                    # fallback jest teraz nieszkodliwy dla innych
-                    # użytkowników — żyje wyłącznie w kontekście TEGO
-                    # żądania (patrz docstring klasy, N2).
-                    logger.warning(
-                        "Nie udało się pobrać katalogu czasopism (%s); "
-                        "używam OJS_JOURNAL=%s",
-                        exc,
-                        self._config.journal,
-                    )
-                    wynik = [
-                        {
-                            "sciezka": self._config.journal,
-                            "nazwa": self._config.journal,
-                        }
-                    ]
-                    self._cache.set(wynik)
+        klucz = token_zadania()
+        blokada = self._pozyskaj_blokade(klucz)
+        try:
+            async with blokada:
+                # Podwójne sprawdzenie: ktoś inny mógł wypełnić cache TEGO
+                # SAMEGO kontekstu, czekając na tę samą blokadę.
+                wynik = self._cache.get()
+                if wynik is not None:
                     return wynik
-                raise BladOjs(
-                    "Nie udało się pobrać listy czasopism, a OJS_JOURNAL nie jest "
-                    "ustawione. Pobranie katalogu na poziomie witryny wymaga roli "
-                    "administratora — ustaw OJS_JOURNAL na adres swojego "
-                    f"czasopisma. Przyczyna: {exc}"
-                ) from exc
 
-            wynik = [
-                {"sciezka": str(p.get("urlPath") or ""), "nazwa": _nazwa(p)}
-                for p in pozycje
-                if p.get("urlPath")
-            ]
-            self._cache.set(wynik)
-            return wynik
+                kontekst = self._config.journal or KONTEKST_WITRYNY
+                try:
+                    pozycje = await self._client.pobierz_wszystko(
+                        "contexts", parametry={"isEnabled": 1}, czasopismo=kontekst
+                    )
+                except BladOjs as exc:
+                    if self._config.journal:
+                        # Znamy czasopismo z konfiguracji — brak katalogu
+                        # nie jest powodem, żeby zablokować całe TO
+                        # żądanie. Ten fallback jest nieszkodliwy dla
+                        # innych użytkowników — żyje wyłącznie w
+                        # kontekście TEGO żądania (patrz docstring klasy,
+                        # N2).
+                        logger.warning(
+                            "Nie udało się pobrać katalogu czasopism (%s); "
+                            "używam OJS_JOURNAL=%s",
+                            exc,
+                            self._config.journal,
+                        )
+                        wynik = [
+                            {
+                                "sciezka": self._config.journal,
+                                "nazwa": self._config.journal,
+                            }
+                        ]
+                        self._cache.set(wynik)
+                        return wynik
+                    raise BladOjs(
+                        "Nie udało się pobrać listy czasopism, a OJS_JOURNAL "
+                        "nie jest ustawione. Pobranie katalogu na poziomie "
+                        "witryny wymaga roli administratora — ustaw "
+                        "OJS_JOURNAL na adres swojego czasopisma. Przyczyna: "
+                        f"{exc}"
+                    ) from exc
+
+                wynik = [
+                    {"sciezka": str(p.get("urlPath") or ""), "nazwa": _nazwa(p)}
+                    for p in pozycje
+                    if p.get("urlPath")
+                ]
+                self._cache.set(wynik)
+                return wynik
+        finally:
+            self._zwolnij_blokade(klucz)
 
     async def rozwiaz(self, nazwa: str | None) -> str:
         """Zamień nazwę czasopisma albo ``contextPath`` na ``contextPath``."""

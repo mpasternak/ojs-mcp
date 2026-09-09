@@ -1,10 +1,11 @@
 import asyncio
+import time
 
 import httpx
 import pytest
 import respx
 
-from ojs_mcp.auth import TokenAuth
+from ojs_mcp.auth import TokenAuth, ustaw_token_zadania
 from ojs_mcp.bledy import BladOjs
 from ojs_mcp.catalog import Katalog
 from ojs_mcp.client import OjsClient
@@ -124,4 +125,43 @@ async def test_cache_izolowany_miedzy_zadaniami_nie_wspoldzielony():
     await asyncio.create_task(katalog.czasopisma())
 
     assert trasa.call_count == 2  # każde "żądanie" pobrało katalog OSOBNO
+    await klient.aclose()
+
+
+@respx.mock
+async def test_zimne_pobrania_roznych_uzytkownikow_nie_szereguja_sie():
+    """Runda 4 (recenzja Rundy 3): blokada `Katalog` musi być kluczowana
+    tokenem, nie jedna na całą instancję — inaczej dziesięciu użytkowników
+    z różnymi, nigdy niecache'owanymi tokenami czekałoby jeden na drugiego,
+    mimo że każdy dostaje WŁASNY wynik z WŁASNEGO, izolowanego cache'u.
+    Zmierzone PRZED tą poprawką: ~3,6 s (10 × 0,36 s) zamiast ~0,3 s.
+    """
+    opoznienie = 0.3
+
+    async def _powolna(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(opoznienie)
+        return httpx.Response(200, json={"itemsMax": 0, "items": []})
+
+    respx.get("https://x.edu/index.php/rocznik/api/v1/contexts").mock(
+        side_effect=_powolna
+    )
+    _, klient, katalog = _zestaw()
+
+    async def uzytkownik(token: str) -> list[dict]:
+        # `asyncio.gather` tworzy Task per-coroutine i kopiuje kontekst
+        # PRZED uruchomieniem tej funkcji, więc `ustaw_token_zadania`
+        # wykonane TUTAJ ustawia wartość we WŁASNYM, już odizolowanym
+        # kontekście tego zadania — nie przecieka do rodzeństwa.
+        ustaw_token_zadania(token)
+        return await katalog.czasopisma()
+
+    start = time.perf_counter()
+    await asyncio.gather(*[uzytkownik(f"token-{i}") for i in range(10)])
+    czas = time.perf_counter() - start
+
+    # Gdyby blokada serializowała ruch, zajęłoby to ~10 × 0,3 s = 3 s.
+    # Bez serializacji — ~0,3 s (czas jednego pobrania, uruchomionych
+    # współbieżnie). Margines swobodny, ale dużo poniżej pełnej serializacji.
+    assert czas < opoznienie * 3, f"zbyt wolno ({czas:.2f}s) — blokada szereguje"
+    ustaw_token_zadania(None)
     await klient.aclose()
