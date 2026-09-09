@@ -1,0 +1,63 @@
+{
+  "manifest_version": "0.4",
+  "name": "ojs-mcp",
+  "display_name": "OJS — Open Journal Systems",
+  "version": "0.1.0",
+  "description": "Serwer MCP dla uwierzytelnionego REST API Open Journal Systems (OJS 3.5/3.6)",
+  "long_description": "Odpytuje REST API dowolnej instancji OJS: numery, artykuły, zgłoszenia, wydawnictwa i słowniki, ze stronicowaniem i podążaniem za hiperłączami. Zapis danych jest domyślnie wyłączony.\n\nAdres instancji trzeba podać niżej — nie ma wartości domyślnej celowo. Każde wdrożenie OJS to inne czasopismo, więc zaszyty host oznaczałby ciche pokazywanie cudzych danych jako własnych.",
+  "author": {
+    "name": "Michał Pasternak",
+    "email": "michal.dtz@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mpasternak/ojs-mcp"
+  },
+  "homepage": "https://github.com/mpasternak/ojs-mcp#readme",
+  "documentation": "https://github.com/mpasternak/ojs-mcp#readme",
+  "support": "https://github.com/mpasternak/ojs-mcp/issues",
+  "license": "MIT",
+  "keywords": ["ojs", "mcp", "open-journal-systems", "pkp", "api", "llm"],
+  "server": {
+    "type": "uv",
+    "entry_point": "mcpb/launch.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": ["run", "--directory", "${__dirname}", "mcpb/launch.py"],
+      "env": {
+        "OJS_BASE_URL": "${user_config.base_url}",
+        "OJS_JOURNAL": "${user_config.journal}",
+        "OJS_API_TOKEN": "${user_config.api_token}"
+      }
+    }
+  },
+  "user_config": {
+    "base_url": {
+      "type": "string",
+      "title": "Adres instancji OJS",
+      "description": "Bazowy adres czasopisma — dokładnie taki, jaki działa w przeglądarce, np. https://czasopisma.twoja-uczelnia.pl (bez /index.php i bez nazwy czasopisma na końcu). Bez tego serwer nie wystartuje.",
+      "required": true
+    },
+    "journal": {
+      "type": "string",
+      "title": "Skrót czasopisma (opcjonalnie)",
+      "description": "Segment ścieżki z adresu czasopisma w OJS — dla .../index.php/moj-magazyn to \"moj-magazyn\". Potrzebne tylko wtedy, gdy ta instancja OJS obsługuje więcej niż jedno czasopismo; przy jednym czasopiśmie zostaw puste.",
+      "required": false,
+      "default": ""
+    },
+    "api_token": {
+      "type": "string",
+      "title": "Token API OJS",
+      "description": "Token z Twojego profilu w OJS: zalogowany użytkownik → zakładka „API Key” w profilu → włącz dostęp aplikacji zewnętrznych → skopiuj wygenerowany klucz. Potrzebny do operacji wykraczających poza dane publicznie dostępne.",
+      "required": false,
+      "default": "",
+      "sensitive": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux", "win32"],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}

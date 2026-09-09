@@ -1,8 +1,19 @@
+# Wykluczone z paczki `.mcpb`. Runtime `uv` rozwiązuje zależności z dołączonego
+# pyproject.toml, więc wirtualne środowisko NIE może być wysyłane.
 .git/
 .github/
 .venv/
-docs/
-site/
-tests/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
 .pytest_cache/
 .ruff_cache/
+.mypy_cache/
+tests/
+tools/
+docs/
+site/
+.superpowers/
+.pre-commit-config.yaml
+*.mcpb
