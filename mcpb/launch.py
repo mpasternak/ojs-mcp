@@ -1,19 +1,22 @@
-"""Punkt wejścia dla paczki `.mcpb` (instalacja jednym kliknięciem w kliencie
-z pulpitu).
+"""Entry point for the `.mcpb` package (one-click install in a desktop
+client).
 
-Pole `server.entry_point` paczki musi być zwykłym skryptem, a `ojs_mcp.server`
-używa importów względnych pakietu (`from .client import ...`), więc nie da się
-go uruchomić jako plik najwyższego poziomu. Ten launcher importuje pakiet
-zamiast tego: `uv` instaluje projekt z dołączonego `pyproject.toml`, zanim nas
-uruchomi, co stawia `ojs_mcp` na ścieżce importu.
+The package's `server.entry_point` field must be a plain script, and
+`ojs_mcp.server` uses the package's relative imports (`from .client
+import ...`), so it cannot be run as a top-level file. This launcher
+imports the package instead: `uv` installs the project from the bundled
+`pyproject.toml` before running us, which puts `ojs_mcp` on the import
+path.
 
-Celowo poza `src/` — to klej pakowania, a nie część dystrybuowanego koła.
+Deliberately outside `src/` — this is packaging glue, not part of the
+distributed wheel.
 """
 
 from ojs_mcp.server import main
 
 if __name__ == "__main__":
-    # `main()` zwraca kod wyjścia (np. 2, gdy brakuje OJS_BASE_URL) —
-    # `SystemExit` przenosi go na kod procesu, żeby klient MCP zobaczył
-    # awarię startu, a nie ciche zamknięcie ze statusem 0.
+    # `main()` returns an exit code (e.g. 2, when OJS_BASE_URL is
+    # missing) — `SystemExit` carries it over to the process exit code,
+    # so the MCP client sees a startup failure, not a silent exit with
+    # status 0.
     raise SystemExit(main())
