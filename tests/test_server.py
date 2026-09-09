@@ -9,7 +9,20 @@ import respx
 from ojs_mcp.auth import ustaw_token_zadania
 from ojs_mcp.bledy import BladUwierzytelnienia
 from ojs_mcp.config import Config
+from ojs_mcp.mcp_errors import jest_opakowana
 from ojs_mcp.server import _uruchom_stdio_i_zamknij, main, zbuduj_serwer
+from ojs_mcp.slowniki import DECYZJE
+from ojs_mcp.tools_write import POLA_EDYTOWALNE
+
+# Nazwy WSZYSTKICH pięciu narzędzi zapisu (Task 13) — używane w kilku
+# testach niżej, więc trzymane w jednym miejscu.
+NARZEDZIA_ZAPISU = {
+    "dodaj_decyzje_redakcyjna",
+    "edytuj_metadane_publikacji",
+    "opublikuj_publikacje",
+    "cofnij_publikacje",
+    "utworz_ogloszenie",
+}
 
 
 async def _nazwy_narzedzi(mcp):
@@ -65,9 +78,9 @@ async def test_bez_allow_writes_brak_narzedzi_zapisu():
     mcp, klient = zbuduj_serwer(cfg)
     nazwy = await _nazwy_narzedzi(mcp)
     assert "szukaj_zgloszen" in nazwy
-    # Kluczowa właściwość: model NIE WIDZI narzędzi zapisu.
-    assert "dodaj_decyzje_redakcyjna" not in nazwy
-    assert "opublikuj_publikacje" not in nazwy
+    # Kluczowa właściwość: model NIE WIDZI ŻADNEGO z pięciu narzędzi zapisu
+    # (D8, recenzja Rundy 1 Tasku 13: dawniej sprawdzano tylko 2 z 5).
+    assert not (nazwy & NARZEDZIA_ZAPISU), nazwy & NARZEDZIA_ZAPISU
     await klient.aclose()
 
 
@@ -79,15 +92,77 @@ async def test_z_allow_writes_narzedzia_zapisu_sa(caplog):
     mcp, klient = zbuduj_serwer(cfg)
     nazwy = await _nazwy_narzedzi(mcp)
     # Task 13: `tools_write` ma teraz pełną implementację — przy
-    # allow_writes=True model MA widzieć narzędzia zapisu.
-    assert "dodaj_decyzje_redakcyjna" in nazwy
-    assert "edytuj_metadane_publikacji" in nazwy
-    assert "opublikuj_publikacje" in nazwy
-    assert "cofnij_publikacje" in nazwy
-    assert "utworz_ogloszenie" in nazwy
+    # allow_writes=True model MA widzieć wszystkie pięć narzędzi zapisu.
+    assert NARZEDZIA_ZAPISU <= nazwy
     # Jedyny sygnał dla operatora, że instancja może modyfikować dane
     # produkcyjne czasopisma — musi zostać, nawet po refaktorze.
     assert "OJS_ALLOW_WRITES" in caplog.text
+    await klient.aclose()
+
+
+@pytest.mark.parametrize("allow_writes", [False, True])
+async def test_wszystkie_narzedzia_maja_dekorator_bledow(allow_writes):
+    """W2, recenzja Rundy 1 Tasku 13: cała wartość `mcp_errors.z_czytelnym_bledem`
+    opiera się na tym, że KAŻDE zarejestrowane narzędzie faktycznie przez
+    niego przeszło. Nic wcześniej tego nie pilnowało — narzędzie dopisane
+    bez dekoratora przechodziłoby całą zieloną serię testów, a model
+    dostawałby dla niego gołe "Error executing tool X" zamiast czytelnego
+    komunikatu (patrz `mcp_errors.py`).
+
+    `mcp._tool_manager` jest atrybutem prywatnym SDK, ale to jedyny sposób
+    dotrzeć do FAKTYCZNIE zarejestrowanej funkcji (`Tool.fn`) — publiczne
+    `MCPServer.list_tools()` konwertuje do protokołowego `MCPTool`, które
+    `fn` już nie niesie.
+    """
+    cfg = Config(
+        base_url="https://x.edu", journal="r", api_token="t", allow_writes=allow_writes
+    )
+    mcp, klient = zbuduj_serwer(cfg)
+    narzedzia = mcp._tool_manager.list_tools()
+    assert narzedzia  # test jest bezwartościowy, jeśli lista jest pusta
+    bez_dekoratora = [t.name for t in narzedzia if not jest_opakowana(t.fn)]
+    assert not bez_dekoratora, f"Narzędzia bez @z_czytelnym_bledem: {bez_dekoratora}"
+    await klient.aclose()
+
+
+async def test_opisy_narzedzi_zapisu_widoczne_dla_modelu():
+    """D11, recenzja Rundy 1 Tasku 13: ostrzeżenie „UWAGA: modyfikuje dane
+    produkcyjne czasopisma” musi być sprawdzone w opisie, jaki NAPRAWDĘ
+    widzi model (`Tool.description` z prawdziwego `MCPServer.list_tools()`),
+    nie przez odczyt `fn.__doc__` na atrapie rejestrującej — te dwie rzeczy
+    dziś się zgadzają, ale nie ma na to gwarancji (np. jawny
+    `@mcp.tool(description=...)` by je rozjechał, a test na atrapie by tego
+    nie złapał).
+
+    D6: nazwy decyzji (`slowniki.DECYZJE`) i pól edytowalnych
+    (`tools_write.POLA_EDYTOWALNE`) są wpisane w opisach narzędzi NA
+    SZTYWNO, obok słowników — rozjazd nie wywołałby żadnego innego testu.
+    Ten test iteruje po słownikach/krotce i sprawdza, że każda nazwa
+    faktycznie występuje w opisie narzędzia, które ją waliduje.
+    """
+    cfg = Config(
+        base_url="https://x.edu", journal="r", api_token="t", allow_writes=True
+    )
+    mcp, klient = zbuduj_serwer(cfg)
+    narzedzia = {t.name: t for t in await mcp.list_tools()}
+
+    for nazwa in NARZEDZIA_ZAPISU:
+        opis = narzedzia[nazwa].description or ""
+        assert opis.startswith("UWAGA: modyfikuje dane produkcyjne czasopisma."), (
+            f"{nazwa} nie zaczyna opisu od ostrzeżenia: {opis!r}"
+        )
+
+    opis_decyzji = narzedzia["dodaj_decyzje_redakcyjna"].description
+    for nazwa_decyzji in DECYZJE:
+        assert nazwa_decyzji in opis_decyzji, (
+            f"decyzja {nazwa_decyzji!r} nie jest wymieniona w opisie narzędzia"
+        )
+
+    opis_edycji = narzedzia["edytuj_metadane_publikacji"].description
+    for pole in POLA_EDYTOWALNE:
+        assert pole in opis_edycji, (
+            f"pole {pole!r} nie jest wymienione w opisie narzędzia"
+        )
     await klient.aclose()
 
 

@@ -16,13 +16,14 @@ import pytest
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
-from ojs_mcp.bledy import BladOjs, BladWalidacji
+from ojs_mcp.bledy import BladOjs, BladWalidacji, BladWejscia, BladZapisWylaczony
 from ojs_mcp.config import BrakKonfiguracji
-from ojs_mcp.mcp_errors import z_czytelnym_bledem
+from ojs_mcp.mcp_errors import jest_opakowana, z_czytelnym_bledem
 
 
 @pytest.mark.parametrize(
-    "wyjatek", [ValueError, PermissionError, BladOjs, BladWalidacji, BrakKonfiguracji]
+    "wyjatek",
+    [BladOjs, BladWalidacji, BladWejscia, BladZapisWylaczony, BrakKonfiguracji],
 )
 async def test_bledy_domenowe_docieraja_do_modelu_z_trescia(wyjatek):
     mcp = MCPServer("test")
@@ -38,6 +39,29 @@ async def test_bledy_domenowe_docieraja_do_modelu_z_trescia(wyjatek):
     assert "KOMUNIKAT PO POLSKU: dozwolone wartości to a, b, c." in str(exc.value)
 
 
+@pytest.mark.parametrize("wyjatek", [ValueError, PermissionError])
+async def test_goly_wbudowany_wyjatek_zostaje_crashem(wyjatek):
+    """W3, recenzja Rundy 1 Tasku 13: `BLEDY_DOMENOWE` CELOWO nie zawiera
+    gołych `ValueError`/`PermissionError` — tylko ich WŁASNE podklasy
+    (`BladWejscia`, `BladZapisWylaczony`). Gdyby zawierało, przypadkowy
+    `ValueError`/`PermissionError` z usterki programistycznej trafiałby do
+    modelu jako rzekomo świadomy komunikat. Ten test dowodzi, że zawężenie
+    faktycznie zadziałało — nie tylko że nowe klasy są łapane (test wyżej),
+    ale że ich WBUDOWANE bazy naprawdę już NIE SĄ.
+    """
+    mcp = MCPServer("test")
+
+    @mcp.tool()
+    @z_czytelnym_bledem
+    async def zawodne() -> dict:
+        """Narzędzie testowe podnoszące goły wyjątek wbudowany."""
+        raise wyjatek("KOMUNIKAT PO POLSKU")
+
+    with pytest.raises(UnexpectedToolError) as exc:
+        await mcp.call_tool("zawodne", {})
+    assert "KOMUNIKAT PO POLSKU" not in str(exc.value)
+
+
 async def test_bez_dekoratora_komunikat_by_zaginal():
     """Kontrola: to samo narzędzie BEZ `z_czytelnym_bledem` gubi treść —
     dowód, że dekorator faktycznie coś naprawia, nie duplikuje istniejące
@@ -47,7 +71,7 @@ async def test_bez_dekoratora_komunikat_by_zaginal():
     @mcp.tool()
     async def zawodne_bez_opakowania() -> dict:
         """Narzędzie testowe bez dekoratora."""
-        raise ValueError("KOMUNIKAT PO POLSKU")
+        raise BladWejscia("KOMUNIKAT PO POLSKU")
 
     with pytest.raises(UnexpectedToolError) as exc:
         await mcp.call_tool("zawodne_bez_opakowania", {})
@@ -88,3 +112,12 @@ async def test_dekorator_zachowuje_sygnature_docstring_i_dzialanie():
 
     wynik = await mcp.call_tool("z_parametrami", {"a": 1})
     assert wynik.is_error is False
+
+
+def test_jest_opakowana_odroznia_opakowane_od_zwyklych():
+    async def zwykla() -> None:
+        return None
+
+    opakowana = z_czytelnym_bledem(zwykla)
+    assert jest_opakowana(opakowana) is True
+    assert jest_opakowana(zwykla) is False

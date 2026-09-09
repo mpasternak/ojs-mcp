@@ -6,6 +6,7 @@ import pytest
 import respx
 
 from ojs_mcp.auth import TokenAuth
+from ojs_mcp.bledy import BladWejscia
 from ojs_mcp.catalog import Katalog
 from ojs_mcp.client import OjsClient
 from ojs_mcp.config import Config
@@ -59,13 +60,20 @@ async def test_decyzja_tlumaczona_na_liczbe():
     await klient.aclose()
 
 
-async def test_nieznana_decyzja_wymienia_dozwolone():
-    # Celowo BEZ @respx.mock: żądanie nie może w ogóle polecieć do OJS —
-    # walidacja nazwy ma się wydarzyć, zanim cokolwiek dotknie sieci.
+@respx.mock
+async def test_nieznana_decyzja_wymienia_dozwolone_i_nie_dotyka_sieci():
+    # D9, recenzja Rundy 1 Tasku 13: trasa jest ZAREJESTROWANA, żeby móc
+    # asertować wprost, że NIE została wywołana — sam brak `@respx.mock`
+    # dowodziłby braku żądania tylko pośrednio (przez to, że test by się
+    # wywalił/zawiesił, gdyby żądanie faktycznie poleciało).
+    trasa = respx.post(f"{BAZA}/submissions/7/decisions").mock(
+        return_value=httpx.Response(200, json={"id": 1})
+    )
     klient, katalog = _zestaw()
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(BladWejscia) as exc:
         await dodaj_decyzje_impl(klient, katalog, zgloszenie=7, decyzja="bzdura")
     assert "akceptuj" in str(exc.value)
+    assert trasa.called is False
     await klient.aclose()
 
 
@@ -132,15 +140,34 @@ async def test_decyzja_tlumaczy_odpowiedz_na_nazwy():
 
 
 @respx.mock
-async def test_edycja_odrzuca_pole_spoza_listy():
+async def test_edycja_odrzuca_pole_spoza_listy_i_nie_dotyka_sieci():
+    trasa = respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
     klient, katalog = _zestaw()
-    with pytest.raises(ValueError) as exc:
+    with pytest.raises(BladWejscia) as exc:
         await edytuj_metadane_impl(
             klient, katalog, zgloszenie=1, publikacja=2, pola={"id": 99}
         )
     assert "id" in str(exc.value)
     for nazwa in POLA_EDYTOWALNE:
         assert nazwa in str(exc.value)
+    assert trasa.called is False
+    await klient.aclose()
+
+
+@respx.mock
+async def test_edycja_odrzuca_pusty_slownik_pol_i_nie_dotyka_sieci():
+    # D1, recenzja Rundy 1 Tasku 13: `pola={}` przechodziłoby walidację
+    # kluczy (zbiór pusty nie zawiera nic spoza listy) i wysyłałoby
+    # bezsensowny `PUT` z pustym ciałem do produkcji.
+    trasa = respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
+    klient, katalog = _zestaw()
+    with pytest.raises(BladWejscia):
+        await edytuj_metadane_impl(klient, katalog, zgloszenie=1, publikacja=2, pola={})
+    assert trasa.called is False
     await klient.aclose()
 
 
@@ -150,13 +177,17 @@ async def test_edycja_odrzuca_pole_readonly_mimo_ze_wygladajace_na_metadane():
     # (pkp-lib, gałąź main) oznaczone `readOnly` — patrz uzasadnienie przy
     # `POLA_EDYTOWALNE` w tools_write.py. Nie mogą przejść mimo że brzmią
     # jak zwykłe metadane.
+    trasa = respx.put(f"{BAZA}/submissions/1/publications/2").mock(
+        return_value=httpx.Response(200, json={"id": 2})
+    )
     klient, katalog = _zestaw()
     for pole in ("categoryIds", "citationsRaw", "locale"):
-        with pytest.raises(ValueError) as exc:
+        with pytest.raises(BladWejscia) as exc:
             await edytuj_metadane_impl(
                 klient, katalog, zgloszenie=1, publikacja=2, pola={pole: "x"}
             )
         assert pole in str(exc.value)
+    assert trasa.called is False
     await klient.aclose()
 
 
@@ -245,11 +276,29 @@ async def test_cofnij_wysyla_put_bez_ciala():
     await klient.aclose()
 
 
+@respx.mock
+async def test_opublikuj_bez_tresci_odpowiedzi_daje_jawne_potwierdzenie():
+    # D7, recenzja Rundy 1 Tasku 13: pusta odpowiedź OJS nie może zwracać
+    # modelowi samego `{"czasopismo": ...}` — nieodróżnialnego od pomyłki.
+    respx.put(f"{BAZA}/submissions/1/publications/2/publish").mock(
+        return_value=httpx.Response(200, content=b"")
+    )
+    klient, katalog = _zestaw()
+    wynik = await opublikuj_impl(klient, katalog, zgloszenie=1, publikacja=2)
+    assert wynik["wykonano"] is True
+    assert wynik["uwaga"]
+    assert wynik["czasopismo"] == "rocznik"
+    await klient.aclose()
+
+
 # --- utworz_ogloszenie ----------------------------------------------------------
 
 
 @respx.mock
-async def test_utworz_ogloszenie_wysyla_tytul_i_domyslnie_nie_wysyla_maila():
+async def test_utworz_ogloszenie_wysyla_tytul_i_nigdy_nie_wysyla_maila():
+    # W1, recenzja Rundy 1 Tasku 13: `wyslij_email` usunięty z sygnatury —
+    # `sendEmail` idzie na sztywno jako `False` (klucz zostaje, bo OJS czyta
+    # go bez wartości domyślnej).
     trasa = respx.post(f"{BAZA}/announcements").mock(
         return_value=httpx.Response(200, json={"id": 3, "title": {"pl": "Nabór"}})
     )
@@ -274,12 +323,11 @@ async def test_utworz_ogloszenie_z_opcjonalnymi_polami():
         streszczenie={"pl": "Skrót"},
         typ_id=2,
         data_wygasniecia="2026-12-31",
-        wyslij_email=True,
     )
     cialo = json.loads(trasa.calls.last.request.content)
     assert cialo == {
         "title": {"pl": "Nabór"},
-        "sendEmail": True,
+        "sendEmail": False,
         "description": {"pl": "Treść"},
         "descriptionShort": {"pl": "Skrót"},
         "typeId": 2,
@@ -288,10 +336,15 @@ async def test_utworz_ogloszenie_z_opcjonalnymi_polami():
     await klient.aclose()
 
 
-async def test_utworz_ogloszenie_wymaga_tytulu():
+@respx.mock
+async def test_utworz_ogloszenie_wymaga_tytulu_i_nie_dotyka_sieci():
+    trasa = respx.post(f"{BAZA}/announcements").mock(
+        return_value=httpx.Response(200, json={"id": 3})
+    )
     klient, katalog = _zestaw()
-    with pytest.raises(ValueError):
+    with pytest.raises(BladWejscia):
         await utworz_ogloszenie_impl(klient, katalog, tytul={})
+    assert trasa.called is False
     await klient.aclose()
 
 
@@ -300,6 +353,12 @@ async def test_utworz_ogloszenie_wymaga_tytulu():
 
 @respx.mock
 async def test_zarejestruj_zapis_rejestruje_wszystkie_narzedzia_i_dziala():
+    # Rejestracja i jedno funkcjonalne wywołanie na atrapie — sprawdzenie
+    # OPISÓW widocznych dla modelu (ostrzeżenie, nazwy decyzji/pól) mieszka
+    # w `tests/test_server.py` na PRAWDZIWYM serwerze, nie tutaj (D11,
+    # recenzja Rundy 1 Tasku 13: atrapa czyta `fn.__doc__`, co nie jest
+    # gwarantowane tym samym, co `Tool.description`, który realnie widzi
+    # model).
     klient, katalog = _zestaw()
     mcp = _FakeMcp()
     zarejestruj_zapis(mcp, klient, katalog)
@@ -313,14 +372,6 @@ async def test_zarejestruj_zapis_rejestruje_wszystkie_narzedzia_i_dziala():
     }
     assert set(mcp.narzedzia) == oczekiwane
     assert len(mcp.narzedzia) == 5
-
-    # Każdy opis narzędzia zaczyna się od ostrzeżenia — jedyne miejsce,
-    # gdzie model może się dowiedzieć, że wywołanie ma konsekwencje.
-    for nazwa, fn in mcp.narzedzia.items():
-        assert fn.__doc__ is not None
-        assert fn.__doc__.strip().startswith(
-            "UWAGA: modyfikuje dane produkcyjne czasopisma."
-        ), f"{nazwa} nie zaczyna opisu od ostrzeżenia"
 
     trasa = respx.post(f"{BAZA}/submissions/1/decisions").mock(
         return_value=httpx.Response(200, json={"id": 1, "decision": 2})

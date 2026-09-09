@@ -47,3 +47,34 @@ class BladKonfiguracjiSerwera(BladOjs):
 
 class BladLogowania(BladOjs):
     """Logowanie formularzem nie powiodło się (hasło, CAPTCHA, limit prób)."""
+
+
+class BladWejscia(ValueError):
+    """Dane wejściowe podane przez wywołującego są nieprawidłowe — nazwa
+    spoza słownika (``slowniki.na_wartosci``), pole spoza dozwolonej listy
+    (``tools_write._sprawdz_pola_edytowalne``), ścieżka poza ``api/v1``
+    (``passthrough.waliduj_sciezke``) albo brak wymaganej wartości (pusty
+    tytuł ogłoszenia, pusty słownik pól do edycji). NIE usterka
+    programistyczna.
+
+    Podklasa ``ValueError`` — istniejący kod łapiący ``except ValueError``
+    (i testy ``pytest.raises(ValueError)``) dalej działa bez zmian. Powód
+    istnienia osobnego typu: ``mcp_errors.BLEDY_DOMENOWE`` musi móc odróżnić
+    "komunikat napisany świadomie dla czytelnika" od przypadkowego
+    ``ValueError`` będącego w istocie usterką programistyczną (np.
+    nieudana konwersja typu głęboko w jakimś wywołaniu) — taki trafiłby do
+    modelu jako rzekomo świadomy komunikat. Gdyby ``BLEDY_DOMENOWE`` łapało
+    goły ``ValueError``, gwarancja opierałaby się na PRZYPADKU (dziś akurat
+    nic poza tymi miejscami go nie podnosi), nie na TYPIE — usterka
+    zgłoszona w recenzji Rundy 1 Tasku 13.
+    """
+
+
+class BladZapisWylaczony(PermissionError):
+    """Wywołanie próbuje zmienić dane, a serwer działa w trybie tylko do
+    odczytu (``OJS_ALLOW_WRITES`` nieustawione) — patrz
+    ``passthrough.zapytanie_impl``.
+
+    Podklasa ``PermissionError`` z tego samego powodu, co ``BladWejscia``
+    jest podklasą ``ValueError`` — patrz jej docstring.
+    """

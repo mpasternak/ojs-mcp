@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
+from .bledy import BladWejscia
+
 # PKPSubmission.php:42-45
 STATUSY: dict[str, int] = {
     "w_toku": 1,
@@ -119,7 +121,7 @@ def na_wartosci(
     OJS rozbija parametry tablicowe przez ``explode(',')``, więc forma
     ``status=1,3`` jest poprawna i krótsza od ``status[]=1&status[]=3``.
 
-    :raises ValueError: gdy nazwa jest spoza słownika — komunikat wymienia
+    :raises BladWejscia: gdy nazwa jest spoza słownika — komunikat wymienia
         dozwolone nazwy, żeby model mógł się poprawić bez zgadywania.
     """
     if isinstance(nazwy, str):
@@ -128,7 +130,7 @@ def na_wartosci(
     for nazwa in nazwy:
         if nazwa not in slownik:
             dozwolone = ", ".join(sorted(slownik))
-            raise ValueError(
+            raise BladWejscia(
                 f"Nieznana wartość {nazwa!r} dla parametru {etykieta!r}. "
                 f"Dozwolone: {dozwolone}."
             )

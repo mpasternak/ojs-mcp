@@ -13,19 +13,16 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .bledy import BladNieZnaleziono, BladOjs, BladUwierzytelnienia
+from .bledy import BladNieZnaleziono, BladOjs, BladUwierzytelnienia, BladWejscia
 from .catalog import Katalog
 from .client import MAX_COUNT, OjsClient
 from .mcp_errors import z_czytelnym_bledem
 from .pola import (
-    POLA_AUTORA_PUBLIKACJI,
     POLA_DOI,
-    POLA_GALERII,
     POLA_NUMERU,
     POLA_PLIKU,
     POLA_PRZYPISANIA_RECENZJI,
     POLA_PUBLIKACJI,
-    POLA_PUBLIKACJI_PELNE,
     POLA_PUBLIKACJI_W_STATYSTYKACH,
     POLA_RECENZENTA,
     POLA_RUNDY_RECENZJI,
@@ -36,6 +33,7 @@ from .pola import (
     POLA_ZGLOSZENIA,
     POLA_ZGLOSZENIA_PELNE,
     przytnij,
+    zbuduj_widok_publikacji,
 )
 from .slowniki import (
     ETAPY,
@@ -88,7 +86,7 @@ def _sprawdz_wartosc(wartosc: str, dozwolone: tuple[str, ...], etykieta: str) ->
     """
     if wartosc not in dozwolone:
         lista = ", ".join(dozwolone)
-        raise ValueError(
+        raise BladWejscia(
             f"Nieznana wartość {wartosc!r} dla {etykieta!r}. Dozwolone: {lista}."
         )
 
@@ -292,23 +290,11 @@ async def pobierz_publikacje_impl(
     dane = await client.get(
         f"submissions/{zgloszenie}/publications/{publikacja}", czasopismo=kontekst
     )
-    wynik = przytnij(dane, POLA_PUBLIKACJI_PELNE)
-    autorzy = dane.get("authors") or []
-    if isinstance(autorzy, list):
-        wynik["authors"] = [
-            przytnij(a, POLA_AUTORA_PUBLIKACJI) for a in autorzy if isinstance(a, dict)
-        ]
-    galerie = dane.get("galleys") or []
-    if isinstance(galerie, list):
-        przyciete_galerie = []
-        for g in galerie:
-            if not isinstance(g, dict):
-                continue
-            wpis = przytnij(g, POLA_GALERII)
-            if isinstance(wpis.get("file"), dict):
-                wpis["file"] = przytnij(wpis["file"], POLA_PLIKU)
-            przyciete_galerie.append(wpis)
-        wynik["galleys"] = przyciete_galerie
+    # Przycinanie (w tym zagnieżdżonych `authors`/`galleys`) mieszka w
+    # `pola.py` — dzielone z `tools_write.py` (edycja/publikacja/cofnięcie
+    # publikacji zwracają dokładnie ten sam kształt odpowiedzi). Patrz
+    # docstring `pola.zbuduj_widok_publikacji` po historię tej zmiany.
+    wynik = zbuduj_widok_publikacji(dane)
     wynik["czasopismo"] = kontekst
     return wynik
 

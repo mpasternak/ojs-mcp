@@ -22,6 +22,19 @@ w numerach czasopisma (m.in. ``pages``, ``galleys``, ``articleNumber``,
 ``sectionId``, ``status``). Sprawdzanie tylko ``pkp-lib`` daje niepełny
 obraz — tak powstała pierwsza, błędna wersja ``POLA_PUBLIKACJI_PELNE``
 w tym module (bez ``pages``/``galleys``), poprawiona po review.
+
+Runda 1 recenzji Tasku 13 dołożyła tu ``POLA_DECYZJI``/``POLA_OGLOSZENIA``
+(wcześniej lokalne stałe w ``tools_write.py`` — schematowe krotki pól mają
+mieszkać tutaj, zgodnie z resztą modułu) oraz funkcję
+``zbuduj_widok_publikacji`` — wspólne przycinanie odpowiedzi publikacji,
+używane przez ``tools_read.pobierz_publikacje_impl`` I ``tools_write.py``
+(edycja/publikacja/cofnięcie publikacji zwracają dokładnie ten sam kształt
+odpowiedzi OJS). Dwie NIEZALEŻNE kopie tej logiki już raz się rozjechały
+(wersja zapisu dokładała ``status_nazwa``, wersja odczytu nie) — stąd
+wydzielenie. ``status_nazwa`` (wymaga ``slowniki.na_nazwe``) CELOWO zostaje
+poza tą funkcją i poza tym modułem — złamałoby to zależność „zero importów
+poza wbudowanym Pythonem” z akapitu wyżej; wywołujący, którzy tego chcą
+(``tools_write.py``), dokładają to pole SAMI, po wywołaniu.
 """
 
 from __future__ import annotations
@@ -232,7 +245,77 @@ POLA_PUBLIKACJI_W_STATYSTYKACH = (
 # Spec §3.10: kształt odpowiedzi /stats/editorial to [{key, name, value}].
 POLA_STATYSTYKI_REDAKCYJNEJ = ("key", "name", "value")
 
+# schemas/decision.json (repo pkp-lib, gałąź main, sprawdzone 2026-09-09) —
+# pola apiSummary. `stageId` jest w schemacie oznaczone `writeDisabledInApi`
+# (i tak nadpisywane przez serwer typem decyzji — `$decisionType->getStageId()`
+# w `PKPSubmissionController::addDecision`), więc CELOWO nigdy nie trafia do
+# ciała żądania decyzji — patrz `tools_write.dodaj_decyzje_impl`.
+POLA_DECYZJI = (
+    "id",
+    "decision",
+    "description",
+    "label",
+    "editorId",
+    "stageId",
+    "submissionId",
+    "reviewRoundId",
+    "round",
+    "dateDecided",
+)
+
+# schemas/announcement.json (repo pkp-lib, gałąź main, sprawdzone 2026-09-09)
+# — pola apiSummary.
+POLA_OGLOSZENIA = (
+    "id",
+    "assocId",
+    "assocType",
+    "title",
+    "descriptionShort",
+    "description",
+    "typeId",
+    "dateExpire",
+    "datePosted",
+    "image",
+    "url",
+)
+
 
 def przytnij(pozycja: dict, pola: tuple[str, ...]) -> dict:
     """Zostaw tylko wskazane pola — surowe odpowiedzi OJS są bardzo szerokie."""
     return {k: pozycja[k] for k in pola if k in pozycja}
+
+
+def zbuduj_widok_publikacji(dane: dict) -> dict:
+    """Przytnij pełną odpowiedź OJS zawierającą publikację.
+
+    Wspólne dla ``GET .../publications/{id}``, ``PUT .../publications/{id}``
+    (edycja metadanych) oraz ``PUT .../publish``/``.../unpublish`` — PKP
+    mapuje wszystkie cztery przez ten sam
+    ``Repo::publication()->getSchemaMap(...)->map($publication)``, więc
+    kształt odpowiedzi jest identyczny. Wydzielone tutaj po tym, jak dwie
+    niezależne kopie (w ``tools_read.py`` i ``tools_write.py``) się
+    rozjechały — patrz akapit o Rundzie 1 w docstringu modułu.
+
+    Nie dokłada ``status_nazwa`` ani ``czasopismo`` — to leży po stronie
+    wywołującego (patrz ten sam akapit, powód: zależności modułu).
+    """
+    if not isinstance(dane, dict):
+        return {}
+    wynik = przytnij(dane, POLA_PUBLIKACJI_PELNE)
+    autorzy = dane.get("authors") or []
+    if isinstance(autorzy, list):
+        wynik["authors"] = [
+            przytnij(a, POLA_AUTORA_PUBLIKACJI) for a in autorzy if isinstance(a, dict)
+        ]
+    galerie = dane.get("galleys") or []
+    if isinstance(galerie, list):
+        przyciete_galerie = []
+        for g in galerie:
+            if not isinstance(g, dict):
+                continue
+            wpis = przytnij(g, POLA_GALERII)
+            if isinstance(wpis.get("file"), dict):
+                wpis["file"] = przytnij(wpis["file"], POLA_PLIKU)
+            przyciete_galerie.append(wpis)
+        wynik["galleys"] = przyciete_galerie
+    return wynik

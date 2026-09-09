@@ -2,6 +2,15 @@
 
 Świadomie wąska: ma dawać dostęp do rzadkich endpointów API OJS, a nie być
 generycznym klientem HTTP. Stąd walidacja ścieżki i zamknięcie na zapisy.
+
+UWAGA (świadoma decyzja, spec §8.3, potwierdzona w recenzji Rundy 1 Tasku
+13 — NIE zmieniać): przy ``OJS_ALLOW_WRITES=1`` ta furtka pozwala wysłać
+``PUT`` na ``.../publications/{id}`` z dowolnym ciałem, a więc ominąć
+``tools_write.POLA_EDYTOWALNE``. To zamierzone — furtka z definicji ma dać
+dostęp do rzeczy spoza kuratowanej listy narzędzi, a jedynym bezpiecznikiem
+jest sama flaga ``OJS_ALLOW_WRITES``, nie lista pól. Lista pól w
+``edytuj_metadane_publikacji`` chroni przed POMYŁKĄ w typowym użyciu, nie
+jest granicą bezpieczeństwa nie do przejścia.
 """
 
 from __future__ import annotations
@@ -9,6 +18,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .bledy import BladWejscia, BladZapisWylaczony
 from .catalog import Katalog
 from .client import OjsClient
 from .config import Config
@@ -25,11 +35,11 @@ def waliduj_sciezke(sciezka: str) -> str:
     Dozwolone znaki w segmentach: a-z, A-Z, 0-9, ., _, -
     Separator: pojedynczy /. Brak pustych segmentów ani .. .
 
-    :raises ValueError: dla każdego naruszenia powyższych reguł.
+    :raises BladWejscia: dla każdego naruszenia powyższych reguł.
     """
     oczyszczona = (sciezka or "").strip()
     if not oczyszczona:
-        raise ValueError(
+        raise BladWejscia(
             "Ścieżka nie może być pusta. "
             "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
             "Wartości parametrów przekazuj przez argument `parametry`."
@@ -38,7 +48,7 @@ def waliduj_sciezke(sciezka: str) -> str:
     # Usuń pojedynczy wiodący ukośnik (jeśli jest).
     if oczyszczona.startswith("/"):
         if len(oczyszczona) > 1 and oczyszczona[1] == "/":
-            raise ValueError(
+            raise BladWejscia(
                 "Ścieżka nie może zaczynać się od //. "
                 "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
                 "Wartości parametrów przekazuj przez argument `parametry`."
@@ -46,7 +56,7 @@ def waliduj_sciezke(sciezka: str) -> str:
         oczyszczona = oczyszczona[1:]
 
     if not oczyszczona:
-        raise ValueError(
+        raise BladWejscia(
             "Ścieżka nie może być pusta. "
             "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
             "Wartości parametrów przekazuj przez argument `parametry`."
@@ -56,19 +66,19 @@ def waliduj_sciezke(sciezka: str) -> str:
     segmenty = oczyszczona.split("/")
     for segment in segmenty:
         if not segment:
-            raise ValueError(
+            raise BladWejscia(
                 "Ścieżka zawiera pusty segment (np. //, ///, ścieżka kończy się /). "
                 "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
                 "Wartości parametrów przekazuj przez argument `parametry`."
             )
         if segment == "..":
-            raise ValueError(
+            raise BladWejscia(
                 "Ścieżka zawiera segment .. (wychodzenie w górę). "
                 "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
                 "Wartości parametrów przekazuj przez argument `parametry`."
             )
         if not DOZWOLONE_ZNAKI.match(segment):
-            raise ValueError(
+            raise BladWejscia(
                 "Segment ścieżki zawiera niedozwolone znaki. "
                 "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
                 "Wartości parametrów przekazuj przez argument `parametry`."
@@ -100,7 +110,7 @@ async def zapytanie_impl(
     """Wykonaj dowolne żądanie do API OJS w granicach bezpiecznika."""
     metoda = (metoda or "GET").strip().upper()
     if metoda not in METODY_ODCZYTU and not config.allow_writes:
-        raise PermissionError(
+        raise BladZapisWylaczony(
             f"Metoda {metoda} zmienia dane, a serwer działa w trybie tylko do "
             "odczytu. Ustaw OJS_ALLOW_WRITES=1, jeśli świadomie chcesz "
             "pozwolić na modyfikacje w tym czasopiśmie."
@@ -135,7 +145,9 @@ def zarejestruj_furtke(
         `sciezka` jest względna wobec api/v1, np. 'submissions/12/files'.
         Listę endpointów zwraca zasób `ojs://endpointy`.
         `czasopismo="index"` sięga po endpointy poziomu witryny.
-        Bez OJS_ALLOW_WRITES dozwolone są wyłącznie żądania GET.
+        Bez OJS_ALLOW_WRITES dozwolone są wyłącznie żądania GET. Z flagą —
+        to narzędzie NIE pilnuje listy pól z `edytuj_metadane_publikacji`;
+        jedynym bezpiecznikiem zapisu jest tu sama flaga OJS_ALLOW_WRITES.
         """
         return await zapytanie_impl(
             client, katalog, config, sciezka, metoda, parametry, cialo, czasopismo

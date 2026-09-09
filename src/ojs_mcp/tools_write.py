@@ -24,60 +24,28 @@ stosowane w każdym narzędziu poniżej:
 
 Logika siedzi w funkcjach ``*_impl`` (testowalne bez serwera MCP);
 ``zarejestruj_zapis`` jest cienką warstwą rejestracji — dokładnie ten sam
-podział, co w ``tools_read.py``. Przycinanie odpowiedzi (``przytnij`` i
-krotki ``POLA_*`` z ``pola.py``) i tłumaczenie nazw słownych
-(``slowniki.na_nazwe``) też są reużyte z tych samych modułów co w odczycie.
+podział, co w ``tools_read.py``. Przycinanie odpowiedzi (krotki ``POLA_*``
+i funkcja ``zbuduj_widok_publikacji`` z ``pola.py``) i tłumaczenie nazw
+słownych (``slowniki.na_nazwe``) też są reużyte z tych samych modułów co
+w odczycie.
+
+Wyjątki z walidacji własnej (nie z OJS) podnoszą ``bledy.BladWejscia``,
+nie goły ``ValueError`` — patrz jej docstring: ``mcp_errors.BLEDY_DOMENOWE``
+musi móc odróżnić komunikat napisany świadomie dla czytelnika od
+przypadkowego ``ValueError`` będącego w istocie usterką programistyczną
+(recenzja Rundy 1 Tasku 13).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from .bledy import BladWejscia
 from .catalog import Katalog
 from .client import OjsClient
 from .mcp_errors import z_czytelnym_bledem
-from .pola import (
-    POLA_AUTORA_PUBLIKACJI,
-    POLA_GALERII,
-    POLA_PLIKU,
-    POLA_PUBLIKACJI_PELNE,
-    przytnij,
-)
+from .pola import POLA_DECYZJI, POLA_OGLOSZENIA, przytnij, zbuduj_widok_publikacji
 from .slowniki import DECYZJE, ETAPY, STATUSY, na_nazwe, na_wartosci
-
-# schemas/decision.json (repo pkp-lib, gałąź main, sprawdzone 2026-09-09) —
-# pola apiSummary. `stageId` jest w schemacie oznaczone `writeDisabledInApi`
-# (i tak nadpisywane przez serwer typem decyzji — `$decisionType->getStageId()`
-# w `PKPSubmissionController::addDecision`), więc CELOWO nigdy nie trafia do
-# ciała żądania — patrz `dodaj_decyzje_impl`.
-POLA_DECYZJI: tuple[str, ...] = (
-    "id",
-    "decision",
-    "description",
-    "label",
-    "editorId",
-    "stageId",
-    "submissionId",
-    "reviewRoundId",
-    "round",
-    "dateDecided",
-)
-
-# schemas/announcement.json (repo pkp-lib, gałąź main, sprawdzone 2026-09-09)
-# — pola apiSummary.
-POLA_OGLOSZENIA: tuple[str, ...] = (
-    "id",
-    "assocId",
-    "assocType",
-    "title",
-    "descriptionShort",
-    "description",
-    "typeId",
-    "dateExpire",
-    "datePosted",
-    "image",
-    "url",
-)
 
 # Lista pól edytowalnych publikacji przez `edytuj_metadane_publikacji`.
 #
@@ -88,16 +56,28 @@ POLA_OGLOSZENIA: tuple[str, ...] = (
 # `pages`) — patrz też uwaga w docstringu `pola.POLA_PUBLIKACJI_PELNE`
 # o tej samej pułapce.
 #
-# Reguła doboru: pole bez `readOnly` i bez `writeDisabledInApi` w
-# `schemas/publication.json` (obu plikach). `writeDisabledInApi` NIE
-# występuje w żadnym z dwóch plików `publication.json` — to realna flaga
-# schematu OJS (`PKPBaseController::getWriteDisabledErrors`), ale jest
-# używana wyłącznie dla `schemas/submission.json`
-# (`PKPSubmissionController::add`/`edit`), nie dla publikacji.
+# Reguła doboru z brief Tasku 13: pole bez `readOnly` i bez
+# `writeDisabledInApi` w `schemas/publication.json` (obu plikach).
+# `writeDisabledInApi` NIE występuje w żadnym z dwóch plików
+# `publication.json` — to realna flaga schematu OJS
+# (`PKPBaseController::getWriteDisabledErrors`), ale jest używana wyłącznie
+# dla `schemas/submission.json` (`PKPSubmissionController::add`/`edit`), nie
+# dla publikacji.
 #
-# ODCHYLENIE OD BRIEFU: trzy pola z listy podanej w briefie Tasku 13 są w
-# `pkp-lib/schemas/publication.json` oznaczone `"readOnly": true" i zostały
-# tu ŚWIADOMIE pominięte, mimo że brief je wymieniał:
+# TA LISTA JEST PRZECIĘCIEM reguły z brief i listy z brief, NIE dosłownym
+# przepisaniem żadnej z nich osobno (recenzja Rundy 1 Tasku 13, potwierdzone
+# niezależnie): reguła sama w sobie, wzięta dosłownie, wpuściłaby też pola
+# `readOnly`/operacyjne, których brief NIE wymieniał — m.in. `status`,
+# `submissionId`, `lastModified`, `createdAt`, `seq`,
+# `versionMajor`/`versionMinor`/`versionStage`, `primaryContactId`. Część
+# z nich pozwoliłaby PRZESTAWIĆ IDENTYFIKATOR ZGŁOSZENIA (`submissionId`)
+# albo obejść `opublikuj_publikacje`/`cofnij_publikacje` przez bezpośrednie
+# nadpisanie `status`. NIE „naprawiaj” tej listy do pełnego zbioru pól bez
+# `readOnly` w schemacie — to byłaby usterka krytyczna, nie porządkowanie.
+#
+# ODCHYLENIE W DRUGĄ STRONĘ — trzy pola z listy podanej w briefie Tasku 13
+# są w `pkp-lib/schemas/publication.json` oznaczone `"readOnly": true` i
+# zostały tu ŚWIADOMIE pominięte, mimo że brief je wymieniał:
 #   - `categoryIds` — readOnly; brak też dedykowanego endpointu do zapisu
 #     kategorii publikacji (kategorie same w sobie mają `/categories`, ale
 #     to inny zasób — przypisania kategorii do publikacji nie da się
@@ -112,7 +92,7 @@ POLA_OGLOSZENIA: tuple[str, ...] = (
 # `$params` bez filtrowania), więc nasza WŁASNA lista jest jedynym
 # rzeczywistym zabezpieczeniem — stąd trzymanie się reguły z brief
 # ("pole bez readOnly/writeDisabledInApi"), a nie dosłownej listy, gdy obie
-# się rozjeżdżają. Patrz raport Tasku 13 po pełne uzasadnienie.
+# się rozjeżdżają. Patrz raport Tasku 13 (Runda 1) po pełne uzasadnienie.
 POLA_EDYTOWALNE: tuple[str, ...] = (
     "title",
     "subtitle",
@@ -137,50 +117,58 @@ POLA_EDYTOWALNE: tuple[str, ...] = (
 
 
 def _sprawdz_pola_edytowalne(pola: dict[str, Any]) -> None:
-    """Odrzuć pola spoza ``POLA_EDYTOWALNE`` z komunikatem, co wolno.
+    """Odrzuć pusty słownik albo pola spoza ``POLA_EDYTOWALNE``.
 
-    :raises ValueError: gdy ``pola`` zawiera choć jeden klucz spoza listy.
+    :raises BladWejscia: gdy ``pola`` jest puste, albo zawiera choć jeden
+        klucz spoza listy.
     """
+    if not pola:
+        raise BladWejscia(
+            "Nie podano żadnych pól do edycji — to byłby zapis bez treści. "
+            f"Podaj co najmniej jedno z: {', '.join(POLA_EDYTOWALNE)}."
+        )
     nieznane = sorted(k for k in pola if k not in POLA_EDYTOWALNE)
     if nieznane:
         dozwolone = ", ".join(POLA_EDYTOWALNE)
-        raise ValueError(
+        raise BladWejscia(
             f"Nie można edytować pól: {', '.join(nieznane)} — to narzędzie "
             f"przyjmuje wyłącznie: {dozwolone}."
         )
 
 
-def _wynik_publikacji(dane: Any, kontekst: str) -> dict[str, Any]:
-    """Przytnij odpowiedź OJS zawierającą publikację (edycja/publikacja).
+def _potwierdzenie_bez_tresci(kontekst: str) -> dict[str, Any]:
+    """Potwierdzenie wykonania, gdy OJS odpowiedział 2xx bez treści JSON.
 
-    Ten sam kształt odpowiedzi, co pełny ``GET .../publications/{id}``
-    (``editPublication``/``publishPublication``/``unpublishPublication``
-    w PKP wszystkie zwracają ``Repo::publication()->getSchemaMap(...)
-    ->map($publication)``) — stąd to samo przycinanie co w
-    ``tools_read.pobierz_publikacje_impl``, świadomie zduplikowane (nie
-    zaimportowane stamtąd — patrz docstring modułu ``pola.py``).
+    Bez tego narzędzie oddawałoby modelowi wyłącznie ``{"czasopismo": ...}``
+    — nieodróżnialne od pomyłki w naszym kodzie przycinającym odpowiedź.
+    W praktyce endpointy zapisu tego serwera zawsze zwracają zmapowany
+    obiekt (zweryfikowane w kodzie kontrolerów PKP), więc ta gałąź jest
+    zabezpieczeniem na wypadek innej wersji/wtyczki OJS, nie oczekiwaną
+    ścieżką.
+    """
+    return {
+        "czasopismo": kontekst,
+        "wykonano": True,
+        "uwaga": "OJS potwierdził wykonanie (odpowiedź 2xx), ale nie zwrócił treści.",
+    }
+
+
+def _wynik_publikacji(dane: Any, kontekst: str) -> dict[str, Any]:
+    """Zbuduj odpowiedź narzędzia z surowej publikacji zwróconej przez OJS.
+
+    Przycinanie (w tym zagnieżdżonych ``authors``/``galleys``) mieszka
+    w ``pola.zbuduj_widok_publikacji`` — dzielone z
+    ``tools_read.pobierz_publikacje_impl``, bo ``editPublication``/
+    ``publishPublication``/``unpublishPublication`` w PKP zwracają
+    dokładnie ten sam kształt, co pełny ``GET``. ``status_nazwa`` dokładane
+    jest TUTAJ, nie w ``pola.py`` — patrz uzasadnienie w docstringu
+    ``pola.zbuduj_widok_publikacji``.
     """
     if not isinstance(dane, dict):
-        return {"czasopismo": kontekst}
-    wynik = przytnij(dane, POLA_PUBLIKACJI_PELNE)
+        return _potwierdzenie_bez_tresci(kontekst)
+    wynik = zbuduj_widok_publikacji(dane)
     if "status" in wynik:
         wynik["status_nazwa"] = na_nazwe(wynik["status"], STATUSY)
-    autorzy = dane.get("authors") or []
-    if isinstance(autorzy, list):
-        wynik["authors"] = [
-            przytnij(a, POLA_AUTORA_PUBLIKACJI) for a in autorzy if isinstance(a, dict)
-        ]
-    galerie = dane.get("galleys") or []
-    if isinstance(galerie, list):
-        przyciete_galerie = []
-        for g in galerie:
-            if not isinstance(g, dict):
-                continue
-            wpis = przytnij(g, POLA_GALERII)
-            if isinstance(wpis.get("file"), dict):
-                wpis["file"] = przytnij(wpis["file"], POLA_PLIKU)
-            przyciete_galerie.append(wpis)
-        wynik["galleys"] = przyciete_galerie
     wynik["czasopismo"] = kontekst
     return wynik
 
@@ -206,16 +194,17 @@ async def dodaj_decyzje_impl(
     ``PKPSubmissionController::addDecision``), więc wysłanie własnego
     ``stageId`` byłoby i tak ignorowane.
 
-    :raises ValueError: gdy ``decyzja`` nie jest jedną z nazw w
+    :raises BladWejscia: gdy ``decyzja`` nie jest jedną z nazw w
         ``slowniki.DECYZJE`` — komunikat wymienia dozwolone nazwy, zanim
         cokolwiek poleci do OJS.
     """
-    # `na_wartosci` jest pisane pod parametry query (zwraca string do
-    # `explode(',')` po stronie OJS), ale dla POJEDYNCZEJ nazwy zwraca
-    # jeden numer bez przecinków — bierzemy z niego wyłącznie walidację
-    # i komunikat błędu (identyczny jak przy filtrach odczytu), a wynik
-    # rzutujemy na `int`, bo ciało JSON potrzebuje liczby, nie stringa.
-    kod_decyzji = int(na_wartosci(decyzja, DECYZJE, "decyzja"))
+    # `na_wartosci` daje wspólną walidację i komunikat błędu (identyczne jak
+    # przy filtrach odczytu) — używamy go WYŁĄCZNIE dla tego efektu
+    # (podniesienia `BladWejscia` dla nieznanej nazwy) i odrzucamy zwróconego
+    # stringa: wartość do ciała JSON bierzemy wprost ze słownika, żeby nie
+    # robić zbędnej konwersji liczba -> tekst -> liczba.
+    na_wartosci(decyzja, DECYZJE, "decyzja")
+    kod_decyzji = DECYZJE[decyzja]
     kontekst = await katalog.rozwiaz(czasopismo)
 
     cialo: dict[str, Any] = {"decision": kod_decyzji}
@@ -230,7 +219,9 @@ async def dodaj_decyzje_impl(
         cialo=cialo,
         czasopismo=kontekst,
     )
-    wynik = przytnij(dane, POLA_DECYZJI) if isinstance(dane, dict) else {}
+    if not isinstance(dane, dict):
+        return _potwierdzenie_bez_tresci(kontekst)
+    wynik = przytnij(dane, POLA_DECYZJI)
     if "decision" in wynik:
         wynik["decyzja_nazwa"] = na_nazwe(wynik["decision"], DECYZJE)
     if "stageId" in wynik:
@@ -259,7 +250,7 @@ async def edytuj_metadane_impl(
     ``{"pl": "…", "en": "…"}`` — przechodzą bez zmian, to OJS interpretuje
     ich kształt.
 
-    :raises ValueError: gdy ``pola`` zawiera klucz spoza
+    :raises BladWejscia: gdy ``pola`` jest puste albo zawiera klucz spoza
         ``POLA_EDYTOWALNE`` — patrz jej docstring po listę i uzasadnienie.
     """
     _sprawdz_pola_edytowalne(pola)
@@ -321,7 +312,6 @@ async def utworz_ogloszenie_impl(
     streszczenie: dict[str, str] | None = None,
     typ_id: int | None = None,
     data_wygasniecia: str | None = None,
-    wyslij_email: bool = False,
     czasopismo: str | None = None,
 ) -> dict[str, Any]:
     """Utwórz ogłoszenie czasopisma (``POST /announcements``).
@@ -332,16 +322,23 @@ async def utworz_ogloszenie_impl(
     bieżącego kontekstu (``PKPAnnouncementController::add``), więc czasopismo
     docelowe wyznacza wyłącznie parametr ``czasopismo``/``OJS_JOURNAL``.
 
-    :raises ValueError: gdy ``tytul`` jest pusty.
+    ``sendEmail`` jest wysyłane na sztywno jako ``False`` — parametr
+    sterujący wysyłką maila do WSZYSTKICH subskrybentów czasopisma nie jest
+    częścią specyfikacji tego narzędzia (recenzja Rundy 1 Tasku 13: to
+    parametr o największym zasięgu w całym module, nie wolno go dodawać po
+    cichu ponad to, o co poproszono). Klucz mimo to trafia do ciała, bo
+    ``PKPAnnouncementController::add`` czyta go bez wartości domyślnej.
+
+    :raises BladWejscia: gdy ``tytul`` jest pusty.
     """
     if not tytul:
-        raise ValueError(
+        raise BladWejscia(
             "Tytuł ogłoszenia jest wymagany — słownik {kod_języka: tekst}, "
             'np. {"pl": "Nabór do numeru specjalnego"}.'
         )
     kontekst = await katalog.rozwiaz(czasopismo)
 
-    cialo: dict[str, Any] = {"title": tytul, "sendEmail": wyslij_email}
+    cialo: dict[str, Any] = {"title": tytul, "sendEmail": False}
     if tresc is not None:
         cialo["description"] = tresc
     if streszczenie is not None:
@@ -354,7 +351,9 @@ async def utworz_ogloszenie_impl(
     dane = await client.zadanie(
         "POST", "announcements", cialo=cialo, czasopismo=kontekst
     )
-    wynik = przytnij(dane, POLA_OGLOSZENIA) if isinstance(dane, dict) else {}
+    if not isinstance(dane, dict):
+        return _potwierdzenie_bez_tresci(kontekst)
+    wynik = przytnij(dane, POLA_OGLOSZENIA)
     wynik["czasopismo"] = kontekst
     return wynik
 
@@ -420,8 +419,8 @@ def zarejestruj_zapis(mcp, client: OjsClient, katalog: Katalog) -> None:
 
         Nadpisuje metadane wskazanej wersji (publikacji) zgłoszenia.
 
-        `pola`: słownik {nazwa_pola: wartość} — WYŁĄCZNIE spośród: title,
-        subtitle, abstract, prefix, keywords, subjects, disciplines,
+        `pola`: słownik {nazwa_pola: wartość}, NIEPUSTY, WYŁĄCZNIE spośród:
+        title, subtitle, abstract, prefix, keywords, subjects, disciplines,
         supportingAgencies, coverage, rights, source, type, datePublished,
         licenseUrl, copyrightHolder, copyrightYear, sectionId, issueId,
         pages. Każde inne pole zostaje odrzucone błędem wymieniającym
@@ -485,14 +484,12 @@ def zarejestruj_zapis(mcp, client: OjsClient, katalog: Katalog) -> None:
         streszczenie: dict | None = None,
         typ_id: int | None = None,
         data_wygasniecia: str | None = None,
-        wyslij_email: bool = False,
         czasopismo: str | None = None,
     ) -> dict:
         """UWAGA: modyfikuje dane produkcyjne czasopisma.
 
-        Tworzy nowe ogłoszenie WIDOCZNE PUBLICZNIE na stronie czasopisma.
-        `wyslij_email=True` dodatkowo wysyła powiadomienie e-mail do
-        subskrybentów czasopisma.
+        Tworzy nowe ogłoszenie WIDOCZNE PUBLICZNIE na stronie czasopisma
+        (bez wysyłki e-mail do subskrybentów — to narzędzie tego nie robi).
 
         `tytul` (wymagany), `tresc` i `streszczenie` to pola wielojęzyczne —
         słownik kodów języków, np. `{"pl": "…", "en": "…"}`. `typ_id`: ID
@@ -507,6 +504,5 @@ def zarejestruj_zapis(mcp, client: OjsClient, katalog: Katalog) -> None:
             streszczenie=streszczenie,
             typ_id=typ_id,
             data_wygasniecia=data_wygasniecia,
-            wyslij_email=wyslij_email,
             czasopismo=czasopismo,
         )
