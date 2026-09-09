@@ -172,3 +172,144 @@ async def test_brak_hasla_nie_wola_do_sieci():
         with pytest.raises(BladLogowania) as exc:
             await zaloguj(klient, cfg_bez_hasla, "rocznik")
     assert "OJS_PASSWORD" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "html",
+    [
+        # Kolejność odwrócona: value przed name.
+        '<input type="hidden" value="TOK" name="csrfToken" />',
+        # Atrybut id pośrodku, między name a value.
+        '<input name="csrfToken" id="csrf" value="TOK" />',
+        # Spacje wokół znaku równości.
+        '<input name = "csrfToken" value = "TOK" />',
+    ],
+)
+def test_wyluskaj_csrf_niezalezny_od_kolejnosci_atrybutow(html):
+    assert wyluskaj_csrf_z_formularza(html) == "TOK"
+
+
+@respx.mock
+async def test_3xx_bez_location_to_porazka():
+    # K1: 304 z pamięci podręcznej / zapory aplikacyjnej / nietypowego proxy
+    # nie niesie nagłówka Location — to NIE jest sukces logowania, tylko
+    # brak informacji. Bez sprawdzenia `bool(lokalizacja)` taki 3xx
+    # przechodziłby jako udane logowanie (pusty string nie zawiera "/login").
+    respx.get(f"{BAZA}/login").mock(
+        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    )
+    respx.post(f"{BAZA}/login/signIn").mock(return_value=httpx.Response(304))
+    async with httpx.AsyncClient(follow_redirects=False) as klient:
+        with pytest.raises(BladLogowania) as exc:
+            await zaloguj(klient, CFG, "rocznik")
+    assert "hasł" in str(exc.value).lower()
+
+
+@respx.mock
+async def test_krok1_nie_podaza_za_wlasnym_follow_redirects_klienta():
+    """Regresja na decyzję własną `follow_redirects=False` w kroku 1.
+
+    Klient tu ma WŁĄCZONE globalne podążanie za przekierowaniami — tak jak
+    produkcyjny `OjsClient` (`client.py:47`), w odróżnieniu od pozostałych
+    testów w tym pliku. Cel przekierowania z logowania jest zamockowany
+    jako 200 ze stroną logowania — pułapka, w którą wpadłby kod, gdyby
+    POST /login/signIn podążył za przekierowaniem automatycznie zamiast
+    zobaczyć surowy nagłówek `Location`. Bez jawnego `follow_redirects=False`
+    na tym żądaniu ten test kończy się `BladLogowania` zamiast zwrócić
+    poprawny wynik logowania.
+    """
+    respx.get(f"{BAZA}/login").mock(
+        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    )
+    respx.post(f"{BAZA}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
+    )
+    # Pułapka: gdyby POST podążył za przekierowaniem, wylądowałby tutaj.
+    respx.get(f"{BAZA}/dashboard").mock(
+        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    )
+    respx.get(f"{BAZA}/dashboard/editorial").mock(
+        return_value=httpx.Response(200, html=STRONA_PULPITU)
+    )
+    async with httpx.AsyncClient(follow_redirects=True) as klient:
+        wynik = await zaloguj(klient, CFG, "rocznik")
+    assert wynik["csrf"] == "TOKEN-SESJI"
+
+
+@respx.mock
+async def test_pulpit_przekierowany_na_login_nie_daje_falszywego_sukcesu():
+    """Regresja na K2: sesja martwa między krokiem 1 a 2.
+
+    OJS przekierowuje GET pulpitu na `/login`; httpx podąża (bo krok 2
+    celowo ma `follow_redirects=True`) i ląduje na stronie logowania ze
+    statusem 200. Ta strona MA własne ukryte pole csrfToken — to token do
+    (kolejnego) logowania, nie token sesji. Zwrócenie go jako sukces byłoby
+    tym samym cichym fałszywym „tak", przed którym broni spec. dla
+    wyłuskiwania tokenu sesji.
+    """
+    respx.get(f"{BAZA}/login").mock(
+        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    )
+    respx.post(f"{BAZA}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
+    )
+    for pulpit in (
+        "dashboard/editorial",
+        "dashboard/reviewAssignments",
+        "dashboard/mySubmissions",
+    ):
+        respx.get(f"{BAZA}/{pulpit}").mock(
+            return_value=httpx.Response(302, headers={"Location": f"{BAZA}/login"})
+        )
+    async with httpx.AsyncClient(follow_redirects=False) as klient:
+        with pytest.raises(BladLogowania) as exc:
+            await zaloguj(klient, CFG, "rocznik")
+    assert "csrf" in str(exc.value).lower()
+
+
+@respx.mock
+async def test_fallback_na_ukryte_pole_gdy_brak_pkp_current_user():
+    # D5: strona pulpitu bez literału pkp.currentUser (np. wersja OJS, w
+    # której backend nie osadza tożsamości na tej konkretnej podstronie),
+    # ale z ukrytym polem csrfToken — druga, zapasowa strategia wyłuskania.
+    strona_bez_literalu = (
+        '<html><input type="hidden" name="csrfToken" value="ZAPASOWY" /></html>'
+    )
+    respx.get(f"{BAZA}/login").mock(
+        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    )
+    respx.post(f"{BAZA}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
+    )
+    respx.get(f"{BAZA}/dashboard/editorial").mock(
+        return_value=httpx.Response(200, html=strona_bez_literalu)
+    )
+    async with httpx.AsyncClient(follow_redirects=False) as klient:
+        wynik = await zaloguj(klient, CFG, "rocznik")
+    assert wynik["csrf"] == "ZAPASOWY"
+    assert wynik["uzytkownik"] is None
+
+
+@respx.mock
+async def test_zaden_pulpit_bez_tokenu_to_jawny_blad():
+    # D5: wszystkie trzy pulpity odpowiadają 200, ale żaden nie niesie ani
+    # pkp.currentUser, ani ukrytego pola — musi paść jawny BladLogowania
+    # (linia z komunikatem o OJS_API_TOKEN), nigdy ciche None.
+    respx.get(f"{BAZA}/login").mock(
+        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    )
+    respx.post(f"{BAZA}/login/signIn").mock(
+        return_value=httpx.Response(302, headers={"Location": f"{BAZA}/dashboard"})
+    )
+    for pulpit in (
+        "dashboard/editorial",
+        "dashboard/reviewAssignments",
+        "dashboard/mySubmissions",
+    ):
+        respx.get(f"{BAZA}/{pulpit}").mock(
+            return_value=httpx.Response(200, html="<html>brak tokenu</html>")
+        )
+    async with httpx.AsyncClient(follow_redirects=False) as klient:
+        with pytest.raises(BladLogowania) as exc:
+            await zaloguj(klient, CFG, "rocznik")
+    assert "OJS_API_TOKEN" in str(exc.value)

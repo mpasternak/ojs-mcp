@@ -27,9 +27,12 @@ from .slowniki import ROLE
 
 logger = logging.getLogger(__name__)
 
-_CSRF_FORMULARZ = re.compile(
-    r"""name=["']csrfToken["']\s+value=["']([^"']+)["']""", re.IGNORECASE
-)
+# Dwuetapowe wyłuskiwanie ukrytego pola CSRF — patrz docstring
+# `wyluskaj_csrf_z_formularza`: jeden regex na cały tag, drugi na jego
+# atrybuty, żeby nie zależeć od ich kolejności.
+_TAG_INPUT = re.compile(r"<input\b[^>]*>", re.IGNORECASE)
+_ATRYBUT_NAME_CSRF = re.compile(r"""name\s*=\s*["']csrfToken["']""", re.IGNORECASE)
+_ATRYBUT_VALUE = re.compile(r"""value\s*=\s*["']([^"']*)["']""", re.IGNORECASE)
 _CURRENT_USER = re.compile(r"pkp\.currentUser\s*=\s*(\{.*?\})\s*;", re.DOTALL)
 
 # Kolejność prób: strona redakcyjna, potem recenzencka, potem autorska —
@@ -43,9 +46,24 @@ PULPITY = (
 
 
 def wyluskaj_csrf_z_formularza(html: str) -> str | None:
-    """Znajdź ``<input name="csrfToken" value="…">`` w treści strony."""
-    dopasowanie = _CSRF_FORMULARZ.search(html or "")
-    return dopasowanie.group(1) if dopasowanie else None
+    """Znajdź wartość ``csrfToken`` w ukrytym polu formularza.
+
+    Dwuetapowo, celowo NIEZALEŻNIE od kolejności atrybutów w tagu
+    ``<input>``: najpierw znajdź cały tag zawierający pasujące
+    ``name="csrfToken"``, dopiero potem wyjmij z niego ``value``. Strony
+    backendowe, na których w kroku 2 szukamy tokenu zapasowo, niekoniecznie
+    generują ten tag tym samym szablonem co strona logowania (kolejność
+    ``name``/``value``, atrybut ``id`` pośrodku, spacje wokół ``=``).
+    """
+    tresc = html or ""
+    for tag in _TAG_INPUT.finditer(tresc):
+        fragment = tag.group(0)
+        if not _ATRYBUT_NAME_CSRF.search(fragment):
+            continue
+        wartosc = _ATRYBUT_VALUE.search(fragment)
+        if wartosc:
+            return wartosc.group(1)
+    return None
 
 
 def wyluskaj_current_user(html: str) -> dict | None:
@@ -143,7 +161,10 @@ async def zaloguj(klient: httpx.AsyncClient, config: Config, kontekst: str) -> d
     korzen = f"{config.base_url}/index.php/{kontekst}"
 
     # Krok 0 — ciasteczko sesji i token CSRF sprzed logowania.
-    odp = await klient.get(f"{korzen}/login")
+    # `follow_redirects=True` jest tu jawne i POŻĄDANE (np. `force_login_ssl`
+    # przekierowuje na https) — w odróżnieniu od kroku 1 niżej, gdzie
+    # przekierowania trzeba oglądać surowe. Nie ujednolicać tych dwóch.
+    odp = await klient.get(f"{korzen}/login", follow_redirects=True)
     mechanizm = wykryj_captcha(odp.text)
     if mechanizm:
         raise BladLogowania(
@@ -174,8 +195,19 @@ async def zaloguj(klient: httpx.AsyncClient, config: Config, kontekst: str) -> d
         },
         follow_redirects=False,
     )
+    # Wymagamy NIEPUSTEGO Location: 3xx bez tego nagłówka (304 z pamięci
+    # podręcznej, zapora aplikacyjna, nietypowe proxy) to nie jest sukces
+    # logowania, tylko brak informacji — nie wolno tego domyślnie przepuścić.
+    # Zmianę hasła sprawdzamy jawnie osobnym warunkiem — dziś łapie ją też
+    # podciąg "/login" (adres to `/login/changePassword/{user}`), ale to
+    # przypadek, nie zamierzone zabezpieczenie wymagane w spec. §6.2.
     lokalizacja = odp.headers.get("location", "")
-    udane = 300 <= odp.status_code < 400 and "/login" not in lokalizacja
+    udane = (
+        300 <= odp.status_code < 400
+        and bool(lokalizacja)
+        and "/login" not in lokalizacja
+        and "changepassword" not in lokalizacja.lower()
+    )
     if not udane:
         raise BladLogowania(
             "Logowanie odrzucone. OJS nie rozróżnia przyczyn niepowodzenia, "
@@ -189,7 +221,15 @@ async def zaloguj(klient: httpx.AsyncClient, config: Config, kontekst: str) -> d
     # backendowej. Różne role widzą różne pulpity, stąd kolejność prób.
     for pulpit in PULPITY:
         strona = await klient.get(f"{korzen}/{pulpit}", follow_redirects=True)
-        if strona.status_code != 200:
+        # Sesja bywa martwa mimo udanego kroku 1 (np. wygasła między
+        # krokiem 1 a 2). OJS przekierowuje wtedy pulpit na `/login`, a
+        # httpx podąża za tym automatycznie (follow_redirects=True powyżej
+        # jest zamierzone — różne pulpity to realne przekierowania między
+        # sobą). Strona logowania ma jednak WŁASNE ukryte pole csrfToken —
+        # to token do (kolejnego) logowania, nie token sesji. Odrzucamy tę
+        # stronę PRZED sięgnięciem po zapasowe wyłuskanie, żeby nie zwrócić
+        # cichego fałszywego sukcesu.
+        if strona.status_code != 200 or "/login" in str(strona.url):
             continue
         uzytkownik = wyluskaj_current_user(strona.text)
         if uzytkownik is not None:
