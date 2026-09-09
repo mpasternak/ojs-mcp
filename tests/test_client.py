@@ -3,241 +3,243 @@ import pytest
 import respx
 
 from ojs_mcp.auth import TokenAuth
-from ojs_mcp.bledy import (
-    BladKonfiguracjiSerwera,
-    BladNieZnaleziono,
-    BladUprawnien,
-    BladUwierzytelnienia,
-    BladWalidacji,
-)
 from ojs_mcp.client import OjsClient
 from ojs_mcp.config import Config
+from ojs_mcp.exceptions import (
+    AuthenticationError,
+    AuthorizationError,
+    NotFoundError,
+    ServerConfigError,
+    ValidationError,
+)
 from ojs_mcp.session_login import SessionAuth
 
-BAZA = "https://x.edu/index.php/rocznik/api/v1"
+BASE = "https://x.edu/index.php/annual/api/v1"
 
 
-def _klient(sciezka_auth="token"):
-    cfg = Config(base_url="https://x.edu", journal="rocznik")
+def _client(auth_mode="token"):
+    cfg = Config(base_url="https://x.edu", journal="annual")
     k = OjsClient(cfg, TokenAuth("tok"))
-    k.sciezka_auth = sciezka_auth
+    k.auth_mode = auth_mode
     return k
 
 
 @respx.mock
-async def test_get_zwraca_json_i_doklada_token():
-    trasa = respx.get(f"{BAZA}/issues/current").mock(
+async def test_get_returns_json_and_attaches_the_token():
+    route = respx.get(f"{BASE}/issues/current").mock(
         return_value=httpx.Response(200, json={"id": 7})
     )
-    k = _klient()
+    k = _client()
     assert await k.get("issues/current") == {"id": 7}
-    assert trasa.calls.last.request.headers["Authorization"] == "Bearer tok"
+    assert route.calls.last.request.headers["Authorization"] == "Bearer tok"
     await k.aclose()
 
 
 @respx.mock
-async def test_czasopismo_nadpisuje_domyslne():
-    respx.get("https://x.edu/index.php/inne/api/v1/sections").mock(
+async def test_journal_overrides_the_default():
+    respx.get("https://x.edu/index.php/other/api/v1/sections").mock(
         return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
     )
-    k = _klient()
-    await k.get("sections", czasopismo="inne")
+    k = _client()
+    await k.get("sections", journal="other")
     await k.aclose()
 
 
 @respx.mock
-async def test_pobierz_wszystko_stronicuje_po_itemsmax():
-    # OJS nie daje linków `next` — stronicujemy po count/offset do itemsMax.
-    respx.get(f"{BAZA}/submissions", params={"count": "100", "offset": "0"}).mock(
+async def test_get_all_paginates_by_itemsmax():
+    # OJS gives no `next` links — we paginate by count/offset up to itemsMax.
+    respx.get(f"{BASE}/submissions", params={"count": "100", "offset": "0"}).mock(
         return_value=httpx.Response(
             200, json={"itemsMax": 150, "items": [{"id": i} for i in range(100)]}
         )
     )
-    respx.get(f"{BAZA}/submissions", params={"count": "100", "offset": "100"}).mock(
+    respx.get(f"{BASE}/submissions", params={"count": "100", "offset": "100"}).mock(
         return_value=httpx.Response(
             200, json={"itemsMax": 150, "items": [{"id": i} for i in range(100, 150)]}
         )
     )
-    k = _klient()
-    wynik = await k.pobierz_wszystko("submissions")
-    assert len(wynik) == 150
+    k = _client()
+    result = await k.get_all("submissions")
+    assert len(result) == 150
     await k.aclose()
 
 
 @respx.mock
-async def test_issues_zwraca_items_mimo_swaggera():
-    # Swagger deklaruje gołą tablicę, kod OJS zwraca {items, itemsMax}.
-    respx.get(f"{BAZA}/issues", params={"count": "100", "offset": "0"}).mock(
+async def test_issues_returns_items_despite_swagger():
+    # Swagger declares a bare array, OJS's actual code returns {items, itemsMax}.
+    respx.get(f"{BASE}/issues", params={"count": "100", "offset": "0"}).mock(
         return_value=httpx.Response(
             200, json={"itemsMax": 2, "items": [{"id": 1}, {"id": 2}]}
         )
     )
-    k = _klient()
-    assert len(await k.pobierz_wszystko("issues")) == 2
+    k = _client()
+    assert len(await k.get_all("issues")) == 2
     await k.aclose()
 
 
 @respx.mock
-async def test_pobierz_wszystko_ucina_po_limicie_stron():
-    # limit_stron to jedyny mechanizm chroniący przed wciągnięciem całej
-    # bazy czasopisma do kontekstu modelu — itemsMax=1000 przy limit_stron=2
-    # musi zatrzymać się po dokładnie 2 żądaniach, wynik ucięty do 200.
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+async def test_get_all_truncates_at_the_page_limit():
+    # page_limit is the only mechanism protecting against pulling an
+    # entire journal's database into the model's context — itemsMax=1000
+    # with page_limit=2 must stop after exactly 2 requests, result
+    # truncated to 200.
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(
             200, json={"itemsMax": 1000, "items": [{"id": i} for i in range(100)]}
         )
     )
-    k = _klient()
-    wynik = await k.pobierz_wszystko("submissions", limit_stron=2)
-    assert trasa.calls.call_count == 2
-    assert len(wynik) == 200
+    k = _client()
+    result = await k.get_all("submissions", page_limit=2)
+    assert route.calls.call_count == 2
+    assert len(result) == 200
     await k.aclose()
 
 
 @respx.mock
-async def test_pobierz_wszystko_znosi_gola_tablice():
-    # Bezpiecznik na wypadek endpointu, który jednak zwraca listę.
-    respx.get(f"{BAZA}/stats/editorial", params={"count": "100", "offset": "0"}).mock(
+async def test_get_all_tolerates_a_bare_array():
+    # A safety net for an endpoint that returns a plain list after all.
+    respx.get(f"{BASE}/stats/editorial", params={"count": "100", "offset": "0"}).mock(
         return_value=httpx.Response(200, json=[{"key": "a", "value": 1}])
     )
-    k = _klient()
-    assert await k.pobierz_wszystko("stats/editorial") == [{"key": "a", "value": 1}]
+    k = _client()
+    assert await k.get_all("stats/editorial") == [{"key": "a", "value": 1}]
     await k.aclose()
 
 
 @respx.mock
 @pytest.mark.parametrize(
-    "status,tresc,oczekiwany",
+    "status,detail,expected",
     [
-        # Treść jest PRZETŁUMACZONA na locale instancji — mapujemy po statusie,
-        # nigdy po kluczu locale. Poniżej celowo teksty PL i EN.
-        (400, {"error": "Podany token API jest nieprawidłowy."}, BladUwierzytelnienia),
-        (401, {"error": "Brak uprawnień dostępu do zasobu."}, BladUwierzytelnienia),
+        # The detail text is TRANSLATED into the instance's locale — we map
+        # by status, never by the locale key. Below deliberately both PL
+        # and EN text.
+        (400, {"error": "Podany token API jest nieprawidłowy."}, AuthenticationError),
+        (401, {"error": "Brak uprawnień dostępu do zasobu."}, AuthenticationError),
         (
             401,
             {"error": "You are not permitted to access this resource."},
-            BladUwierzytelnienia,
+            AuthenticationError,
         ),
-        (403, {"error": "Nieprawidłowy token CSRF."}, BladUprawnien),
-        (404, {"error": "api.404.endpointNotFound"}, BladNieZnaleziono),
-        (500, {"error": "Brak klucza api_key_secret."}, BladKonfiguracjiSerwera),
+        (403, {"error": "Nieprawidłowy token CSRF."}, AuthorizationError),
+        (404, {"error": "api.404.endpointNotFound"}, NotFoundError),
+        (500, {"error": "Brak klucza api_key_secret."}, ServerConfigError),
     ],
 )
-async def test_mapowanie_bledow(status, tresc, oczekiwany):
-    respx.get(f"{BAZA}/issues").mock(return_value=httpx.Response(status, json=tresc))
-    k = _klient()
-    with pytest.raises(oczekiwany) as exc:
+async def test_error_mapping(status, detail, expected):
+    respx.get(f"{BASE}/issues").mock(return_value=httpx.Response(status, json=detail))
+    k = _client()
+    with pytest.raises(expected) as exc:
         await k.get("issues")
     assert exc.value.status == status
     await k.aclose()
 
 
 @respx.mock
-async def test_400_z_obiektem_pol_to_blad_walidacji():
-    respx.put(f"{BAZA}/submissions/1/publications/2").mock(
-        return_value=httpx.Response(400, json={"title": ["To pole jest wymagane."]})
+async def test_400_with_a_field_object_is_a_validation_error():
+    respx.put(f"{BASE}/submissions/1/publications/2").mock(
+        return_value=httpx.Response(400, json={"title": ["This field is required."]})
     )
-    k = _klient()
-    with pytest.raises(BladWalidacji) as exc:
-        await k.zadanie("PUT", "submissions/1/publications/2", cialo={"title": ""})
+    k = _client()
+    with pytest.raises(ValidationError) as exc:
+        await k.request("PUT", "submissions/1/publications/2", body={"title": ""})
     assert "title" in str(exc.value)
     await k.aclose()
 
 
 @respx.mock
-async def test_422_z_obiektem_pol_to_blad_walidacji():
-    # OJS przy ValidationException zwraca 422 zamiast zwykłego 400 —
-    # traktujemy to identycznie jak 400 z obiektem pól.
-    respx.put(f"{BAZA}/submissions/1/publications/2").mock(
-        return_value=httpx.Response(422, json={"title": ["To pole jest wymagane."]})
+async def test_422_with_a_field_object_is_a_validation_error():
+    # OJS returns 422 instead of a plain 400 on a ValidationException — we
+    # treat it identically to a 400 with a field object.
+    respx.put(f"{BASE}/submissions/1/publications/2").mock(
+        return_value=httpx.Response(422, json={"title": ["This field is required."]})
     )
-    k = _klient()
-    with pytest.raises(BladWalidacji) as exc:
-        await k.zadanie("PUT", "submissions/1/publications/2", cialo={"title": ""})
+    k = _client()
+    with pytest.raises(ValidationError) as exc:
+        await k.request("PUT", "submissions/1/publications/2", body={"title": ""})
     assert "title" in str(exc.value)
     await k.aclose()
 
 
 @respx.mock
-async def test_404_nie_json_to_nieznane_czasopismo():
-    # Nieistniejący contextPath leci przez PKPRouter przed rejestracją tras,
-    # więc wraca strona HTML, nie JSON.
-    respx.get("https://x.edu/index.php/niema/api/v1/sections").mock(
+async def test_404_without_json_is_an_unknown_journal():
+    # A non-existent contextPath goes through PKPRouter before route
+    # registration, so it returns an HTML page, not JSON.
+    respx.get("https://x.edu/index.php/nothere/api/v1/sections").mock(
         return_value=httpx.Response(404, html="<html>Not Found</html>")
     )
-    k = _klient()
-    with pytest.raises(BladNieZnaleziono) as exc:
-        await k.get("sections", czasopismo="niema")
-    assert "czasopism" in str(exc.value).lower()
+    k = _client()
+    with pytest.raises(NotFoundError) as exc:
+        await k.get("sections", journal="nothere")
+    assert "journal" in str(exc.value).lower()
     await k.aclose()
 
 
-async def test_aclose_zamyka_tez_klienta_logowania_sessionauth():
-    """WAŻNE 3 (recenzja Task 11, Runda 0): `SessionAuth` trzyma WŁASNY
-    `httpx.AsyncClient` do sekwencji logowania (patrz jej docstring) —
-    zasób, o którym `OjsClient` nic nie wie, gdyby nie ten most.
-    `OjsClient.aclose()` musi zamknąć go razem ze swoim klientem
-    produkcyjnym, żeby proces nie kończył z drugą, niezarządzaną pulą
-    połączeń httpx obok tej, o której już dba `server.py`."""
+async def test_aclose_also_closes_the_sessionauth_login_client():
+    """IMPORTANT 3 (Task 11 review, Round 0): `SessionAuth` holds its OWN
+    `httpx.AsyncClient` for the login sequence (see its docstring) — a
+    resource `OjsClient` knows nothing about, if not for this bridge.
+    `OjsClient.aclose()` must close it together with its production
+    client, so the process does not end with a second, unmanaged httpx
+    connection pool alongside the one `server.py` already manages."""
     cfg = Config(
-        base_url="https://x.edu", journal="rocznik", username="u", password="p"
+        base_url="https://x.edu", journal="annual", username="u", password="p"
     )
     auth = SessionAuth(cfg)
     k = OjsClient(cfg, auth)
-    assert not auth._klient_logowania.is_closed
+    assert not auth._login_client.is_closed
     await k.aclose()
-    assert auth._klient_logowania.is_closed
+    assert auth._login_client.is_closed
 
 
-async def test_aclose_toleruje_strategie_bez_wlasnych_zasobow():
-    # `TokenAuth` nie ma `aclose` — `getattr(self._auth, "aclose", None)`
-    # musi po prostu pominąć ten krok, nie wywalić się na braku atrybutu.
-    k = _klient()
-    await k.aclose()  # nie podnosi wyjątku
+async def test_aclose_tolerates_a_strategy_without_its_own_resources():
+    # `TokenAuth` has no `aclose` — `getattr(self._auth, "aclose", None)`
+    # must simply skip this step, not fail on a missing attribute.
+    k = _client()
+    await k.aclose()  # does not raise
 
 
 @respx.mock
-async def test_http_nie_roznosi_ciasteczek_miedzy_uzytkownikami():
-    """N1 (recenzja Task 12, Runda 2) — KRYTYCZNA: w trybie http JEDEN
-    `OjsClient` obsługuje wielu użytkowników. Domyślny magazyn ciasteczek
-    httpx jest współdzielony przez wszystkie żądania danego klienta —
-    `Set-Cookie` z odpowiedzi dla użytkownika A trafiłoby do magazynu, a
-    httpx doklejałoby je do żądań WSZYSTKICH kolejnych użytkowników.
-    Ciasteczko sesji jest poświadczeniem; serwer bez własnych poświadczeń
-    nie ma prawa zbierać cudzych i rozdawać ich dalej.
+async def test_http_does_not_leak_cookies_between_users():
+    """N1 (Task 12 review, Round 2) — CRITICAL: in http mode ONE
+    `OjsClient` serves many users. httpx's default cookie store is shared
+    by all of that client's requests — a `Set-Cookie` from user A's
+    response would land in the store, and httpx would attach it to ALL
+    subsequent users' requests. A session cookie is a credential; a
+    server with no credentials of its own has no right to collect other
+    people's and hand them out further.
     """
-    trasa = respx.get(f"{BAZA}/issues/current").mock(
+    route = respx.get(f"{BASE}/issues/current").mock(
         side_effect=[
             httpx.Response(
-                200, json={"id": 1}, headers={"Set-Cookie": "OJSSID=uzytkownik-A"}
+                200, json={"id": 1}, headers={"Set-Cookie": "OJSSID=user-A"}
             ),
             httpx.Response(200, json={"id": 2}),
         ]
     )
-    cfg = Config(base_url="https://x.edu", journal="rocznik", transport="http")
+    cfg = Config(base_url="https://x.edu", journal="annual", transport="http")
     k = OjsClient(cfg, TokenAuth("tok-a"))
 
-    await k.get("issues/current")  # "użytkownik A" — odpowiedź niesie Set-Cookie
-    await k.get("issues/current")  # "użytkownik B" — ten sam, współdzielony klient
+    await k.get("issues/current")  # "user A" — the response carries Set-Cookie
+    await k.get("issues/current")  # "user B" — the same, shared client
 
-    naglowki_drugiego = trasa.calls[1].request.headers
-    assert "cookie" not in {h.lower() for h in naglowki_drugiego.keys()}
+    second_headers = route.calls[1].request.headers
+    assert "cookie" not in {h.lower() for h in second_headers.keys()}
     await k.aclose()
 
 
 @respx.mock
-async def test_stdio_zachowuje_normalny_magazyn_ciasteczek():
-    """Kontrast do testu wyżej: tryb stdio (jeden proces = jeden
-    użytkownik, patrz `SessionAuth` z Task 11) nie dostaje pustego
-    magazynu — to nie może się cicho zepsuć razem z poprawką N1."""
-    trasa = respx.get(f"{BAZA}/issues/current").mock(
+async def test_stdio_keeps_the_normal_cookie_store():
+    """Contrast to the test above: stdio mode (one process = one user, see
+    `SessionAuth` from Task 11) does not get an empty store — this must
+    not silently break along with the N1 fix."""
+    route = respx.get(f"{BASE}/issues/current").mock(
         side_effect=[
             httpx.Response(200, json={"id": 1}, headers={"Set-Cookie": "OJSSID=abc"}),
             httpx.Response(200, json={"id": 2}),
         ]
     )
-    k = _klient()  # transport domyślny: stdio
+    k = _client()  # default transport: stdio
     await k.get("issues/current")
     await k.get("issues/current")
-    assert "OJSSID=abc" in trasa.calls[1].request.headers.get("cookie", "")
+    assert "OJSSID=abc" in route.calls[1].request.headers.get("cookie", "")
     await k.aclose()

@@ -1,48 +1,53 @@
-"""Tłumaczenie wyjątków domenowych na komunikaty widoczne dla modelu.
+"""Translation of domain exceptions into messages visible to the model.
 
-SDK MCP (``mcp.server.mcpserver.tools.base.Tool.run``) traktuje KAŻDY wyjątek
-inny niż ``ToolError``/``ResourceError``/``mcp.shared.exceptions.MCPError``
-jako „crash": treść, która trafia do modelu, to WYŁĄCZNIE
-``Error executing tool <nazwa>`` — oryginalny komunikat ląduje jedynie w
-``__cause__`` (zalogowanym po stronie serwera), nigdy u klienta. Sprawdzone
-bezpośrednio na SDK (patrz raport Tasku 13): narzędzie podnoszące
-``ValueError("Nieznana wartość...")`` kończy się dla modelu gołym
-``Error executing tool X`` — nasz komunikat ginie. Wyjątek podniesiony jako
-``ToolError`` zachowuje go w całości (``Error executing tool X: <komunikat>``).
+The MCP SDK (``mcp.server.mcpserver.tools.base.Tool.run``) treats ANY
+exception other than ``ToolError``/``ResourceError``/
+``mcp.shared.exceptions.MCPError`` as a "crash": the text that reaches
+the model is EXCLUSIVELY ``Error executing tool <name>`` — the original
+message only ends up in ``__cause__`` (logged server-side), never with
+the client. Verified directly against the SDK (see the Task 13 report): a
+tool raising ``ValueError("Unknown value...")`` ends up for the model as
+a bare ``Error executing tool X`` — our message is lost. An exception
+raised as ``ToolError`` keeps it in full (``Error executing tool X:
+<message>``).
 
-Nasze wyjątki domenowe (``BladOjs`` i pochodne z ``bledy.py``,
-``BrakKonfiguracji`` z ``config.py``, ``BladWejscia``, ``BladZapisWylaczony``)
-niosą polskie, informacyjne komunikaty napisane specjalnie po to, żeby model
-(albo użytkownik za jego pośrednictwem) mógł się poprawić — bez tego
-opakowania są całkowicie tracone.
+Our domain exceptions (``OjsError`` and its subclasses from
+``exceptions.py``, ``MissingConfiguration`` from ``config.py``,
+``InputError``, ``WritesDisabledError``) carry informative messages
+written specifically so the model (or the user, through it) can correct
+itself — without this wrapper they are lost entirely.
 
-``BLEDY_DOMENOWE`` CELOWO nie zawiera gołych ``ValueError``/``PermissionError``
-(recenzja Rundy 1 Tasku 13): taki wpis łapałby też przypadkowy wyjątek tej
-klasy z usterki programistycznej i podawałby jego tekst modelowi jako rzekomo
-świadomy komunikat — gwarancja opierałaby się na PRZYPADKU (dziś akurat nic
-poza naszymi walidacjami go nie podnosi), nie na TYPIE. ``BladWejscia``
-(podklasa ``ValueError``) i ``BladZapisWylaczony`` (podklasa
-``PermissionError``) w ``bledy.py`` istnieją dokładnie po to, żeby "czytelny
-komunikat" był ŚWIADOMĄ DECYZJĄ AUTORA w miejscu podniesienia wyjątku, a nie
-skutkiem ubocznym wyboru wbudowanego typu.
+``DOMAIN_ERRORS`` DELIBERATELY does not contain bare
+``ValueError``/``PermissionError`` (Round 1 review of Task 13): such an
+entry would also catch an accidental exception of that class coming from
+a programming defect and pass its text to the model as if it were a
+deliberate message — the guarantee would rest on COINCIDENCE (today
+nothing besides our own validations raises it), not on TYPE.
+``InputError`` (a subclass of ``ValueError``) and ``WritesDisabledError``
+(a subclass of ``PermissionError``) in ``exceptions.py`` exist precisely
+so that "a readable message" is a DELIBERATE DECISION BY THE AUTHOR at
+the point where the exception is raised, rather than a side effect of
+picking a builtin type.
 
-Funkcje ``*_impl`` w ``tools_read.py``/``tools_write.py``/``passthrough.py``
-CELOWO nie wiedzą nic o MCP (testowalność bez serwera — patrz ich docstringi)
-i mają dalej podnosić zwykłe wyjątki domenowe, nie ``ToolError``. Ten moduł
-jest jedynym miejscem, które tłumaczy je na ``ToolError`` — na granicy
-REJESTRACJI narzędzia (dekorator między ``@mcp.tool()`` a ``async def``), nie
-głębiej. Każdy inny wyjątek (błąd programistyczny, nie domenowy) ma zostać
-prawdziwym „crashem" wg SDK: generyczny komunikat dla modelu, pełny traceback
-w logu serwera — to zachowanie SDK jest tu poprawne i nie jest omijane.
+The ``*_impl`` functions in ``tools_read.py``/``tools_write.py``/
+``passthrough.py`` DELIBERATELY know nothing about MCP (testability
+without a server — see their docstrings) and are meant to keep raising
+plain domain exceptions, not ``ToolError``. This module is the ONLY
+place that translates them into ``ToolError`` — at the tool
+REGISTRATION boundary (the decorator between ``@mcp.tool()`` and
+``async def``), not deeper. Every other exception (a programming error,
+not a domain one) is meant to become a genuine "crash" per the SDK: a
+generic message for the model, a full traceback in the server log — that
+SDK behavior is correct here and is not being worked around.
 
-Dekorator znaczy opakowaną funkcję atrybutem ``_OPAKOWANA_ATRYBUT``
-(``jest_opakowana`` go czyta) — recenzja Rundy 1 Tasku 13 zauważyła, że cała
-wartość tej poprawki opierała się na tym, że KAŻDE narzędzie zostało ręcznie
-opakowane; nic nie pilnowało, że narzędzie dopisane później też dostanie
-dekorator. ``tests/test_server.py`` iteruje po WSZYSTKICH narzędziach
-zarejestrowanych w prawdziwym serwerze i sprawdza ten marker dla każdego —
-regresja (nowe narzędzie bez dekoratora) wywali ten test, a nie przejdzie
-niezauważona zieloną serią.
+The decorator marks the wrapped function with the ``_WRAPPED_ATTR``
+attribute (``is_wrapped`` reads it) — the Round 1 review of Task 13
+noted that the whole value of this fix relied on EVERY tool having been
+manually wrapped; nothing enforced that a tool added later would also
+get the decorator. ``tests/test_server.py`` iterates over ALL tools
+registered on a real server and checks this marker for each one — a
+regression (a new tool without the decorator) fails that test, instead
+of slipping through a green run unnoticed.
 """
 
 from __future__ import annotations
@@ -53,61 +58,63 @@ from typing import Any, TypeVar
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-from .bledy import BladOjs, BladWejscia, BladZapisWylaczony
-from .config import BrakKonfiguracji
+from .config import MissingConfiguration
+from .exceptions import InputError, OjsError, WritesDisabledError
 
-# Wyjątki, o których wiemy, że niosą komunikat napisany dla CZŁOWIEKA (albo
-# modelu), a nie ślad błędu programistycznego — patrz docstring modułu.
-# ŚWIADOMIE bez gołych `ValueError`/`PermissionError` — patrz wyżej.
-BLEDY_DOMENOWE: tuple[type[Exception], ...] = (
-    BladOjs,
-    BrakKonfiguracji,
-    BladWejscia,
-    BladZapisWylaczony,
+# Exceptions known to carry a message written for a HUMAN (or the model),
+# not a trace of a programming error — see the module docstring.
+# DELIBERATELY without bare `ValueError`/`PermissionError` — see above.
+DOMAIN_ERRORS: tuple[type[Exception], ...] = (
+    OjsError,
+    MissingConfiguration,
+    InputError,
+    WritesDisabledError,
 )
 
 _F = TypeVar("_F", bound=Callable[..., Awaitable[Any]])
 
-# Nazwa atrybutu-markera dokładanego do opakowanej funkcji — patrz
-# `jest_opakowana` i docstring modułu.
-_OPAKOWANA_ATRYBUT = "_z_czytelnym_bledem_opakowane"
+# Name of the marker attribute added to the wrapped function — see
+# `is_wrapped` and the module docstring.
+_WRAPPED_ATTR = "_with_readable_error_wrapped"
 
 
-def z_czytelnym_bledem(fn: _F) -> _F:
-    """Owiń funkcję narzędzia MCP, żeby ``BLEDY_DOMENOWE`` trafiały do modelu.
+def with_readable_error(fn: _F) -> _F:
+    """Wrap an MCP tool function so that ``DOMAIN_ERRORS`` reach the model.
 
-    Zastosuj MIĘDZY ``@mcp.tool()`` a ``async def`` — dekorator opakowuje
-    bezpośrednio funkcję zarejestrowaną w SDK, nie ``*_impl``::
+    Apply it BETWEEN ``@mcp.tool()`` and ``async def`` — the decorator
+    wraps the function registered with the SDK directly, not the
+    ``*_impl``::
 
         @mcp.tool()
-        @z_czytelnym_bledem
-        async def przyklad(...) -> dict:
+        @with_readable_error
+        async def example(...) -> dict:
             ...
 
-    ``functools.wraps`` zachowuje nazwę, docstring i sygnaturę oryginalnej
-    funkcji (SDK czyta sygnaturę przez ``inspect.signature`` ze
-    śledzeniem ``__wrapped__``, więc schemat wejścia narzędzia się nie
-    zmienia — zweryfikowane bezpośrednio na SDK w trakcie pisania tego
-    modułu, patrz raport Tasku 13). Dodatkowo znaczy zwróconą funkcję
-    markerem czytanym przez ``jest_opakowana`` — patrz docstring modułu.
+    ``functools.wraps`` preserves the original function's name, docstring
+    and signature (the SDK reads the signature via
+    ``inspect.signature`` following ``__wrapped__``, so a tool's input
+    schema does not change — verified directly against the SDK while
+    writing this module, see the Task 13 report). It also marks the
+    returned function with the attribute read by ``is_wrapped`` — see
+    the module docstring.
     """
 
     @functools.wraps(fn)
-    async def opakowana(*args: Any, **kwargs: Any) -> Any:
+    async def wrapped(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
-        except BLEDY_DOMENOWE as exc:
+        except DOMAIN_ERRORS as exc:
             raise ToolError(str(exc)) from exc
 
-    setattr(opakowana, _OPAKOWANA_ATRYBUT, True)
-    return opakowana  # type: ignore[return-value]
+    setattr(wrapped, _WRAPPED_ATTR, True)
+    return wrapped  # type: ignore[return-value]
 
 
-def jest_opakowana(fn: Callable[..., Any]) -> bool:
-    """Sprawdź, czy ``fn`` przeszła przez ``z_czytelnym_bledem``.
+def is_wrapped(fn: Callable[..., Any]) -> bool:
+    """Check whether ``fn`` went through ``with_readable_error``.
 
-    Do testu w ``tests/test_server.py`` iterującego po WSZYSTKICH
-    narzędziach zarejestrowanych w prawdziwym serwerze — patrz docstring
-    modułu po uzasadnienie.
+    For the test in ``tests/test_server.py`` that iterates over ALL tools
+    registered on a real server — see the module docstring for the
+    reasoning.
     """
-    return getattr(fn, _OPAKOWANA_ATRYBUT, False)
+    return getattr(fn, _WRAPPED_ATTR, False)

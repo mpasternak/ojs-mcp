@@ -5,163 +5,165 @@ import httpx
 import pytest
 import respx
 
-from ojs_mcp.auth import TokenAuth, ustaw_token_zadania
-from ojs_mcp.bledy import BladOjs
-from ojs_mcp.catalog import Katalog
+from ojs_mcp.auth import TokenAuth, set_request_token
+from ojs_mcp.catalog import Catalog
 from ojs_mcp.client import OjsClient
 from ojs_mcp.config import Config
+from ojs_mcp.exceptions import OjsError
 
 
-def _zestaw(journal="rocznik"):
+def _setup(journal="annual"):
     cfg = Config(base_url="https://x.edu", journal=journal)
-    klient = OjsClient(cfg, TokenAuth("tok"))
-    return cfg, klient, Katalog(klient, cfg)
+    client = OjsClient(cfg, TokenAuth("tok"))
+    return cfg, client, Catalog(client, cfg)
 
 
 @respx.mock
-async def test_uzywa_kontekstu_czasopisma_gdy_jest_journal():
-    # Ścieżka preferowana: działa dla menedżera czasopisma, bez roli admina.
-    trasa = respx.get("https://x.edu/index.php/rocznik/api/v1/contexts").mock(
+async def test_uses_the_journal_context_when_journal_is_set():
+    # Preferred path: works for a journal manager, without an admin role.
+    route = respx.get("https://x.edu/index.php/annual/api/v1/contexts").mock(
         return_value=httpx.Response(
             200,
             json={
                 "itemsMax": 1,
-                "items": [{"urlPath": "rocznik", "name": {"pl": "Rocznik"}}],
+                "items": [{"urlPath": "annual", "name": {"pl": "Rocznik"}}],
             },
         )
     )
-    _, klient, katalog = _zestaw()
-    assert await katalog.czasopisma() == [{"sciezka": "rocznik", "nazwa": "Rocznik"}]
-    assert trasa.called
-    await klient.aclose()
+    _, client, catalog = _setup()
+    assert await catalog.journals() == [{"path": "annual", "name": "Rocznik"}]
+    assert route.called
+    await client.aclose()
 
 
 @respx.mock
-async def test_bez_journal_schodzi_na_poziom_witryny():
+async def test_no_journal_falls_back_to_the_site_level():
     respx.get("https://x.edu/index.php/index/api/v1/contexts").mock(
         return_value=httpx.Response(
             200, json={"itemsMax": 1, "items": [{"urlPath": "a", "name": {"en": "A"}}]}
         )
     )
-    _, klient, katalog = _zestaw(journal=None)
-    assert await katalog.czasopisma() == [{"sciezka": "a", "nazwa": "A"}]
-    await klient.aclose()
+    _, client, catalog = _setup(journal=None)
+    assert await catalog.journals() == [{"path": "a", "name": "A"}]
+    await client.aclose()
 
 
 @respx.mock
-async def test_500_daje_katalog_jednoelementowy_z_journal():
-    # HasRoles woła $context->getId() bez nullsafe — na poziomie witryny
-    # użytkownik bez SITE_ADMIN może dostać 500 zamiast czytelnej odmowy.
-    respx.get("https://x.edu/index.php/rocznik/api/v1/contexts").mock(
+async def test_500_gives_a_single_entry_catalog_from_journal():
+    # HasRoles calls $context->getId() without a nullsafe operator — at
+    # the site level a user without SITE_ADMIN may get a 500 instead of a
+    # readable denial.
+    respx.get("https://x.edu/index.php/annual/api/v1/contexts").mock(
         return_value=httpx.Response(500, json={"error": "Server error"})
     )
-    _, klient, katalog = _zestaw()
-    assert await katalog.czasopisma() == [{"sciezka": "rocznik", "nazwa": "rocznik"}]
-    await klient.aclose()
+    _, client, catalog = _setup()
+    assert await catalog.journals() == [{"path": "annual", "name": "annual"}]
+    await client.aclose()
 
 
 @respx.mock
-async def test_brak_journal_i_brak_uprawnien_to_czytelny_blad():
+async def test_no_journal_and_no_permission_is_a_readable_error():
     respx.get("https://x.edu/index.php/index/api/v1/contexts").mock(
-        return_value=httpx.Response(401, json={"error": "Brak uprawnień."})
+        return_value=httpx.Response(401, json={"error": "Access denied."})
     )
-    _, klient, katalog = _zestaw(journal=None)
-    with pytest.raises(BladOjs) as exc:
-        await katalog.czasopisma()
+    _, client, catalog = _setup(journal=None)
+    with pytest.raises(OjsError) as exc:
+        await catalog.journals()
     assert "OJS_JOURNAL" in str(exc.value)
-    await klient.aclose()
+    await client.aclose()
 
 
 @respx.mock
-async def test_rozwiaz_po_nazwie_wyswietlanej():
-    respx.get("https://x.edu/index.php/rocznik/api/v1/contexts").mock(
+async def test_resolve_by_display_name():
+    respx.get("https://x.edu/index.php/annual/api/v1/contexts").mock(
         return_value=httpx.Response(
             200,
             json={
                 "itemsMax": 1,
-                "items": [{"urlPath": "rocznik", "name": {"pl": "Rocznik Naukowy"}}],
+                "items": [{"urlPath": "annual", "name": {"pl": "Rocznik Naukowy"}}],
             },
         )
     )
-    _, klient, katalog = _zestaw()
-    assert await katalog.rozwiaz("Rocznik Naukowy") == "rocznik"
-    assert await katalog.rozwiaz("rocznik") == "rocznik"
-    assert await katalog.rozwiaz(None) == "rocznik"
-    await klient.aclose()
+    _, client, catalog = _setup()
+    assert await catalog.resolve("Rocznik Naukowy") == "annual"
+    assert await catalog.resolve("annual") == "annual"
+    assert await catalog.resolve(None) == "annual"
+    await client.aclose()
 
 
 @respx.mock
-async def test_katalog_cachuje_wynik():
-    trasa = respx.get("https://x.edu/index.php/rocznik/api/v1/contexts").mock(
+async def test_catalog_caches_the_result():
+    route = respx.get("https://x.edu/index.php/annual/api/v1/contexts").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    _, klient, katalog = _zestaw()
-    await katalog.czasopisma()
-    await katalog.czasopisma()
-    assert trasa.call_count == 1
-    await klient.aclose()
+    _, client, catalog = _setup()
+    await catalog.journals()
+    await catalog.journals()
+    assert route.call_count == 1
+    await client.aclose()
 
 
 @respx.mock
-async def test_cache_izolowany_miedzy_zadaniami_nie_wspoldzielony():
-    """Runda 3 (N2, recenzja Rundy 2): `Katalog` jest teraz obiektem
-    WSPÓLNYM dla całego procesu — jego cache NIE MOŻE mimo to przeciekać
-    między różnymi żądaniami/użytkownikami, inaczej pierwszy użytkownik
-    (nawet bez uprawnień, patrz `test_500_daje_katalog_jednoelementowy_z_journal`)
-    narzucałby swój katalog wszystkim kolejnym aż do restartu procesu —
-    dokładnie usterka, którą naprawia ta runda.
+async def test_cache_is_isolated_between_tasks_not_shared():
+    """Round 3 (N2, Round 2 review): `Catalog` is now an object SHARED by
+    the whole process — its cache must nonetheless NOT leak between
+    different requests/users, otherwise the first user (even without
+    permissions, see `test_500_gives_a_single_entry_catalog_from_journal`)
+    would impose their catalog on every subsequent one until the process
+    restarts — exactly the defect this round fixes.
     """
-    trasa = respx.get("https://x.edu/index.php/rocznik/api/v1/contexts").mock(
+    route = respx.get("https://x.edu/index.php/annual/api/v1/contexts").mock(
         return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
     )
-    _, klient, katalog = _zestaw()
+    _, client, catalog = _setup()
 
-    # `asyncio.create_task` kopiuje bieżący kontekst PRZY STARCIE zadania —
-    # dokładnie ten sam mechanizm, którym `stateless_http=True` izoluje od
-    # siebie kolejne żądania ASGI (patrz `http_transport.py`). Oba zadania
-    # startują z TEGO SAMEGO (pustego) kontekstu nadrzędnego, więc `.set()`
-    # w jednym NIE MA prawa być widoczne w drugim.
-    await asyncio.create_task(katalog.czasopisma())
-    await asyncio.create_task(katalog.czasopisma())
+    # `asyncio.create_task` copies the current context AT TASK START —
+    # exactly the same mechanism by which `stateless_http=True` isolates
+    # successive ASGI requests from one another (see `http_transport.py`).
+    # Both tasks start from the SAME (empty) parent context, so `.set()`
+    # in one has no right to be visible in the other.
+    await asyncio.create_task(catalog.journals())
+    await asyncio.create_task(catalog.journals())
 
-    assert trasa.call_count == 2  # każde "żądanie" pobrało katalog OSOBNO
-    await klient.aclose()
+    assert route.call_count == 2  # each "request" fetched the catalog SEPARATELY
+    await client.aclose()
 
 
 @respx.mock
-async def test_zimne_pobrania_roznych_uzytkownikow_nie_szereguja_sie():
-    """Runda 4 (recenzja Rundy 3): blokada `Katalog` musi być kluczowana
-    tokenem, nie jedna na całą instancję — inaczej dziesięciu użytkowników
-    z różnymi, nigdy niecache'owanymi tokenami czekałoby jeden na drugiego,
-    mimo że każdy dostaje WŁASNY wynik z WŁASNEGO, izolowanego cache'u.
-    Zmierzone PRZED tą poprawką: ~3,6 s (10 × 0,36 s) zamiast ~0,3 s.
+async def test_cold_fetches_from_different_users_do_not_serialize():
+    """Round 4 (Round 3 review): the `Catalog` lock must be keyed by the
+    token, not one for the whole instance — otherwise ten users with
+    different, never-cached tokens would wait for one another, even
+    though each of them gets their OWN result from their OWN, isolated
+    cache. Measured BEFORE this fix: ~3.6 s (10 x 0.36 s) instead of
+    ~0.3 s.
     """
-    opoznienie = 0.3
+    delay = 0.3
 
-    async def _powolna(request: httpx.Request) -> httpx.Response:
-        await asyncio.sleep(opoznienie)
+    async def _slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(delay)
         return httpx.Response(200, json={"itemsMax": 0, "items": []})
 
-    respx.get("https://x.edu/index.php/rocznik/api/v1/contexts").mock(
-        side_effect=_powolna
+    respx.get("https://x.edu/index.php/annual/api/v1/contexts").mock(
+        side_effect=_slow
     )
-    _, klient, katalog = _zestaw()
+    _, client, catalog = _setup()
 
-    async def uzytkownik(token: str) -> list[dict]:
-        # `asyncio.gather` tworzy Task per-coroutine i kopiuje kontekst
-        # PRZED uruchomieniem tej funkcji, więc `ustaw_token_zadania`
-        # wykonane TUTAJ ustawia wartość we WŁASNYM, już odizolowanym
-        # kontekście tego zadania — nie przecieka do rodzeństwa.
-        ustaw_token_zadania(token)
-        return await katalog.czasopisma()
+    async def user(token: str) -> list[dict]:
+        # `asyncio.gather` creates a Task per coroutine and copies the
+        # context BEFORE running this function, so `set_request_token`
+        # done HERE sets the value in THIS task's OWN, already isolated
+        # context — it does not leak to siblings.
+        set_request_token(token)
+        return await catalog.journals()
 
     start = time.perf_counter()
-    await asyncio.gather(*[uzytkownik(f"token-{i}") for i in range(10)])
-    czas = time.perf_counter() - start
+    await asyncio.gather(*[user(f"token-{i}") for i in range(10)])
+    elapsed = time.perf_counter() - start
 
-    # Gdyby blokada serializowała ruch, zajęłoby to ~10 × 0,3 s = 3 s.
-    # Bez serializacji — ~0,3 s (czas jednego pobrania, uruchomionych
-    # współbieżnie). Margines swobodny, ale dużo poniżej pełnej serializacji.
-    assert czas < opoznienie * 3, f"zbyt wolno ({czas:.2f}s) — blokada szereguje"
-    ustaw_token_zadania(None)
-    await klient.aclose()
+    # If the lock serialized traffic, this would take ~10 x 0.3 s = 3 s.
+    # Without serialization — ~0.3 s (the time of one fetch, run
+    # concurrently). A generous margin, but well below full serialization.
+    assert elapsed < delay * 3, f"too slow ({elapsed:.2f}s) — the lock serializes"
+    set_request_token(None)
+    await client.aclose()

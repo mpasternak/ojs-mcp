@@ -1,9 +1,10 @@
-"""Klient HTTP instancji OJS: budowa URL, paginacja i mapowanie błędów.
+"""HTTP client for the OJS instance: URL building, pagination, and error
+mapping.
 
-Ten moduł nie wie nic o MCP. Jest jedynym właścicielem
-``httpx.AsyncClient`` — strategie uwierzytelniania wchodzą jako
-``httpx.Auth``, żeby w trybie http token mógł być czytany per żądanie
-(patrz ``auth.TokenZadaniaAuth``).
+This module knows nothing about MCP. It is the sole owner of the
+``httpx.AsyncClient`` — authentication strategies are supplied as
+``httpx.Auth``, so that in http mode the token can be read per request
+(see ``auth.RequestTokenAuth``).
 """
 
 from __future__ import annotations
@@ -14,39 +15,38 @@ from typing import Any
 
 import httpx
 
-from .bledy import (
-    BladKonfiguracjiSerwera,
-    BladNieZnaleziono,
-    BladOjs,
-    BladUprawnien,
-    BladUwierzytelnienia,
-    BladWalidacji,
-)
 from .config import Config
+from .exceptions import (
+    AuthenticationError,
+    AuthorizationError,
+    NotFoundError,
+    OjsError,
+    ServerConfigError,
+    ValidationError,
+)
 
 logger = logging.getLogger(__name__)
 
-# Maksimum wymuszone przez OJS (SubmissionController::MAX_COUNT i pokrewne).
+# Maximum enforced by OJS (SubmissionController::MAX_COUNT and related).
 MAX_COUNT = 100
 
 
-class SloikBezCiasteczek(http.cookiejar.CookieJar):
-    """Magazyn ciasteczek, który nic nie zapamiętuje i nic nie dokłada.
+class NoCookieJar(http.cookiejar.CookieJar):
+    """A cookie store that never remembers and never attaches anything.
 
-    W trybie http JEDEN ``OjsClient`` (a więc jeden ``httpx.AsyncClient``)
-    obsługuje WIELU użytkowników — patrz Runda 2 Tasku 12. Domyślny magazyn
-    ciasteczek httpx jest współdzielony przez WSZYSTKIE żądania tego
-    klienta: ``Set-Cookie`` z odpowiedzi dla użytkownika A trafiłoby do
-    magazynu, a httpx doklejałoby je do żądań WSZYSTKICH kolejnych
-    użytkowników tego samego hosta (usterka N1, recenzja Rundy 2 —
-    zmierzona: 99 ze 100 żądań pod obciążeniem niosło cudze ciasteczko
-    sesji). Ciasteczko sesji OJS jest poświadczeniem — serwer, którego
-    cała obietnica brzmi „nie mam własnych poświadczeń”, nie może zbierać
-    cudzych i rozdawać ich dalej.
+    In http mode, ONE ``OjsClient`` (and thus one ``httpx.AsyncClient``)
+    serves MANY users — see Round 2 of Task 12. httpx's default cookie
+    store is shared by ALL of that client's requests: a ``Set-Cookie``
+    from user A's response would land in the store, and httpx would
+    attach it to ALL subsequent users' requests to the same host (defect
+    N1, Round 2 review — measured: 99 out of 100 requests under load
+    carried someone else's session cookie). An OJS session cookie is a
+    credential — a server whose entire promise is "I hold no credentials
+    of my own" cannot collect other people's and hand them out further.
 
-    httpx wymaga OBIEKTU ``http.cookiejar.CookieJar`` jako magazynu — nie
-    da się go „wyłączyć” inaczej niż podstawieniem takiego, który udaje
-    pusty, zawsze pusty magazyn.
+    httpx requires an ``http.cookiejar.CookieJar`` OBJECT as its store —
+    there is no way to "disable" it other than substituting one that
+    pretends to be an empty, always-empty store.
     """
 
     def extract_cookies(self, response, request) -> None:
@@ -57,269 +57,274 @@ class SloikBezCiasteczek(http.cookiejar.CookieJar):
 
 
 class OjsClient:
-    """Cienka warstwa nad ``httpx`` mówiąca dialektem API OJS."""
+    """A thin layer over ``httpx`` speaking the OJS API dialect."""
 
     def __init__(
         self,
         config: Config,
         auth: httpx.Auth,
         *,
-        klient: httpx.AsyncClient | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
         self.config = config
-        self.sciezka_auth = "token"
+        self.auth_mode = "token"
         self._auth = auth
-        self._wlasny_klient = klient is None
-        self._klient = klient or httpx.AsyncClient(
+        self._own_client = client is None
+        self._client = client or httpx.AsyncClient(
             auth=auth,
             timeout=httpx.Timeout(30.0, connect=10.0),
             follow_redirects=True,
             headers={"Accept": "application/json"},
-            # Patrz docstring `SloikBezCiasteczek` — w trybie stdio klient
-            # obsługuje JEDNEGO użytkownika przez cały proces, więc zwykły
-            # magazyn ciasteczek jest poprawny i potrzebny (`SessionAuth`
-            # sam zarządza własnym, oddzielnym klientem logowania i tak
-            # ustawia nagłówek `Cookie` ręcznie — patrz jej docstring — ale
-            # to nie ma znaczenia dla magazynu TEGO klienta).
-            cookies=SloikBezCiasteczek() if config.transport == "http" else None,
+            # See the `NoCookieJar` docstring — in stdio mode the client
+            # serves a SINGLE user for the whole process lifetime, so a
+            # regular cookie store is correct and needed (`SessionAuth`
+            # manages its own, separate login client and sets the
+            # `Cookie` header itself — see its docstring — but that has
+            # no bearing on THIS client's store).
+            cookies=NoCookieJar() if config.transport == "http" else None,
         )
-        if klient is not None:
-            self._klient.auth = auth
+        if client is not None:
+            self._client.auth = auth
 
     async def aclose(self) -> None:
-        """Zamknij klienta produkcyjny oraz ewentualne zasoby strategii auth.
+        """Close the production client and any auth-strategy resources.
 
-        Klienta produkcyjnego zamykamy tylko, jeśli to my go stworzyliśmy
-        (``self._wlasny_klient``) — patrz docstring parametru ``klient``.
-        Strategię uwierzytelniania zamykamy ZAWSZE, niezależnie od tego: to
-        jej WŁASNY zasób (np. ``SessionAuth`` trzyma osobny
-        ``httpx.AsyncClient`` do sekwencji logowania — patrz jej docstring),
-        którego cykl życia nie zależy od tego, kto stworzył klienta
-        produkcyjnego. `getattr` zamiast `isinstance`, bo `OjsClient` nie ma
-        (i nie powinien mieć) importu konkretnych strategii z `auth.py` /
-        `session_login.py` — większość z nich (np. `TokenAuth`) nie ma
-        żadnych zasobów do zamknięcia.
+        We close the production client only if we created it
+        (``self._own_client``) — see the ``client`` parameter's
+        docstring. We ALWAYS close the auth strategy, regardless: that is
+        its OWN resource (e.g. ``SessionAuth`` holds a separate
+        ``httpx.AsyncClient`` for the login sequence — see its
+        docstring), whose lifecycle does not depend on who created the
+        production client. `getattr` instead of `isinstance`, because
+        `OjsClient` does not (and should not) import concrete strategies
+        from `auth.py` / `session_login.py` — most of them (e.g.
+        `TokenAuth`) have no resources to close at all.
         """
-        if self._wlasny_klient:
-            await self._klient.aclose()
-        zamknij_auth = getattr(self._auth, "aclose", None)
-        if zamknij_auth is not None:
-            await zamknij_auth()
+        if self._own_client:
+            await self._client.aclose()
+        close_auth = getattr(self._auth, "aclose", None)
+        if close_auth is not None:
+            await close_auth()
 
     @property
-    def tozsamosc_sesji(self) -> dict | None:
-        """Surowa tożsamość zalogowanego użytkownika, jeśli strategia auth
-        ją zna (dziś: wyłącznie ``SessionAuth`` — ``session_login.py``).
+    def session_identity(self) -> dict | None:
+        """Raw identity of the logged-in user, if the auth strategy knows
+        it (today: exclusively ``SessionAuth`` — ``session_login.py``).
 
-        `None` dla ``TokenAuth``/``TokenZadaniaAuth`` (nie mają tożsamości —
-        token API nie niesie żadnej) oraz dla `SessionAuth`, zanim leniwe
-        logowanie w ogóle się odbyło.
+        ``None`` for ``TokenAuth``/``RequestTokenAuth`` (they have no
+        identity — an API token carries none) and for ``SessionAuth``
+        before the lazy login has happened at all.
 
-        Ten sam wzorzec `getattr` co ``aclose()`` wyżej i z tego samego
-        powodu: `OjsClient` nie ma (i nie powinien mieć) importu konkretnych
-        strategii z `auth.py`/`session_login.py`. RÓŻNICA wobec sięgania po
-        `self._auth` z ZEWNĄTRZ tej klasy (usterka z recenzji W7, Runda 2):
-        to jest WŁASNY atrybut `OjsClient`, czytany przez WŁASNĄ metodę —
-        enkapsulacja zachowana. Wywołujący spoza tego modułu (np.
-        `tools_read.kim_jestem_impl`) mają czytać TĘ property, nie
-        `client._auth` bezpośrednio.
+        Same `getattr` pattern as `aclose()` above, and for the same
+        reason: `OjsClient` does not (and should not) import concrete
+        strategies from `auth.py`/`session_login.py`. DIFFERENCE from
+        reaching into `self._auth` from OUTSIDE this class (a defect from
+        the W7 review, Round 2): this is `OjsClient`'s OWN attribute,
+        read by its OWN method — encapsulation preserved. Callers outside
+        this module (e.g. `tools_read.whoami_impl`) should read THIS
+        property, not `client._auth` directly.
 
-        UWAGA — SEKRETY: zwracany słownik to SUROWY ``pkp.currentUser``,
-        który niesie m.in. ``csrfToken`` (żywy token CSRF sesji, tym samym,
-        którym `SessionAuth` autoryzuje zapisy). Wywołujący MUSI przyciąć
-        go przed pokazaniem gdziekolwiek na zewnątrz (modelowi, logom) —
-        patrz ``pola.POLA_TOZSAMOSCI`` i `tools_read.kim_jestem_impl`. Ta
-        property świadomie NIE przycina sama — `client.py` nie zależy od
-        `pola.py` (odwrotny kierunek zależności niż `tools_read`/`tools_write`,
-        patrz docstring modułu `pola.py`), a przycinanie tu ukryłoby to
-        ryzyko przed czytelnikiem tego kodu zamiast je nazwać.
+        WARNING — SECRETS: the returned dict is the RAW
+        ``pkp.currentUser``, which carries, among others, ``csrfToken``
+        (a live session CSRF token, the same one `SessionAuth` uses to
+        authorize writes). The caller MUST trim it before showing it
+        anywhere outside (to the model, to logs) — see
+        ``fields.IDENTITY_FIELDS`` and `tools_read.whoami_impl`. This
+        property deliberately does NOT trim it itself — `client.py` does
+        not depend on `fields.py` (the opposite dependency direction from
+        `tools_read`/`tools_write`, see the `fields.py` module
+        docstring), and trimming here would hide this risk from a reader
+        of this code instead of naming it.
         """
-        return getattr(self._auth, "uzytkownik", None)
+        return getattr(self._auth, "user", None)
 
-    def _url(self, sciezka: str, czasopismo: str | None) -> str:
-        return f"{self.config.api_root(czasopismo)}/{sciezka.lstrip('/')}"
+    def _url(self, path: str, journal: str | None) -> str:
+        return f"{self.config.api_root(journal)}/{path.lstrip('/')}"
 
     async def get(
         self,
-        sciezka: str,
+        path: str,
         *,
-        parametry: dict[str, Any] | None = None,
-        czasopismo: str | None = None,
+        params: dict[str, Any] | None = None,
+        journal: str | None = None,
     ) -> Any:
-        """Pojedyncze ``GET`` zwracające zdekodowany JSON."""
-        return await self.zadanie(
-            "GET", sciezka, parametry=parametry, czasopismo=czasopismo
-        )
+        """A single ``GET`` returning decoded JSON."""
+        return await self.request("GET", path, params=params, journal=journal)
 
-    async def zadanie(
+    async def request(
         self,
-        metoda: str,
-        sciezka: str,
+        method: str,
+        path: str,
         *,
-        parametry: dict[str, Any] | None = None,
-        cialo: Any = None,
-        czasopismo: str | None = None,
+        params: dict[str, Any] | None = None,
+        body: Any = None,
+        journal: str | None = None,
     ) -> Any:
-        """Wykonaj żądanie i zamień odpowiedź błędną na wyjątek domenowy."""
-        url = self._url(sciezka, czasopismo)
+        """Perform a request and turn an error response into a domain
+        exception."""
+        url = self._url(path, journal)
         try:
-            odpowiedz = await self._klient.request(
-                metoda.upper(), url, params=parametry, json=cialo
+            response = await self._client.request(
+                method.upper(), url, params=params, json=body
             )
         except httpx.HTTPError as exc:
-            logger.error("Błąd sieci przy %s %s: %s", metoda, url, exc)
-            raise BladOjs(f"Nie udało się połączyć z OJS ({url}): {exc}") from exc
+            logger.error("Network error on %s %s: %s", method, url, exc)
+            raise OjsError(f"Could not connect to OJS ({url}): {exc}") from exc
 
-        if odpowiedz.status_code >= 400:
-            raise self._na_blad(odpowiedz, metoda)
+        if response.status_code >= 400:
+            raise self._to_error(response, method)
 
-        if not odpowiedz.content:
+        if not response.content:
             return None
         try:
-            return odpowiedz.json()
+            return response.json()
         except ValueError as exc:
-            logger.error("OJS zwróciło nie-JSON dla %s %s", metoda, url)
-            raise BladOjs(
-                f"OJS zwróciło odpowiedź, która nie jest JSON-em ({url}). "
-                "Sprawdź, czy OJS_BASE_URL wskazuje na korzeń instalacji."
+            logger.error("OJS returned non-JSON for %s %s", method, url)
+            raise OjsError(
+                f"OJS returned a response that is not JSON ({url}). Check "
+                "whether OJS_BASE_URL points to the root of the "
+                "installation."
             ) from exc
 
-    def _na_blad(self, odpowiedz: httpx.Response, metoda: str) -> BladOjs:
-        """Zamień odpowiedź błędną na wyjątek domenowy.
+    def _to_error(self, response: httpx.Response, method: str) -> OjsError:
+        """Turn an error response into a domain exception.
 
-        Decyzja zapada po trójce (status, ścieżka uwierzytelniania, metoda).
-        Treść ``error`` z OJS jest tekstem przetłumaczonym na locale
-        instancji, więc NIE nadaje się na kryterium — przenosimy ją dosłownie
-        jako kontekst dla użytkownika.
+        The decision is made on the triple (status, authentication path,
+        method). The `error` text from OJS is translated into the
+        instance's locale, so it is NOT suitable as a criterion — we carry
+        it over verbatim as context for the user.
         """
-        status = odpowiedz.status_code
+        status = response.status_code
         try:
-            dane = odpowiedz.json()
+            data = response.json()
         except ValueError:
-            # OJS przy 404 z poziomu routera (nieznane czasopismo) zwraca stronę
-            # HTML, nie JSON. Brak treści JSON jest tu oczekiwanym sygnałem,
-            # rozpoznawanym niżej w _na_blad, a nie błędem do zalogowania.
-            dane = None
+            # OJS returns an HTML page, not JSON, on a 404 from the router
+            # level (unknown journal). No JSON body is the expected signal
+            # here, recognized below in _to_error, not an error to log.
+            data = None
 
-        tresc = None
-        if isinstance(dane, dict):
-            tresc = dane.get("errorMessage") or dane.get("error")
-            if not isinstance(tresc, str):
-                tresc = None
+        detail = None
+        if isinstance(data, dict):
+            detail = data.get("errorMessage") or data.get("error")
+            if not isinstance(detail, str):
+                detail = None
 
-        ogon = f" Odpowiedź OJS: {tresc}" if tresc else ""
+        tail = f" OJS response: {detail}" if detail else ""
 
         if status in (400, 422):
-            # 400 ma dwa znaczenia: błąd tokenu albo błędy walidacji pól.
-            # Rozróżniamy po kształcie ciała, nie po treści komunikatu.
-            # 422 traktujemy tak samo jak 400 z obiektem pól — OJS zwraca ten
-            # status, gdy podniesie ValidationException zamiast zwykłego 400.
-            if isinstance(dane, dict) and "error" not in dane and dane:
-                pola = "; ".join(f"{k}: {v}" for k, v in dane.items())
-                return BladWalidacji(
-                    f"OJS odrzucił dane wejściowe. {pola}",
+            # 400 has two meanings: a token error or field validation
+            # errors. We distinguish by the body's shape, not by the
+            # message text. We treat 422 the same as 400 with a field
+            # object — OJS returns this status when it raises a
+            # ValidationException instead of a plain 400.
+            if isinstance(data, dict) and "error" not in data and data:
+                fields = "; ".join(f"{k}: {v}" for k, v in data.items())
+                return ValidationError(
+                    f"OJS rejected the input. {fields}",
                     status=status,
-                    tresc=tresc,
+                    detail=detail,
                 )
-            return BladUwierzytelnienia(
-                "Token API nie pasuje do tej instancji OJS — zły podpis albo "
-                "token wygenerowany na innym serwerze. Sprawdź, czy "
-                f"OJS_API_TOKEN pochodzi z {self.config.base_url}.{ogon}",
+            return AuthenticationError(
+                "The API token does not match this OJS instance — a wrong "
+                "signature, or a token generated on another server. Check "
+                f"that OJS_API_TOKEN comes from {self.config.base_url}."
+                f"{tail}",
                 status=status,
-                tresc=tresc,
+                detail=detail,
             )
 
         if status == 401:
-            if self.sciezka_auth == "sesja":
-                return BladUwierzytelnienia(
-                    "Sesja wygasła albo konto nie ma wymaganej roli w tym "
-                    f"czasopiśmie.{ogon}",
+            if self.auth_mode == "session":
+                return AuthenticationError(
+                    "The session expired, or the account lacks the "
+                    f"required role in this journal.{tail}",
                     status=status,
-                    tresc=tresc,
+                    detail=detail,
                 )
-            return BladUwierzytelnienia(
-                "OJS odmówił dostępu. Możliwe przyczyny: token nieznany, "
-                "klucz API wyłączony w profilu użytkownika, albo konto nie ma "
-                "wymaganej roli w tym czasopiśmie — OJS zwraca 401 we "
-                f"wszystkich tych przypadkach.{ogon}",
+            return AuthenticationError(
+                "OJS denied access. Possible causes: an unknown token, the "
+                "API key disabled in the user's profile, or the account "
+                "lacking the required role in this journal — OJS returns "
+                f"401 in all of these cases.{tail}",
                 status=status,
-                tresc=tresc,
+                detail=detail,
             )
 
         if status == 403:
-            if self.sciezka_auth == "sesja" and metoda.upper() != "GET":
-                return BladUprawnien(
-                    f"Brak lub nieważny token CSRF przy zapisie w sesji.{ogon}",
+            if self.auth_mode == "session" and method.upper() != "GET":
+                return AuthorizationError(
+                    f"Missing or invalid CSRF token on a session write.{tail}",
                     status=status,
-                    tresc=tresc,
+                    detail=detail,
                 )
-            return BladUprawnien(
-                "OJS odmówił — żądanie dotyczy danych innego użytkownika "
-                f"albo czasopisma bez uprawnień.{ogon}",
+            return AuthorizationError(
+                "OJS denied the request — it concerns another user's data, "
+                f"or a journal without permission.{tail}",
                 status=status,
-                tresc=tresc,
+                detail=detail,
             )
 
         if status == 404:
-            if dane is None:
-                return BladNieZnaleziono(
-                    "OJS zwróciło stronę 404 zamiast JSON-a — to zwykle znaczy, "
-                    "że podane czasopismo nie istnieje. Sprawdź listę przez "
-                    "narzędzie `lista_czasopism`.",
+            if data is None:
+                return NotFoundError(
+                    "OJS returned a 404 page instead of JSON — this usually "
+                    "means the given journal does not exist. Check the "
+                    "list with the `list_journals` tool.",
                     status=status,
                 )
-            return BladNieZnaleziono(
-                "Endpoint nie istnieje w tej wersji OJS. Część ścieżek "
-                f"pojawiła się dopiero w 3.6.{ogon}",
+            return NotFoundError(
+                "The endpoint does not exist in this OJS version. Some "
+                f"paths only appeared in 3.6.{tail}",
                 status=status,
-                tresc=tresc,
+                detail=detail,
             )
 
         if status >= 500:
-            return BladKonfiguracjiSerwera(
-                "OJS zwróciło błąd serwera. Najczęstsza przyczyna przy API to "
-                "brak `api_key_secret` w config.inc.php — bez niego token nie "
-                f"może zostać zweryfikowany.{ogon}",
+            return ServerConfigError(
+                "OJS returned a server error. The most common API-related "
+                "cause is a missing `api_key_secret` in config.inc.php — "
+                f"without it, a token cannot be verified.{tail}",
                 status=status,
-                tresc=tresc,
+                detail=detail,
             )
 
-        return BladOjs(
-            f"OJS zwróciło status {status}.{ogon}", status=status, tresc=tresc
+        return OjsError(
+            f"OJS returned status {status}.{tail}", status=status, detail=detail
         )
 
-    async def pobierz_wszystko(
+    async def get_all(
         self,
-        sciezka: str,
+        path: str,
         *,
-        parametry: dict[str, Any] | None = None,
-        czasopismo: str | None = None,
-        limit_stron: int = 10,
+        params: dict[str, Any] | None = None,
+        journal: str | None = None,
+        page_limit: int = 10,
     ) -> list[dict]:
-        """Przejdź kolekcję po ``count``/``offset`` aż do ``itemsMax``.
+        """Walk a collection via ``count``/``offset`` up to ``itemsMax``.
 
-        OJS nie zwraca linków ``next``. ``limit_stron`` chroni przed
-        wciągnięciem całej bazy do kontekstu modelu.
+        OJS does not return ``next`` links. ``page_limit`` protects
+        against pulling an entire database into the model's context.
         """
-        zebrane: list[dict] = []
+        collected: list[dict] = []
         offset = 0
-        for _ in range(limit_stron):
-            biezace = dict(parametry or {})
-            biezace.update({"count": MAX_COUNT, "offset": offset})
-            dane = await self.get(sciezka, parametry=biezace, czasopismo=czasopismo)
+        for _ in range(page_limit):
+            current = dict(params or {})
+            current.update({"count": MAX_COUNT, "offset": offset})
+            data = await self.get(path, params=current, journal=journal)
 
-            # Kanoniczny kształt kolekcji to {"items": [...], "itemsMax": N} —
-            # także dla /issues i /submissions/{id}/files, gdzie Swagger
-            # deklaruje gołą tablicę. Lista jest tu bezpiecznikiem.
-            if isinstance(dane, list):
-                return dane
-            if not isinstance(dane, dict):
-                return zebrane
+            # The canonical collection shape is {"items": [...], "itemsMax":
+            # N} — also for /issues and /submissions/{id}/files, where
+            # Swagger declares a bare array. The list check here is a
+            # safety net.
+            if isinstance(data, list):
+                return data
+            if not isinstance(data, dict):
+                return collected
 
-            partia = dane.get("items") or []
-            zebrane.extend(partia)
-            maks = dane.get("itemsMax")
-            if not partia or maks is None or len(zebrane) >= int(maks):
+            batch = data.get("items") or []
+            collected.extend(batch)
+            max_items = data.get("itemsMax")
+            if not batch or max_items is None or len(collected) >= int(max_items):
                 break
             offset += MAX_COUNT
-        return zebrane
+        return collected
