@@ -15,6 +15,8 @@ from .catalog import Katalog
 from .client import OjsClient
 from .config import BrakKonfiguracji, Config
 from .passthrough import zarejestruj_furtke
+from .prompts import zarejestruj_prompty
+from .resources import zarejestruj_zasoby
 from .tools_read import zarejestruj_odczyt
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,10 @@ def zbuduj_serwer(config: Config) -> tuple[MCPServer, OjsClient]:
 
     zarejestruj_odczyt(mcp, client, katalog)
     zarejestruj_furtke(mcp, client, katalog, config)
+    # Zasoby i prompty rejestrujemy ZAWSZE, niezależnie od `allow_writes` —
+    # nic nie modyfikują (patrz docstringi `resources.py`/`prompts.py`).
+    zarejestruj_zasoby(mcp, katalog)
+    zarejestruj_prompty(mcp)
 
     if config.allow_writes:
         from .tools_write import zarejestruj_zapis
