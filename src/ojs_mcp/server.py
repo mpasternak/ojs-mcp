@@ -109,4 +109,15 @@ async def _uruchom_stdio_i_zamknij(mcp: MCPServer, client: OjsClient) -> None:
     try:
         await mcp.run_stdio_async()
     finally:
-        await client.aclose()
+        try:
+            await client.aclose()
+        except Exception:
+            # Nie propagujemy: gdyby `run_stdio_async()` powyżej padło
+            # własnym wyjątkiem, wyjątek z zamykania zasobu zastąpiłby go
+            # (Python podmienia typ w locie, a oryginał trafia tylko do
+            # `__context__` — niewidoczny dla kodu patrzącego na typ
+            # wyjątku). Zamykanie zasobu nie ma prawa przykryć błędu, który
+            # je wywołał — logujemy z pełnym tracebackiem zamiast podnosić.
+            logger.exception(
+                "Nie udało się zamknąć klienta HTTP po zakończeniu serwera"
+            )

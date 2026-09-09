@@ -54,6 +54,7 @@ def serwer_http_keepalive():
     finally:
         serwer.shutdown()
         watek.join(timeout=5)
+        serwer.server_close()
 
 
 async def test_bez_allow_writes_brak_narzedzi_zapisu():
