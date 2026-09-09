@@ -115,11 +115,28 @@ async def test_sciezka_auth_http_jest_token_mimo_braku_api_token_w_konfiguracji(
         ustaw_token_zadania(None)
 
 
-async def test_http_bez_tokenu_w_kontekscie_konczy_bledem_uwierzytelnienia():
-    # Reguła bezpieczeństwa (poprawka do briefu): w trybie http, gdy żądanie
-    # nie niesie tokenu, budowa serwera ma się skończyć BladUwierzytelnienia
-    # — a komunikat NIE MOŻE ujawniać żadnej wartości poświadczenia
-    # zapisanej w konfiguracji (OJS_API_TOKEN, OJS_USERNAME, OJS_PASSWORD).
+async def test_http_budowa_serwera_nie_wymaga_tokenu_w_kontekscie():
+    """Runda 2: budowa serwera http jest teraz bezpieczna do wywołania RAZ,
+    przy starcie procesu — zanim jakikolwiek token w ogóle istnieje.
+    `zbuduj_auth_http`/`TokenZadaniaAuth` (patrz `auth.py`) nie sprawdzają
+    już tokenu przy budowie; sprawdzenie przeniosło się do `auth_flow`,
+    czyli do chwili, gdy klient faktycznie próbuje porozmawiać z OJS.
+    """
+    ustaw_token_zadania(None)
+    cfg = Config(base_url="https://x.edu", journal="r", transport="http")
+    mcp, klient = zbuduj_serwer(cfg)  # NIE podnosi wyjątku
+    try:
+        assert klient.sciezka_auth == "token"
+    finally:
+        await klient.aclose()
+
+
+async def test_http_bez_tokenu_zadanie_do_ojs_konczy_sie_bledem_uwierzytelnienia():
+    # Reguła bezpieczeństwa: w trybie http, gdy PRÓBA ROZMOWY Z OJS (nie
+    # sama budowa serwera — patrz test wyżej) nie ma tokenu w kontekście,
+    # kończy się BladUwierzytelnienia — a komunikat NIE MOŻE ujawniać
+    # żadnej wartości poświadczenia zapisanej w konfiguracji (OJS_API_TOKEN,
+    # OJS_USERNAME, OJS_PASSWORD).
     ustaw_token_zadania(None)
     cfg = Config(
         base_url="https://x.edu",
@@ -129,10 +146,12 @@ async def test_http_bez_tokenu_w_kontekscie_konczy_bledem_uwierzytelnienia():
         password="haslo-administratora",
         transport="http",
     )
+    mcp, klient = zbuduj_serwer(cfg)
     try:
         with pytest.raises(BladUwierzytelnienia) as exc:
-            zbuduj_serwer(cfg)
+            await klient.get("submissions")
     finally:
+        await klient.aclose()
         ustaw_token_zadania(None)
 
     komunikat = str(exc.value)

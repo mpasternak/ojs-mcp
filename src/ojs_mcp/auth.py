@@ -89,19 +89,65 @@ def zbuduj_auth(config: Config) -> httpx.Auth:
     )
 
 
+class TokenZadaniaAuth(httpx.Auth):
+    """Dokłada ``Authorization: Bearer`` z tokenem BIEŻĄCEGO żądania MCP.
+
+    W przeciwieństwie do ``TokenAuth`` (token zamrożony w konstruktorze),
+    ta strategia czyta ``token_zadania()`` DOPIERO w ``auth_flow`` — czyli
+    w chwili, gdy httpx faktycznie buduje wychodzące żądanie do OJS, a nie
+    gdy ktoś tworzy obiekt tej klasy. Dzięki temu JEDNA instancja (i jeden
+    ``OjsClient``, i jeden ``MCPServer``) może bezpiecznie obsłużyć WIELE
+    różnych żądań, każde z innym tokenem — `zbuduj_serwer` wywołuje się raz,
+    przy starcie procesu, zamiast na każde żądanie ASGI (patrz Runda 2
+    raportu Task 12: przebudowa serwera per żądanie kosztowała ok. 16 ms
+    CPU, blokując pętlę zdarzeń, i uniemożliwiała reużycie połączeń do OJS
+    oraz cache katalogu czasopism).
+
+    Poprawność przy wielu użytkownikach naraz zależy od tego, że token w
+    kontekście ustawiony przez warstwę pośredniczącą (``TokenMiddleware``)
+    faktycznie dociera do TEGO wywołania ``auth_flow`` — czyli od trybu
+    ``stateless_http=True`` w ``http_transport.py``, który gwarantuje, że
+    obsługa każdego żądania trafia do świeżo utworzonego zadania (anyio/
+    asyncio kopiują bieżący kontekst w chwili startu zadania). Bez tego
+    handler narzędzia biegłby w tle zadania uruchomionego raz, przy
+    ``initialize`` — dokładnie pułapka, przed którą ostrzega spec przy
+    ``get_access_token()`` (§6.1).
+    """
+
+    def auth_flow(
+        self, request: httpx.Request
+    ) -> Generator[httpx.Request, httpx.Response, None]:
+        token = token_zadania()
+        if not token:
+            # Siatka bezpieczeństwa: w normalnej pracy `TokenMiddleware`
+            # gwarantuje token w kontekście, zanim cokolwiek zdąży wywołać
+            # narzędzie — to miejsce nie powinno się uruchomić bez tokenu.
+            # Podnosimy PRZED `yield`, więc httpx nigdy nie otwiera
+            # połączenia do OJS z tym żądaniem.
+            raise BladUwierzytelnienia(
+                "Żądanie nie zawiera nagłówka `Authorization: Bearer <token "
+                "OJS>`. W trybie http każdy klient uwierzytelnia się "
+                "własnym tokenem.",
+                status=401,
+            )
+        request.headers["Authorization"] = f"Bearer {token}"
+        yield request
+
+
 def zbuduj_auth_http(config: Config) -> httpx.Auth:
-    """Strategia dla trybu ``http``: wyłącznie token z nagłówka żądania.
+    """Strategia dla trybu ``http``: wyłącznie token z kontekstu żądania.
 
     ``OJS_API_TOKEN``, ``OJS_USERNAME`` i ``OJS_PASSWORD`` są tu celowo
-    ignorowane — patrz docstring modułu.
+    ignorowane — patrz docstring modułu. ``config`` nie jest tu w ogóle
+    używany (poświadczenia serwera nie mają jak wyciec z tej funkcji) —
+    zostaje w sygnaturze, żeby ``zbuduj_serwer`` mogło wybierać strategię
+    jednym, symetrycznym wywołaniem względem ``zbuduj_auth``.
 
-    :raises BladUwierzytelnienia: gdy żądanie nie niesie tokenu.
+    Token jest odczytywany DOPIERO przy budowaniu KAŻDEGO wychodzącego
+    żądania (``TokenZadaniaAuth.auth_flow``), nie tutaj — to pozwala
+    zbudować serwer i klienta RAZ, przy starcie procesu, a mimo to
+    bezpiecznie obsłużyć wielu użytkowników z różnymi tokenami. Ta funkcja
+    sama w sobie już NIGDY nie podnosi wyjątku z powodu braku tokenu —
+    patrz ``TokenZadaniaAuth`` po ten przypadek.
     """
-    token = token_zadania()
-    if not token:
-        raise BladUwierzytelnienia(
-            "Żądanie nie zawiera nagłówka `Authorization: Bearer <token OJS>`. "
-            "W trybie http każdy klient uwierzytelnia się własnym tokenem.",
-            status=401,
-        )
-    return TokenAuth(token)
+    return TokenZadaniaAuth()

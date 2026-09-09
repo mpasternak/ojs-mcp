@@ -6,30 +6,27 @@ a serwer wyłącznie go przekazuje dalej do OJS. Zmienne ``OJS_API_TOKEN`` /
 ``OJS_USERNAME`` / ``OJS_PASSWORD`` są w tym trybie ignorowane — patrz
 spec §6.1 i docstring modułu ``auth``.
 
-Dlaczego serwer MCP i klient OJS powstają na NOWO przy każdym żądaniu ASGI
-(``_AplikacjaMcpNaZadanie``), a nie raz przy starcie procesu:
+Runda 2 (naprawa wydajnościowa po recenzji Rundy 1): ``zbuduj_serwer``
+wywołuje się RAZ, przy starcie procesu — jeden ``MCPServer`` i jeden
+``OjsClient`` (a więc jedno połączenie/pula połączeń do OJS i jeden cache
+katalogu czasopism, ``Katalog``) obsługują WSZYSTKIE żądania. Token nadal
+jest per żądanie, bo ``auth.TokenZadaniaAuth`` czyta go z ``ContextVar``
+DOPIERO w chwili budowania wychodzącego żądania do OJS (``auth_flow``),
+nie przy tworzeniu obiektu — patrz docstring tamtej klasy po pełne
+uzasadnienie. Runda 1 budowała serwer i klienta na nowo przy KAŻDYM
+żądaniu ASGI wyłącznie dlatego, że ówczesna strategia (``TokenAuth``)
+zamrażała token w konstruktorze; to już nieaktualne.
 
-1. ``zbuduj_auth_http`` zamraża token w konstruktorze ``TokenAuth`` w chwili
-   wywołania — musi więc zostać wywołane, gdy ``ContextVar`` niesie token
-   WŁAŚNIE bieżącego żądania. Gdyby `zbuduj_serwer` powstawał raz, na
-   starcie procesu, zanim nadejdzie jakiekolwiek żądanie, ``token_zadania()``
-   byłby wtedy pusty i budowa serwera zakończyłaby się błędem od razu — a
-   nawet gdyby udało się go zbudować z tokenem PIERWSZEGO żądania, ten sam
-   token trafiałby do WSZYSTKICH kolejnych, różnych użytkowników.
-2. Tryb ``stateless_http=True`` gwarantuje, że faktyczna obsługa wywołania
-   narzędzia trafia do zadania utworzonego PRZY TYM konkretnym żądaniu —
-   anyio/asyncio kopiują bieżący kontekst (a więc i ``ContextVar`` z
-   tokenem) w chwili startu nowego zadania. W trybie stanowym handler
-   narzędzia biegnie w zadaniu uruchomionym raz, przy ``initialize``, więc
-   token ustawiony przy PÓŹNIEJSZYM wywołaniu (np. ``tools/call``) nigdy by
-   tam nie dotarł. To dokładnie ostrzeżenie specyfikacji o
-   ``get_access_token()`` (§6.1): w stateful streamable HTTP zwraca token
-   z chwili ``initialize``, czyli nieaktualny przy wielu użytkownikach.
-
-Efekt uboczny tej decyzji: katalog czasopism (cache w ``Katalog``) nie
-przeżywa między żądaniami — nie ma go z kim dzielić, skoro każdy klient
-OJS istnieje tylko na czas jednego żądania. To świadomy koszt bezpieczeństwa
-w architekturze wieloużytkownikowej, nie przeoczenie wydajnościowe.
+``stateless_http=True`` ZOSTAJE mimo to — z INNEGO powodu niż w Rundzie 1.
+Gwarantuje, że obsługa KAŻDEGO żądania trafia do świeżo utworzonego
+zadania (anyio/asyncio kopiują bieżący kontekst w chwili startu zadania).
+Bez tego, w trybie stanowym, handler narzędzia biegłby w tle zadania
+uruchomionego RAZ, przy ``initialize`` tej sesji — token ustawiony przez
+``TokenMiddleware`` przy PÓŹNIEJSZYM ``tools/call`` nigdy by tam nie
+dotarł. To dokładnie pułapka, przed którą ostrzega spec przy
+``get_access_token()`` (§6.1) — zweryfikowana tu doświadczalnie (patrz
+`tests/test_http_transport.py` i raport Task 12, sekcja "Runda 2"), nie
+tylko rozumowaniem.
 """
 
 from __future__ import annotations
@@ -38,6 +35,7 @@ import logging
 
 import anyio
 import uvicorn
+from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from starlette.datastructures import Headers
 from starlette.requests import Request
@@ -45,7 +43,7 @@ from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .auth import token_z_naglowka, ustaw_token_zadania
-from .bledy import BladUwierzytelnienia
+from .client import OjsClient
 from .config import Config
 from .server import zbuduj_serwer
 
@@ -151,87 +149,6 @@ class TokenMiddleware:
             ustaw_token_zadania(None)
 
 
-async def _obsluz_lifespan(receive: Receive, send: Send) -> None:
-    """Odpowiedz na protokół ASGI lifespan bez żadnej realnej pracy.
-
-    Serwer MCP i klient OJS powstają i znikają PER ŻĄDANIE (patrz docstring
-    modułu) — nie ma tu nic do zainicjowania raz na start procesu.
-    """
-    while True:
-        wiadomosc = await receive()
-        typ = wiadomosc["type"]
-        if typ == "lifespan.startup":
-            await send({"type": "lifespan.startup.complete"})
-        elif typ == "lifespan.shutdown":
-            await send({"type": "lifespan.shutdown.complete"})
-            return
-        else:
-            # Protokół ASGI dopuszcza rozszerzenia — cichy `pass` utrudniałby
-            # diagnozę, gdyby serwer zaczął wysyłać coś nieoczekiwanego.
-            logger.debug("Nieznany komunikat protokołu lifespan: %s", typ)
-
-
-class _AplikacjaMcpNaZadanie:
-    """Buduje świeży serwer MCP i klienta OJS na KAŻDE żądanie ASGI.
-
-    Uzasadnienie architektury — patrz docstring modułu. W skrócie: to
-    jedyny sposób, żeby ``TokenAuth`` (zamrożony w konstruktorze) niósł
-    token WŁAŚNIE tego żądania, i żeby ten token faktycznie dotarł do
-    handlera narzędzia (``stateless_http=True``).
-    """
-
-    def __init__(self, config: Config) -> None:
-        self._config = config
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] == "lifespan":
-            await _obsluz_lifespan(receive, send)
-            return
-        if scope["type"] != "http":
-            odpowiedz = JSONResponse(
-                {"error": "Transport streamable HTTP obsługuje tylko HTTP."},
-                status_code=400,
-            )
-            await odpowiedz(scope, receive, send)
-            return
-
-        try:
-            mcp, client = zbuduj_serwer(self._config)
-        except BladUwierzytelnienia as exc:
-            # Siatka bezpieczeństwa na wypadek gdyby to miejsce kiedyś
-            # zostało wywołane bez wcześniejszego przejścia przez
-            # `TokenMiddleware` — komunikat wyjątku (patrz `zbuduj_auth_http`)
-            # i tak nigdy nie zawiera żadnej wartości z `Config`.
-            logger.warning("Budowa serwera bez tokenu w kontekście: %s", exc)
-            odpowiedz = JSONResponse({"error": str(exc)}, status_code=exc.status or 401)
-            await odpowiedz(scope, receive, send)
-            return
-
-        try:
-            aplikacja = mcp.streamable_http_app(
-                host=self._config.http_host,
-                stateless_http=True,
-                json_response=True,
-                # WYŁĄCZAMY własną ochronę SDK przed DNS rebinding — nie
-                # znika, tylko przenosi się w całości do `OriginMiddleware`
-                # (patrz `zbuduj_aplikacje`), która stosuje listę z
-                # `OJS_MCP_ALLOWED_ORIGINS`. Bez tego, dla hosta
-                # 127.0.0.1/localhost/::1, SDK samo włącza WŁASNĄ,
-                # zaszytą na sztywno listę originów/hostów
-                # (`["http://127.0.0.1:*", ...]`) i odrzuca origin z NASZEJ
-                # listy dwie warstwy niżej — `OJS_MCP_ALLOWED_ORIGINS`
-                # stawałoby się martwe, a wdrożenie za odwrotnym proxy
-                # (inny nagłówek `Host`) w ogóle by nie działało (421).
-                transport_security=TransportSecuritySettings(
-                    enable_dns_rebinding_protection=False
-                ),
-            )
-            async with mcp.session_manager.run():
-                await aplikacja(scope, receive, send)
-        finally:
-            await client.aclose()
-
-
 def _wymagaj_trybu_http(config: Config) -> None:
     """Zagwarantuj, że wywołujący faktycznie chce trybu http.
 
@@ -257,21 +174,52 @@ def _wymagaj_trybu_http(config: Config) -> None:
         )
 
 
+def _zloz_stos(mcp: MCPServer, config: Config) -> ASGIApp:
+    """Owiń GOTOWY (już zbudowany) serwer MCP warstwami Origin i token.
+
+    Wywoływana raz z ``zbuduj_aplikacje`` i raz z ``uruchom_http`` — obie
+    muszą dostać DOKŁADNIE ten sam stos (kolejność ma znaczenie, patrz
+    ``zbuduj_aplikacje``), więc trzymamy go w jednym miejscu.
+    """
+    aplikacja_mcp = mcp.streamable_http_app(
+        host=config.http_host,
+        stateless_http=True,
+        json_response=True,
+        # WYŁĄCZAMY własną ochronę SDK przed DNS rebinding — nie znika,
+        # tylko przenosi się w całości do `OriginMiddleware`, która stosuje
+        # listę z `OJS_MCP_ALLOWED_ORIGINS`. Bez tego, dla hosta
+        # 127.0.0.1/localhost/::1, SDK samo włącza WŁASNĄ, zaszytą na
+        # sztywno listę originów/hostów (`["http://127.0.0.1:*", ...]`) i
+        # odrzuca origin z NASZEJ listy dwie warstwy niżej —
+        # `OJS_MCP_ALLOWED_ORIGINS` stawałoby się martwe, a wdrożenie za
+        # odwrotnym proxy (inny nagłówek `Host`) w ogóle by nie działało
+        # (421).
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=False
+        ),
+    )
+    return OriginMiddleware(
+        TokenMiddleware(aplikacja_mcp),
+        dozwolone=config.allowed_origins,
+    )
+
+
 def zbuduj_aplikacje(config: Config) -> ASGIApp:
     """Złóż pełny stos ASGI trybu http: ``Origin`` → token → serwer MCP.
 
-    Kolejność dodawania ma znaczenie: ``OriginMiddleware`` musi być
-    NAJBARDZIEJ zewnętrzny, żeby odrzucenie po ``Origin`` następowało
-    zanim ktokolwiek sięgnie po nagłówek ``Authorization``.
+    Serwer MCP i klient OJS powstają TUTAJ, RAZ (``zbuduj_serwer``) — nie
+    na każde żądanie, patrz docstring modułu. Klient zwrócony przez
+    ``zbuduj_serwer`` nie jest tu zamykany — funkcja ta służy głównie
+    testom, które budują aplikację do jednorazowego użycia; produkcyjny
+    cykl życia klienta (budowa + zamknięcie po zatrzymaniu serwera)
+    realizuje ``uruchom_http``.
 
     :raises ValueError: gdy ``config.transport != "http"`` — patrz
         ``_wymagaj_trybu_http``.
     """
     _wymagaj_trybu_http(config)
-    return OriginMiddleware(
-        TokenMiddleware(_AplikacjaMcpNaZadanie(config)),
-        dozwolone=config.allowed_origins,
-    )
+    mcp, _client = zbuduj_serwer(config)
+    return _zloz_stos(mcp, config)
 
 
 def _ostrzez_o_ignorowanych_poswiadczeniach(config: Config) -> None:
@@ -289,14 +237,34 @@ def _ostrzez_o_ignorowanych_poswiadczeniach(config: Config) -> None:
         )
 
 
+async def _serwuj(aplikacja: ASGIApp, client: OjsClient, config: Config) -> None:
+    """Uruchom uvicorn i zamknij klienta OJS PO zatrzymaniu serwera.
+
+    W TEJ SAMEJ pętli zdarzeń co ``anyio.run`` w ``uruchom_http`` — ten sam
+    wzorzec, co ``_uruchom_stdio_i_zamknij`` w ``server.py`` dla trybu
+    stdio, i z tego samego powodu (httpx/httpcore trzymają połączenia
+    keep-alive powiązane z pętlą zdarzeń, w której powstały).
+    """
+    try:
+        konfiguracja_uvicorn = uvicorn.Config(
+            aplikacja,
+            host=config.http_host,
+            port=config.http_port,
+            log_level="info",
+        )
+        serwer = uvicorn.Server(konfiguracja_uvicorn)
+        await serwer.serve()
+    finally:
+        await client.aclose()
+
+
 def uruchom_http(config: Config) -> int:
     """Uruchom serwer w trybie streamable HTTP i zwróć kod wyjścia procesu.
 
-    Nie tworzy ani nie trzyma żadnego STAŁEGO klienta OJS — każdy powstaje
-    i jest zamykany w obrębie jednego żądania, w tej samej pętli zdarzeń
-    (``anyio.run`` obejmuje całe działanie ``uvicorn.Server``), więc nie
-    występuje tu odpowiednik problemu z zamykaniem klienta httpx między
-    pętlami zdarzeń, udokumentowanego przy trybie stdio (Task 9).
+    Buduje serwer MCP i klienta OJS RAZ (``zbuduj_serwer``) — jeden
+    ``httpx.AsyncClient`` obsługuje wszystkie żądania (reużycie połączeń,
+    spec §4.1), zamykany dopiero po zatrzymaniu serwera, w tej samej pętli
+    zdarzeń (``anyio.run`` obejmuje całe działanie ``uvicorn.Server``).
 
     :raises ValueError: gdy ``config.transport != "http"`` — patrz
         ``_wymagaj_trybu_http``.
@@ -304,13 +272,8 @@ def uruchom_http(config: Config) -> int:
     _wymagaj_trybu_http(config)
     _ostrzez_o_ignorowanych_poswiadczeniach(config)
 
-    aplikacja = zbuduj_aplikacje(config)
-    konfiguracja_uvicorn = uvicorn.Config(
-        aplikacja,
-        host=config.http_host,
-        port=config.http_port,
-        log_level="info",
-    )
-    serwer = uvicorn.Server(konfiguracja_uvicorn)
-    anyio.run(serwer.serve)
+    mcp, client = zbuduj_serwer(config)
+    aplikacja = _zloz_stos(mcp, config)
+
+    anyio.run(_serwuj, aplikacja, client, config)
     return 0
