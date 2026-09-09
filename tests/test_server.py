@@ -78,10 +78,13 @@ async def test_z_allow_writes_narzedzia_zapisu_sa(caplog):
     )
     mcp, klient = zbuduj_serwer(cfg)
     nazwy = await _nazwy_narzedzi(mcp)
-    # Zaślepka `tools_write` (pełna implementacja w Task 13) nic jeszcze nie
-    # rejestruje — sprawdzamy tu tylko, że ścieżka importu/rejestracji przy
-    # allow_writes=True nie wywala budowy serwera.
-    assert isinstance(nazwy, set)
+    # Task 13: `tools_write` ma teraz pełną implementację — przy
+    # allow_writes=True model MA widzieć narzędzia zapisu.
+    assert "dodaj_decyzje_redakcyjna" in nazwy
+    assert "edytuj_metadane_publikacji" in nazwy
+    assert "opublikuj_publikacje" in nazwy
+    assert "cofnij_publikacje" in nazwy
+    assert "utworz_ogloszenie" in nazwy
     # Jedyny sygnał dla operatora, że instancja może modyfikować dane
     # produkcyjne czasopisma — musi zostać, nawet po refaktorze.
     assert "OJS_ALLOW_WRITES" in caplog.text

@@ -16,6 +16,7 @@ from typing import Any
 from .bledy import BladNieZnaleziono, BladOjs, BladUwierzytelnienia
 from .catalog import Katalog
 from .client import MAX_COUNT, OjsClient
+from .mcp_errors import z_czytelnym_bledem
 from .pola import (
     POLA_AUTORA_PUBLIKACJI,
     POLA_DOI,
@@ -798,6 +799,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
     """Zarejestruj narzędzia odczytu w serwerze MCP."""
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def lista_czasopism() -> dict:
         """Wypisz czasopisma widoczne dla bieżących poświadczeń.
 
@@ -807,6 +809,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         return await lista_czasopism_impl(client, katalog)
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def kim_jestem(czasopismo: str | None = None) -> dict:
         """Sprawdź, czy bieżące poświadczenia (token API) działają.
 
@@ -816,6 +819,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         return await kim_jestem_impl(client, katalog, czasopismo=czasopismo)
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def szukaj_zgloszen(
         fraza: str | None = None,
         status: list[str] | None = None,
@@ -857,6 +861,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def pobierz_zgloszenie(
         zgloszenie: int, czasopismo: str | None = None
     ) -> dict:
@@ -871,6 +876,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def pobierz_publikacje(
         zgloszenie: int, publikacja: int, czasopismo: str | None = None
     ) -> dict:
@@ -891,6 +897,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def pliki_zgloszenia(
         zgloszenie: int, limit: int = 100, czasopismo: str | None = None
     ) -> dict:
@@ -904,6 +911,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def recenzje_zgloszenia(
         zgloszenie: int, czasopismo: str | None = None
     ) -> dict:
@@ -918,6 +926,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def lista_numerow(
         fraza: str | None = None,
         tylko_opublikowane: bool | None = None,
@@ -944,6 +953,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def biezacy_numer(czasopismo: str | None = None) -> dict:
         """Pobierz bieżący numer czasopisma (ten wyróżniony na stronie głównej).
 
@@ -953,6 +963,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         return await biezacy_numer_impl(client, katalog, czasopismo=czasopismo)
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def pobierz_numer(numer: int, czasopismo: str | None = None) -> dict:
         """Pobierz jeden numer (wydanie) czasopisma po jego ID."""
         return await pobierz_numer_impl(
@@ -960,6 +971,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def lista_sekcji(
         fraza: str | None = None,
         tylko_aktywne: bool | None = None,
@@ -981,6 +993,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def szukaj_uzytkownikow(
         fraza: str | None = None,
         status: str = "active",
@@ -1005,6 +1018,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def lista_recenzentow(
         fraza: str | None = None,
         status: str = "active",
@@ -1027,6 +1041,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def statystyki_publikacji(
         os_czasu: bool = False,
         interwal: str = "day",
@@ -1053,6 +1068,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def statystyki_redakcyjne(
         data_od: str | None = None,
         data_do: str | None = None,
@@ -1069,6 +1085,7 @@ def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
         )
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def lista_doi(
         status: list[str] | None = None,
         limit: int = 100,

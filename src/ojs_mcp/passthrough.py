@@ -12,6 +12,7 @@ from typing import Any
 from .catalog import Katalog
 from .client import OjsClient
 from .config import Config
+from .mcp_errors import z_czytelnym_bledem
 
 METODY_ODCZYTU = {"GET", "HEAD"}
 # Dozwolone znaki w segmentach ścieżki: alfanumeryczne, kropka, podkreślnik, myślnik.
@@ -121,6 +122,7 @@ def zarejestruj_furtke(
     """Zarejestruj narzędzie `ojs_zapytanie`."""
 
     @mcp.tool()
+    @z_czytelnym_bledem
     async def ojs_zapytanie(
         sciezka: str,
         metoda: str = "GET",
