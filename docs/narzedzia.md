@@ -75,7 +75,7 @@ Rejestrowane zawsze, niezależnie od `OJS_ALLOW_WRITES`.
   gotowej listy narzędzi. `sciezka` względna wobec `api/v1` (np.
   `submissions/12/files`); dokładny kształt każdego endpointu sprawdź w
   zasobie `ojs://endpointy`. Bez `OJS_ALLOW_WRITES` dozwolone są wyłącznie
-  żądania `GET`. Zobacz też ostrzeżenie w sekcji
+  żądania odczytu (`GET`/`HEAD`). Zobacz też ostrzeżenie w sekcji
   [Narzędzia zapisu](#narzedzia-zapisu-5) o zasięgu tej furtki, gdy zapisy
   są włączone.
 

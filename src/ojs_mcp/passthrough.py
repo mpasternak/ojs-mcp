@@ -145,7 +145,8 @@ def zarejestruj_furtke(
         `sciezka` jest względna wobec api/v1, np. 'submissions/12/files'.
         Listę endpointów zwraca zasób `ojs://endpointy`.
         `czasopismo="index"` sięga po endpointy poziomu witryny.
-        Bez OJS_ALLOW_WRITES dozwolone są wyłącznie żądania GET. Z flagą —
+        Bez OJS_ALLOW_WRITES dozwolone są wyłącznie żądania odczytu (GET/HEAD).
+        Z flagą —
         to narzędzie NIE pilnuje listy pól z `edytuj_metadane_publikacji`;
         jedynym bezpiecznikiem zapisu jest tu sama flaga OJS_ALLOW_WRITES.
         """

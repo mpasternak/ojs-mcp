@@ -68,6 +68,27 @@ konta, więc jego zakres to role, jakie to konto ma w danym czasopiśmie.
 `OJS_JOURNAL` jest opcjonalne — pomiń je, jeśli instancja obsługuje kilka
 czasopism i chcesz wybierać je parametrem `czasopismo` przy każdym wywołaniu.
 
+### Gdzie fizycznie wkleić tę konfigurację
+
+W Claude Desktop: **Ustawienia → Developer → Edit Config** otwiera (a przy
+pierwszym razie tworzy) plik `claude_desktop_config.json`:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+Wklej powyższy fragment pod kluczem `mcpServers` — jeśli plik ma już inne
+serwery, dopisz obok nich klucz `"ojs"`, nie nadpisuj całego pliku — zapisz
+i uruchom Claude Desktop ponownie. Inne klienty MCP z pulpitu mają własne
+miejsce na tę konfigurację (np. Claude Code czyta ją poleceniem `claude mcp
+add` albo z pliku `.mcp.json`) — sprawdź ich dokumentację; kształt sekcji
+`env` powyżej jest wspólny dla wszystkich.
+
+Ten krok **znika w całości** przy instalacji z bundla MCPB (patrz niżej) —
+tam adres instancji, czasopismo i token wypełnia się przez formularz w
+interfejsie klienta, bez ręcznej edycji żadnego pliku JSON. To dobry powód,
+żeby sięgnąć po bundle zamiast po `uvx`, jeśli edycja pliku konfiguracyjnego
+ręcznie budzi opór.
+
 ## Zmienne środowiskowe (skrót)
 
 | Zmienna | Wymagana | Opis |
@@ -86,7 +107,7 @@ zmienne trybu sieciowego (`OJS_MCP_TRANSPORT` i inne), jest w
 ## Alternatywa dla `uvx`: bundle MCPB
 
 Dla klientów MCP z pulpitu obsługujących format
-[MCP Bundle (`.mcpb`)](https://github.com/anthropics/mcpb) — plik
+[MCP Bundle (`.mcpb`)](https://github.com/modelcontextprotocol/mcpb) — plik
 instalacyjny jest dołączony do każdego wydania w zakładce
 [Releases](https://github.com/mpasternak/ojs-mcp/releases). Instalacja przez
 interfejs klienta, konfiguracja przez formularz zamiast ręcznej edycji

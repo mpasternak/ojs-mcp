@@ -37,7 +37,7 @@ Wymaga zainstalowanego `uv`
 ## Wariant 2: bundle MCPB (jednym kliknięciem)
 
 Dla klientów MCP z pulpitu, które obsługują format
-[MCP Bundle (`.mcpb`)](https://github.com/anthropics/mcpb) — plik
+[MCP Bundle (`.mcpb`)](https://github.com/modelcontextprotocol/mcpb) — plik
 instalacyjny dostępny przy każdym wydaniu w zakładce
 [Releases](https://github.com/mpasternak/ojs-mcp/releases). Instalacja
 przez interfejs klienta, konfiguracja (adres instancji, czasopismo, token)

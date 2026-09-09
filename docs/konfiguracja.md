@@ -41,13 +41,19 @@ Podaj adres dokładnie taki, jaki działa w przeglądarce, np.:
 
 ## Adres z `restful_urls`
 
-Jeśli instancja ma włączone ładne adresy URL (`restful_urls` w OJS), segment
-`/index.php/` znika z adresów w przeglądarce. Serwer **nie zgaduje**
-wariantu — podaj `OJS_BASE_URL` dokładnie tak, jak wygląda w przeglądarce,
-a resztę (dobudowanie `/index.php/{czasopismo}/api/v1/...` albo pominięcie
-tego segmentu) i tak trzeba zweryfikować na własnej instancji, bo REST API
-OJS zawsze wymaga segmentu `api/v1` niezależnie od ustawienia
-`restful_urls` na poziomie stron HTML.
+Serwer **zawsze** dobudowuje do `OJS_BASE_URL` segment
+`/index.php/{czasopismo}/api/v1/...` — to jedna, bezwarunkowa ścieżka w
+kodzie (`Config.api_root`), bez żadnej gałęzi zależnej od ustawień
+instancji. Dotyczy to również instancji z włączonymi ładnymi adresami URL
+(`restful_urls` w OJS), które w przeglądarce pokazują strony HTML **bez**
+`/index.php/` — to ustawienie zmienia wyłącznie routing stron HTML, REST
+API OJS mieszka pod `/index.php/` niezależnie od niego.
+
+Podaj więc `OJS_BASE_URL` dokładnie tak, jak wygląda w przeglądarce (przy
+`restful_urls` — bez `/index.php/` i bez nazwy czasopisma na końcu); resztę
+adresu serwer dobuduje sam, zawsze tak samo. Jeśli na konkretnej instancji
+zobaczysz inny wynik niż opisany wyżej, zweryfikuj wersję OJS wobec
+[zakresu wersji tej dokumentacji](index.md).
 
 ## Wiele czasopism na jednej instancji
 
