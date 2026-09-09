@@ -1,40 +1,40 @@
-"""Transport streamable HTTP z tokenem przekazywanym przez klienta.
+"""Streamable HTTP transport with the token passed by the client.
 
-Model bezpieczeństwa: serwer NIE przechowuje żadnych poświadczeń OJS.
-Każdy klient przysyła własny token w nagłówku ``Authorization: Bearer``,
-a serwer wyłącznie go przekazuje dalej do OJS. Zmienne ``OJS_API_TOKEN`` /
-``OJS_USERNAME`` / ``OJS_PASSWORD`` są w tym trybie ignorowane — patrz
-spec §6.1 i docstring modułu ``auth``.
+Security model: the server holds NO OJS credentials. Every client sends
+its own token in the ``Authorization: Bearer`` header, and the server
+only forwards it on to OJS. The ``OJS_API_TOKEN`` / ``OJS_USERNAME`` /
+``OJS_PASSWORD`` variables are ignored in this mode — see spec §6.1 and
+the ``auth`` module docstring.
 
-Runda 2 (naprawa wydajnościowa po recenzji Rundy 1): ``zbuduj_serwer``
-wywołuje się RAZ, przy starcie procesu — jeden ``MCPServer`` i jeden
-``OjsClient`` (a więc jedno połączenie/pula połączeń do OJS i jeden cache
-katalogu czasopism, ``Katalog``) obsługują WSZYSTKIE żądania. Token nadal
-jest per żądanie, bo ``auth.TokenZadaniaAuth`` czyta go z ``ContextVar``
-DOPIERO w chwili budowania wychodzącego żądania do OJS (``auth_flow``),
-nie przy tworzeniu obiektu — patrz docstring tamtej klasy po pełne
-uzasadnienie. Runda 1 budowała serwer i klienta na nowo przy KAŻDYM
-żądaniu ASGI wyłącznie dlatego, że ówczesna strategia (``TokenAuth``)
-zamrażała token w konstruktorze; to już nieaktualne.
+Round 2 (performance fix after the Round 1 review): ``build_server`` is
+called ONCE, at process start — one ``MCPServer`` and one ``OjsClient``
+(and thus one connection/connection pool to OJS and one journal-catalog
+cache, ``Catalog``) serve ALL requests. The token is still per request,
+because ``auth.RequestTokenAuth`` reads it from a ``ContextVar`` ONLY at
+the moment of building an outgoing request to OJS (``auth_flow``), not
+when the object is created — see that class's docstring for the full
+reasoning. Round 1 rebuilt the server and client on EVERY ASGI request
+solely because the strategy in use then (``TokenAuth``) froze the token
+in its constructor; that no longer applies.
 
-``stateless_http=True`` ZOSTAJE — ale UWAGA na uzasadnienie (poprawka N3,
-recenzja Rundy 2). Wcześniejsza wersja tego dokumentu twierdziła, że bez
-trybu bezstanowego token z późniejszego ``tools/call`` „nigdy by nie
-dotarł” do handlera narzędzia, bo biegłby w tle zadania uruchomionego raz,
-przy ``initialize`` — i że zostało to „zweryfikowane doświadczalnie”. To
-BYŁO NIEPRAWDZIWE: żaden test w tym repo nie uruchamiał wariantu
-stanowego, a kontrpróba recenzenta pokazała, że przy trybie stanowym token
-z późniejszego wywołania narzędzia TEŻ dociera poprawnie — SDK (2.2.0)
-niesie migawkę kontekstu nadawcy PER WIADOMOŚĆ, niezależnie od tego, czy
-sesja jest stanowa czy bezstanowa. Prawdziwy powód, dla którego
-``stateless_http=True`` zostaje: brak stanu sesji po stronie serwera jest
-dobrą własnością SAMĄ W SOBIE dla serwera wielodostępowego — nie trzeba
-przypinania sesji (session affinity) na równoważniku obciążenia, nie ma
-pamięci serwera rosnącej z liczbą otwartych sesji, restart nie gubi
-„w trakcie” żadnej rozmowy wymagającej kontynuacji. To decyzja operacyjna,
-nie wymóg poprawności — wariant stanowy pozostaje NIEPRZETESTOWANY w tym
-repozytorium; ktoś, kto chciałby na nim polegać, powinien dopisać test
-zamiast ufać temu komentarzowi.
+``stateless_http=True`` STAYS — but NOTE the reasoning (fix N3, Round 2
+review). An earlier version of this document claimed that without
+stateless mode, a token from a later ``tools/call`` would "never" reach
+the tool handler, because it would run in the background of a task
+started once, at ``initialize`` — and that this had been "verified
+experimentally". That was UNTRUE: no test in this repo ever exercised
+the stateful variant, and the reviewer's counter-test showed that in
+stateful mode a token from a later tool call ALSO arrives correctly —
+the SDK (2.2.0) carries a snapshot of the sender's context PER MESSAGE,
+regardless of whether the session is stateful or stateless. The real
+reason ``stateless_http=True`` stays: having no server-side session
+state is a GOOD PROPERTY IN ITSELF for a multi-tenant server — no need
+for session affinity on a load balancer, no server memory growing with
+the number of open sessions, a restart does not lose any "in progress"
+conversation that needed continuation. This is an operational decision,
+not a correctness requirement — the stateful variant remains UNTESTED in
+this repository; anyone who would want to rely on it should add a test
+rather than trust this comment.
 """
 
 from __future__ import annotations
@@ -50,45 +50,45 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .auth import token_z_naglowka, ustaw_token_zadania
+from .auth import set_request_token, token_from_header
 from .client import OjsClient
 from .config import Config
-from .server import zbuduj_serwer
+from .server import build_server
 
 logger = logging.getLogger(__name__)
 
 
-def sprawdz_origin(origin: str | None, dozwolone: tuple[str, ...]) -> bool:
-    """Czy żądanie z tym nagłówkiem ``Origin`` wolno obsłużyć?
+def check_origin(origin: str | None, allowed: tuple[str, ...]) -> bool:
+    """May a request with this ``Origin`` header be served?
 
-    Brak nagłówka oznacza klienta nie-przeglądarkowego (np. klienta MCP
-    z pulpitu) — przepuszczamy. Obecny ``Origin`` musi być na liście
-    dozwolonych; PUSTA lista nie wpuszcza żadnego, bo inaczej dowolna
-    strona WWW mogłaby sterować tym serwerem przez atak DNS rebinding —
-    ochrona wymagana przez specyfikację MCP.
+    A missing header means a non-browser client (e.g. a desktop MCP
+    client) — allowed through. A present ``Origin`` must be on the
+    allowed list; an EMPTY list allows none, otherwise any website could
+    steer this server via a DNS-rebinding attack — protection required
+    by the MCP spec.
     """
     if origin is None:
         return True
-    return origin in dozwolone
+    return origin in allowed
 
 
 class OriginMiddleware:
-    """Odrzuca żądania przeglądarkowe spoza listy dozwolonych originów.
+    """Rejects browser requests outside the list of allowed origins.
 
-    Surowe ASGI, nie ``BaseHTTPMiddleware`` — transport streamable HTTP
-    potrafi trzymać długo otwarte odpowiedzi (SSE); pośrednik oparty na
-    ``BaseHTTPMiddleware`` buforowałby/zakłócał taki strumień. Dodawana
-    NA ZEWNĄTRZ ``TokenMiddleware`` (patrz ``zbuduj_aplikacje``), żeby
-    odrzucenie po ``Origin`` następowało, zanim ktokolwiek sięgnie po token.
+    Raw ASGI, not ``BaseHTTPMiddleware`` — the streamable HTTP transport
+    can hold long-open responses (SSE); a ``BaseHTTPMiddleware``-based
+    middleware would buffer/disrupt such a stream. Added OUTSIDE
+    ``TokenMiddleware`` (see ``build_app``), so the ``Origin`` rejection
+    happens before anyone reaches for the token.
 
-    Sprawdza też scope ``websocket`` (streamable HTTP go nie używa, ale
-    deklarowany niezmiennik „Origin sprawdzany jako pierwszy” ma
-    obowiązywać formalnie dla każdego typu żądania, nie tylko dla http).
+    Also checks the ``websocket`` scope (streamable HTTP does not use it,
+    but the declared invariant "Origin checked first" is meant to hold
+    formally for every request type, not just http).
     """
 
-    def __init__(self, app, dozwolone: tuple[str, ...]) -> None:
+    def __init__(self, app, allowed: tuple[str, ...]) -> None:
         self._app = app
-        self._dozwolone = dozwolone
+        self._allowed = allowed
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] not in ("http", "websocket"):
@@ -96,35 +96,38 @@ class OriginMiddleware:
             return
 
         origin = Headers(scope=scope).get("origin")
-        if not sprawdz_origin(origin, self._dozwolone):
+        if not check_origin(origin, self._allowed):
             logger.warning(
-                "Odrzucono żądanie z Origin=%s (poza dozwoloną listą)", origin
+                "Rejected a request with Origin=%s (outside the allowed list)",
+                origin,
             )
             if scope["type"] == "websocket":
                 await send({"type": "websocket.close", "code": 1008})
                 return
-            odpowiedz = JSONResponse(
+            response = JSONResponse(
                 {
-                    "error": "Origin niedozwolony. Ustaw OJS_MCP_ALLOWED_ORIGINS, "
-                    "jeśli łączysz się z przeglądarki."
+                    "error": "Origin not allowed. Set OJS_MCP_ALLOWED_ORIGINS "
+                    "if you are connecting from a browser."
                 },
                 status_code=403,
             )
-            await odpowiedz(scope, receive, send)
+            await response(scope, receive, send)
             return
 
         await self._app(scope, receive, send)
 
 
 class TokenMiddleware:
-    """Wyłuskuje token z nagłówka żądania i mostkuje go przez ``ContextVar``.
+    """Extracts the token from the request header and bridges it via a
+    ``ContextVar``.
 
-    Brak tokenu w nagłówku ``Authorization: Bearer`` to natychmiastowe 401
-    — BEZ sięgania po serwer aplikacji ani po konfigurację (żadna wartość
-    poświadczenia zapisana w ``Config`` nigdy nie trafia do odpowiedzi).
+    A missing token in the ``Authorization: Bearer`` header is an
+    immediate 401 — WITHOUT reaching the application server or the
+    configuration (no credential value stored in ``Config`` ever reaches
+    the response).
 
-    Surowe ASGI z tego samego powodu co ``OriginMiddleware`` — nie wolno
-    buforować/przerywać strumienia streamable HTTP.
+    Raw ASGI for the same reason as ``OriginMiddleware`` — the
+    streamable HTTP stream must not be buffered/interrupted.
     """
 
     def __init__(self, app) -> None:
@@ -136,64 +139,66 @@ class TokenMiddleware:
             return
 
         request = Request(scope, receive)
-        token = token_z_naglowka(request)
+        token = token_from_header(request)
         if not token:
-            odpowiedz = JSONResponse(
+            response = JSONResponse(
                 {
-                    "error": "Brak nagłówka `Authorization: Bearer <token OJS>`. "
-                    "W trybie http każdy klient uwierzytelnia się własnym tokenem."
+                    "error": "Missing `Authorization: Bearer <OJS token>` "
+                    "header. In http mode, every client authenticates with "
+                    "its own token."
                 },
                 status_code=401,
             )
-            await odpowiedz(scope, receive, send)
+            await response(scope, receive, send)
             return
 
-        ustaw_token_zadania(token)
+        set_request_token(token)
         try:
             await self._app(scope, receive, send)
         finally:
-            # Sprzątamy ZAWSZE — inaczej token wyciekłby do kolejnego
-            # żądania obsługiwanego w tym samym kontekście zadania.
-            ustaw_token_zadania(None)
+            # Always clean up — otherwise the token would leak into the
+            # next request served in the same task context.
+            set_request_token(None)
 
 
-def _wymagaj_trybu_http(config: Config) -> None:
-    """Zagwarantuj, że wywołujący faktycznie chce trybu http.
+def _require_http_transport(config: Config) -> None:
+    """Guarantee that the caller actually wants http mode.
 
-    `zbuduj_serwer` wybiera strategię uwierzytelniania WYŁĄCZNIE na
-    podstawie ``config.transport`` — dla każdej innej wartości sięga po
-    poświadczenia SERWERA (``zbuduj_auth``, patrz ``auth.py``), nie po
-    token żądania. Cały model bezpieczeństwa tego modułu („serwer nie
-    przechowuje żadnych poświadczeń”) trzyma się WYŁĄCZNIE na tym, że
-    ``config.transport == "http"`` w chwili wywołania — inaczej dowolny
-    token z nagłówka żądania byłby ignorowany, a do OJS poleciałyby
-    poświadczenia z ``Config`` (dokładnie to, czemu ten moduł ma zapobiegać).
+    `build_server` picks an authentication strategy EXCLUSIVELY based on
+    ``config.transport`` — for every other value it reaches for the
+    SERVER's credentials (``build_auth``, see ``auth.py``), not the
+    request's token. This module's entire security model ("the server
+    holds no credentials") rests EXCLUSIVELY on
+    ``config.transport == "http"`` at the time of the call — otherwise
+    any token from a request header would be ignored, and OJS would be
+    contacted with credentials from ``Config`` (exactly what this module
+    is meant to prevent).
 
-    :raises ValueError: gdy ``config.transport != "http"``.
+    :raises ValueError: when ``config.transport != "http"``.
     """
     if config.transport != "http":
         raise ValueError(
-            "zbuduj_aplikacje/uruchom_http wymagają config.transport == "
-            f"'http' (jest: {config.transport!r}). Ten moduł realizuje model "
-            "bezpieczeństwa 'serwer nie przechowuje poświadczeń' WYŁĄCZNIE "
-            "dla transportu http — z każdym innym transportem "
-            "`zbuduj_serwer` używa poświadczeń z konfiguracji serwera "
-            "(OJS_API_TOKEN / OJS_USERNAME / OJS_PASSWORD)."
+            "build_app/run_http require config.transport == 'http' (it "
+            f"is: {config.transport!r}). This module implements the "
+            "'server holds no credentials' security model EXCLUSIVELY "
+            "for the http transport — with every other transport, "
+            "`build_server` uses the credentials from the server "
+            "configuration (OJS_API_TOKEN / OJS_USERNAME / OJS_PASSWORD)."
         )
 
 
-class _ZamkniecieKlientaNaLifespan:
-    """Domyka WSPÓLNEGO klienta OJS na zdarzenie ASGI lifespan shutdown.
+class _CloseClientOnLifespan:
+    """Closes the SHARED OJS client on the ASGI lifespan shutdown event.
 
-    Poprawka N4+N5 (recenzja Rundy 2): zamiast dwóch niezależnych ścieżek
-    zamykania — jawnej w ``uruchom_http`` (dla produkcji) i BRAKU jej w
-    ``zbuduj_aplikacje`` (klient zostawał bez właściciela — N5) — jest
-    JEDNA, podpięta pod protokół lifespan, którego i tak używa zarówno
-    prawdziwy uvicorn (``uruchom_http``), jak i ręczne sterowanie lifespan
-    w testach (``zbuduj_aplikacje``). Nie maskuje błędu serwera błędem
-    zamykania klienta (ten sam wzorzec i to samo uzasadnienie co
-    ``_uruchom_stdio_i_zamknij`` w ``server.py``, commit 523a28d „nie
-    maskuj wyjątku z run_stdio_async błędem zamykania klienta” — N4).
+    Fix N4+N5 (Round 2 review): instead of two independent closing paths
+    — an explicit one in ``run_http`` (for production) and a MISSING one
+    in ``build_app`` (the client was left ownerless — N5) — there is ONE,
+    hooked into the lifespan protocol, which both real uvicorn
+    (``run_http``) and manual lifespan control in tests
+    (``build_app``) already use anyway. Does not mask a server error with
+    a client-closing error (the same pattern and the same reasoning as
+    ``_run_stdio_and_close`` in ``server.py``, commit 523a28d "do not
+    mask a run_stdio_async exception with a client-closing error" — N4).
     """
 
     def __init__(self, app: ASGIApp, client: OjsClient) -> None:
@@ -205,7 +210,7 @@ class _ZamkniecieKlientaNaLifespan:
             await self._app(scope, receive, send)
             return
 
-        async def _wyslij_i_zamknij_na_koniec(message) -> None:
+        async def _send_and_close_at_the_end(message) -> None:
             await send(message)
             if message["type"] in (
                 "lifespan.shutdown.complete",
@@ -214,120 +219,127 @@ class _ZamkniecieKlientaNaLifespan:
                 try:
                     await self._client.aclose()
                 except Exception:
-                    # Nie propagujemy: to jest sprzątanie PO zakończeniu
-                    # lifespan, więc nie ma już żadnego wyjątku serwera,
-                    # który mogłoby przykryć — ale i tak logujemy z pełnym
-                    # tracebackiem zamiast cichego połknięcia.
+                    # Not propagated: this is cleanup AFTER the lifespan
+                    # has ended, so there is no server exception left for
+                    # it to mask — but we still log it with a full
+                    # traceback instead of silently swallowing it.
                     logger.exception(
-                        "Nie udało się zamknąć klienta HTTP po zatrzymaniu serwera"
+                        "Could not close the HTTP client after the server stopped"
                     )
 
-        await self._app(scope, receive, _wyslij_i_zamknij_na_koniec)
+        await self._app(scope, receive, _send_and_close_at_the_end)
 
 
-def _zloz_stos(mcp: MCPServer, client: OjsClient, config: Config) -> ASGIApp:
-    """Owiń GOTOWY (już zbudowany) serwer MCP warstwami Origin i token.
+def _build_stack(mcp: MCPServer, client: OjsClient, config: Config) -> ASGIApp:
+    """Wrap a READY (already built) MCP server with the Origin and token
+    layers.
 
-    Wywoływana raz z ``zbuduj_aplikacje`` i raz z ``uruchom_http`` — obie
-    muszą dostać DOKŁADNIE ten sam stos (kolejność ma znaczenie, patrz
-    ``zbuduj_aplikacje``), więc trzymamy go w jednym miejscu. Zamykanie
-    ``client`` jest wpięte w lifespan tej samej aplikacji (patrz
-    ``_ZamkniecieKlientaNaLifespan``) — obaj wywołujący dostają je za darmo.
+    Called once from ``build_app`` and once from ``run_http`` — both
+    must get EXACTLY the same stack (order matters, see ``build_app``),
+    so we keep it in one place. Closing ``client`` is wired into this
+    application's lifespan (see ``_CloseClientOnLifespan``) — both
+    callers get it for free.
     """
-    aplikacja_mcp = mcp.streamable_http_app(
+    mcp_app = mcp.streamable_http_app(
         host=config.http_host,
         stateless_http=True,
         json_response=True,
-        # WYŁĄCZAMY własną ochronę SDK przed DNS rebinding — nie znika,
-        # tylko przenosi się w całości do `OriginMiddleware`, która stosuje
-        # listę z `OJS_MCP_ALLOWED_ORIGINS`. Bez tego, dla hosta
-        # 127.0.0.1/localhost/::1, SDK samo włącza WŁASNĄ, zaszytą na
-        # sztywno listę originów/hostów (`["http://127.0.0.1:*", ...]`) i
-        # odrzuca origin z NASZEJ listy dwie warstwy niżej —
-        # `OJS_MCP_ALLOWED_ORIGINS` stawałoby się martwe, a wdrożenie za
-        # odwrotnym proxy (inny nagłówek `Host`) w ogóle by nie działało
-        # (421).
+        # WE DISABLE the SDK's own DNS-rebinding protection — it does not
+        # disappear, it just moves entirely to `OriginMiddleware`, which
+        # applies the list from `OJS_MCP_ALLOWED_ORIGINS`. Without this,
+        # for a host of 127.0.0.1/localhost/::1, the SDK enables its OWN,
+        # hardcoded list of origins/hosts (`["http://127.0.0.1:*", ...]`)
+        # and rejects an origin from OUR list two layers below —
+        # `OJS_MCP_ALLOWED_ORIGINS` would become dead, and a deployment
+        # behind a reverse proxy (a different `Host` header) would not
+        # work at all (421).
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=False
         ),
     )
-    aplikacja_mcp = _ZamkniecieKlientaNaLifespan(aplikacja_mcp, client)
+    mcp_app = _CloseClientOnLifespan(mcp_app, client)
     return OriginMiddleware(
-        TokenMiddleware(aplikacja_mcp),
-        dozwolone=config.allowed_origins,
+        TokenMiddleware(mcp_app),
+        allowed=config.allowed_origins,
     )
 
 
-def zbuduj_aplikacje(config: Config) -> ASGIApp:
-    """Złóż pełny stos ASGI trybu http: ``Origin`` → token → serwer MCP.
+def build_app(config: Config) -> ASGIApp:
+    """Assemble the full http-mode ASGI stack: ``Origin`` -> token -> MCP
+    server.
 
-    Serwer MCP i klient OJS powstają TUTAJ, RAZ (``zbuduj_serwer``) — nie
-    na każde żądanie, patrz docstring modułu. Klient jest zamykany przez
-    protokół lifespan tej aplikacji (``_ZamkniecieKlientaNaLifespan``) —
-    ten sam mechanizm, którego używa produkcyjnie ``uruchom_http``, więc
-    obie ścieżki (testy budujące aplikację samodzielnie i uvicorn
-    w produkcji) sprzątają klienta tak samo, zamiast dwiema różnymi drogami.
+    The MCP server and the OJS client are created HERE, ONCE
+    (``build_server``) — not on every request, see the module docstring.
+    The client is closed through this application's lifespan protocol
+    (``_CloseClientOnLifespan``) — the same mechanism ``run_http`` uses
+    in production, so both paths (tests building the app themselves, and
+    uvicorn in production) clean up the client the same way, instead of
+    two different ways.
 
-    :raises ValueError: gdy ``config.transport != "http"`` — patrz
-        ``_wymagaj_trybu_http``.
+    :raises ValueError: when ``config.transport != "http"`` — see
+        ``_require_http_transport``.
     """
-    _wymagaj_trybu_http(config)
-    mcp, client = zbuduj_serwer(config)
-    return _zloz_stos(mcp, client, config)
+    _require_http_transport(config)
+    mcp, client = build_server(config)
+    return _build_stack(mcp, client, config)
 
 
-def _ostrzez_o_ignorowanych_poswiadczeniach(config: Config) -> None:
-    """Wypisz ostrzeżenie, gdy poświadczenia serwerowe są ustawione mimo http.
+def _warn_ignored_credentials(config: Config) -> None:
+    """Print a warning when server credentials are set despite http mode.
 
-    Same w sobie NIE są błędem konfiguracji — po prostu w trybie http nikt
-    ich nie użyje (patrz §6.1). Operator ma o tym wiedzieć, bo to zwykle
-    znak, że plik ``.env`` skopiowano z wdrożenia stdio bez wyczyszczenia.
+    That is not by itself a configuration error — in http mode, nobody
+    will use them anyway (see §6.1). The operator should know about it,
+    because it usually signals that the ``.env`` file was copied from a
+    stdio deployment without being cleared out.
     """
     if config.api_token or config.username or config.password:
         logger.warning(
-            "Tryb http: OJS_API_TOKEN / OJS_USERNAME / OJS_PASSWORD są "
-            "IGNOROWANE. Każdy klient uwierzytelnia się własnym tokenem "
-            "w nagłówku `Authorization: Bearer <token>` swojego żądania."
+            "Http mode: OJS_API_TOKEN / OJS_USERNAME / OJS_PASSWORD are "
+            "IGNORED. Every client authenticates with its own token in "
+            "the `Authorization: Bearer <token>` header of its request."
         )
 
 
-async def _serwuj(aplikacja: ASGIApp, config: Config) -> None:
-    """Uruchom uvicorn w TEJ SAMEJ pętli zdarzeń co ``anyio.run`` wołające
-    tę funkcję — ten sam wzorzec, co ``_uruchom_stdio_i_zamknij`` w
-    ``server.py`` dla trybu stdio, i z tego samego powodu (httpx/httpcore
-    trzymają połączenia keep-alive powiązane z pętlą zdarzeń, w której
-    powstały). Zamknięcie WSPÓLNEGO klienta OJS dzieje się przez protokół
-    ASGI lifespan (``_ZamkniecieKlientaNaLifespan`` w ``_zloz_stos``),
-    którego uvicorn i tak używa przy starcie/zatrzymaniu — nie trzeba
-    osobnego ``finally`` w tej funkcji.
+async def _serve(app: ASGIApp, config: Config) -> None:
+    """Run uvicorn in the SAME event loop as the ``anyio.run`` call that
+    invokes this function — the same pattern as
+    ``_run_stdio_and_close`` in ``server.py`` for stdio mode, and for the
+    same reason (httpx/httpcore hold keep-alive connections tied to the
+    event loop they were created in). Closing the SHARED OJS client
+    happens through the ASGI lifespan protocol
+    (``_CloseClientOnLifespan`` in ``_build_stack``), which uvicorn
+    already uses on startup/shutdown — no separate ``finally`` is needed
+    in this function.
     """
-    konfiguracja_uvicorn = uvicorn.Config(
-        aplikacja,
+    uvicorn_config = uvicorn.Config(
+        app,
         host=config.http_host,
         port=config.http_port,
         log_level="info",
     )
-    serwer = uvicorn.Server(konfiguracja_uvicorn)
-    await serwer.serve()
+    server = uvicorn.Server(uvicorn_config)
+    await server.serve()
 
 
-def uruchom_http(config: Config) -> int:
-    """Uruchom serwer w trybie streamable HTTP i zwróć kod wyjścia procesu.
+def run_http(config: Config) -> int:
+    """Run the server in streamable HTTP mode and return the process exit
+    code.
 
-    Buduje serwer MCP i klienta OJS RAZ (``zbuduj_serwer``) — jeden
-    ``httpx.AsyncClient`` obsługuje wszystkie żądania (reużycie połączeń,
-    spec §4.1). Zamykany przez protokół lifespan (patrz ``_zloz_stos`` /
-    ``_ZamkniecieKlientaNaLifespan``), w tej samej pętli zdarzeń, którą
-    ``anyio.run`` obejmuje przez cały czas działania ``uvicorn.Server``.
+    Builds the MCP server and the OJS client ONCE (``build_server``) —
+    one ``httpx.AsyncClient`` serves all requests (connection reuse, spec
+    §4.1). Closed through the lifespan protocol (see ``_build_stack`` /
+    ``_CloseClientOnLifespan``), in the same event loop that
+    ``anyio.run`` holds open for the whole duration of
+    ``uvicorn.Server``.
 
-    :raises ValueError: gdy ``config.transport != "http"`` — patrz
-        ``_wymagaj_trybu_http``.
+    :raises ValueError: when ``config.transport != "http"`` — see
+        ``_require_http_transport``.
     """
-    _wymagaj_trybu_http(config)
-    _ostrzez_o_ignorowanych_poswiadczeniach(config)
+    _require_http_transport(config)
+    _warn_ignored_credentials(config)
 
-    mcp, client = zbuduj_serwer(config)
-    aplikacja = _zloz_stos(mcp, client, config)
+    mcp, client = build_server(config)
+    app = _build_stack(mcp, client, config)
 
-    anyio.run(_serwuj, aplikacja, config)
+    anyio.run(_serve, app, config)
     return 0

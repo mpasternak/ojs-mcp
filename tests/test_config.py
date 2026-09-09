@@ -45,7 +45,9 @@ def test_allow_writes_disabled_by_default(monkeypatch):
 
 def test_origins_comma_separated_list(monkeypatch):
     monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
-    monkeypatch.setenv("OJS_MCP_ALLOWED_ORIGINS", "https://a.example, https://b.example")
+    monkeypatch.setenv(
+        "OJS_MCP_ALLOWED_ORIGINS", "https://a.example, https://b.example"
+    )
     assert Config.from_env().allowed_origins == (
         "https://a.example",
         "https://b.example",

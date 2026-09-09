@@ -181,9 +181,7 @@ async def test_aclose_also_closes_the_sessionauth_login_client():
     `OjsClient.aclose()` must close it together with its production
     client, so the process does not end with a second, unmanaged httpx
     connection pool alongside the one `server.py` already manages."""
-    cfg = Config(
-        base_url="https://x.edu", journal="annual", username="u", password="p"
-    )
+    cfg = Config(base_url="https://x.edu", journal="annual", username="u", password="p")
     auth = SessionAuth(cfg)
     k = OjsClient(cfg, auth)
     assert not auth._login_client.is_closed

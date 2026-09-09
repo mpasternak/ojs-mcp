@@ -178,7 +178,9 @@ async def test_captcha_aborts_without_sending_the_password():
 
 @respx.mock
 async def test_no_csrf_on_login_page_is_an_explicit_error():
-    respx.get(f"{BASE}/login").mock(return_value=httpx.Response(200, html="<html></html>"))
+    respx.get(f"{BASE}/login").mock(
+        return_value=httpx.Response(200, html="<html></html>")
+    )
     async with httpx.AsyncClient(follow_redirects=False) as client:
         with pytest.raises(LoginError) as exc:
             await login(client, CFG, "annual")

@@ -136,8 +136,7 @@ def to_values(
         if name not in dictionary:
             allowed = ", ".join(sorted(dictionary))
             raise InputError(
-                f"Unknown value {name!r} for parameter {label!r}. "
-                f"Allowed: {allowed}."
+                f"Unknown value {name!r} for parameter {label!r}. Allowed: {allowed}."
             )
         result.append(str(dictionary[name]))
     return ",".join(result)

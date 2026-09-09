@@ -1,16 +1,18 @@
-"""Furtka do endpointów spoza kuratowanej listy.
+"""Gateway to endpoints outside the curated list.
 
-Świadomie wąska: ma dawać dostęp do rzadkich endpointów API OJS, a nie być
-generycznym klientem HTTP. Stąd walidacja ścieżki i zamknięcie na zapisy.
+Deliberately narrow: it is meant to give access to rare OJS API
+endpoints, not to be a generic HTTP client. Hence path validation and
+being locked down for writes.
 
-UWAGA (świadoma decyzja, spec §8.3, potwierdzona w recenzji Rundy 1 Tasku
-13 — NIE zmieniać): przy ``OJS_ALLOW_WRITES=1`` ta furtka pozwala wysłać
-``PUT`` na ``.../publications/{id}`` z dowolnym ciałem, a więc ominąć
-``tools_write.POLA_EDYTOWALNE``. To zamierzone — furtka z definicji ma dać
-dostęp do rzeczy spoza kuratowanej listy narzędzi, a jedynym bezpiecznikiem
-jest sama flaga ``OJS_ALLOW_WRITES``, nie lista pól. Lista pól w
-``edytuj_metadane_publikacji`` chroni przed POMYŁKĄ w typowym użyciu, nie
-jest granicą bezpieczeństwa nie do przejścia.
+NOTE (a deliberate decision, spec §8.3, confirmed in the Round 1 review
+of Task 13 — do NOT change): with ``OJS_ALLOW_WRITES=1``, this gateway
+allows sending a ``PUT`` to ``.../publications/{id}`` with any body,
+i.e. bypassing ``tools_write.EDITABLE_FIELDS``. This is intentional —
+the gateway exists by definition to give access to things outside the
+curated tool list, and the only safeguard is the ``OJS_ALLOW_WRITES``
+flag itself, not the field list. The field list in
+``edit_publication_metadata`` protects against a MISTAKE in typical use;
+it is not an uncrossable security boundary.
 """
 
 from __future__ import annotations
@@ -18,138 +20,139 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .bledy import BladWejscia, BladZapisWylaczony
-from .catalog import Katalog
+from .catalog import Catalog
 from .client import OjsClient
 from .config import Config
-from .mcp_errors import z_czytelnym_bledem
+from .exceptions import InputError, WritesDisabledError
+from .mcp_errors import with_readable_error
 
-METODY_ODCZYTU = {"GET", "HEAD"}
-# Dozwolone znaki w segmentach ścieżki: alfanumeryczne, kropka, podkreślnik, myślnik.
-DOZWOLONE_ZNAKI = re.compile(r"^[a-zA-Z0-9._-]+$")
+READ_METHODS = {"GET", "HEAD"}
+# Allowed characters in path segments: alphanumeric, dot, underscore, hyphen.
+ALLOWED_CHARS = re.compile(r"^[a-zA-Z0-9._-]+$")
 
 
-def waliduj_sciezke(sciezka: str) -> str:
-    """Sprowadź do ścieżki względnej w ``api/v1`` albo odrzuć.
+def validate_path(path: str) -> str:
+    """Reduce to a path relative to ``api/v1``, or reject.
 
-    Dozwolone znaki w segmentach: a-z, A-Z, 0-9, ., _, -
-    Separator: pojedynczy /. Brak pustych segmentów ani .. .
+    Allowed characters per segment: a-z, A-Z, 0-9, ., _, -
+    Separator: a single /. No empty segments, no .. .
 
-    :raises BladWejscia: dla każdego naruszenia powyższych reguł.
+    :raises InputError: for any violation of the rules above.
     """
-    oczyszczona = (sciezka or "").strip()
-    if not oczyszczona:
-        raise BladWejscia(
-            "Ścieżka nie może być pusta. "
-            "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
-            "Wartości parametrów przekazuj przez argument `parametry`."
+    cleaned = (path or "").strip()
+    if not cleaned:
+        raise InputError(
+            "The path cannot be empty. "
+            "Allowed characters: a-z, A-Z, 0-9, ., _, -, /. "
+            "Pass parameter values through the `params` argument."
         )
 
-    # Usuń pojedynczy wiodący ukośnik (jeśli jest).
-    if oczyszczona.startswith("/"):
-        if len(oczyszczona) > 1 and oczyszczona[1] == "/":
-            raise BladWejscia(
-                "Ścieżka nie może zaczynać się od //. "
-                "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
-                "Wartości parametrów przekazuj przez argument `parametry`."
+    # Strip a single leading slash (if present).
+    if cleaned.startswith("/"):
+        if len(cleaned) > 1 and cleaned[1] == "/":
+            raise InputError(
+                "The path cannot start with //. "
+                "Allowed characters: a-z, A-Z, 0-9, ., _, -, /. "
+                "Pass parameter values through the `params` argument."
             )
-        oczyszczona = oczyszczona[1:]
+        cleaned = cleaned[1:]
 
-    if not oczyszczona:
-        raise BladWejscia(
-            "Ścieżka nie może być pusta. "
-            "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
-            "Wartości parametrów przekazuj przez argument `parametry`."
+    if not cleaned:
+        raise InputError(
+            "The path cannot be empty. "
+            "Allowed characters: a-z, A-Z, 0-9, ., _, -, /. "
+            "Pass parameter values through the `params` argument."
         )
 
-    # Rozbij na segmenty i waliduj każdy.
-    segmenty = oczyszczona.split("/")
-    for segment in segmenty:
+    # Split into segments and validate each one.
+    segments = cleaned.split("/")
+    for segment in segments:
         if not segment:
-            raise BladWejscia(
-                "Ścieżka zawiera pusty segment (np. //, ///, ścieżka kończy się /). "
-                "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
-                "Wartości parametrów przekazuj przez argument `parametry`."
+            raise InputError(
+                "The path contains an empty segment (e.g. //, ///, or "
+                "the path ends with /). "
+                "Allowed characters: a-z, A-Z, 0-9, ., _, -, /. "
+                "Pass parameter values through the `params` argument."
             )
         if segment == "..":
-            raise BladWejscia(
-                "Ścieżka zawiera segment .. (wychodzenie w górę). "
-                "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
-                "Wartości parametrów przekazuj przez argument `parametry`."
+            raise InputError(
+                "The path contains a .. segment (going up a level). "
+                "Allowed characters: a-z, A-Z, 0-9, ., _, -, /. "
+                "Pass parameter values through the `params` argument."
             )
-        if not DOZWOLONE_ZNAKI.match(segment):
-            raise BladWejscia(
-                "Segment ścieżki zawiera niedozwolone znaki. "
-                "Dozwolone znaki: a-z, A-Z, 0-9, ., _, -, /. "
-                "Wartości parametrów przekazuj przez argument `parametry`."
+        if not ALLOWED_CHARS.match(segment):
+            raise InputError(
+                "A path segment contains disallowed characters. "
+                "Allowed characters: a-z, A-Z, 0-9, ., _, -, /. "
+                "Pass parameter values through the `params` argument."
             )
 
-    return oczyszczona
+    return cleaned
 
 
-def _splaszcz(parametry: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Zamień wartości listowe na formę ``a,b`` — OJS robi ``explode(',')``."""
-    if not parametry:
-        return parametry
+def _flatten(params: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Turn list values into ``a,b`` form — OJS does ``explode(',')``."""
+    if not params:
+        return params
     return {
         k: (",".join(str(x) for x in v) if isinstance(v, (list, tuple)) else v)
-        for k, v in parametry.items()
+        for k, v in params.items()
     }
 
 
-async def zapytanie_impl(
+async def request_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     config: Config,
-    sciezka: str,
-    metoda: str = "GET",
-    parametry: dict[str, Any] | None = None,
-    cialo: Any = None,
-    czasopismo: str | None = None,
+    path: str,
+    method: str = "GET",
+    params: dict[str, Any] | None = None,
+    body: Any = None,
+    journal: str | None = None,
 ) -> Any:
-    """Wykonaj dowolne żądanie do API OJS w granicach bezpiecznika."""
-    metoda = (metoda or "GET").strip().upper()
-    if metoda not in METODY_ODCZYTU and not config.allow_writes:
-        raise BladZapisWylaczony(
-            f"Metoda {metoda} zmienia dane, a serwer działa w trybie tylko do "
-            "odczytu. Ustaw OJS_ALLOW_WRITES=1, jeśli świadomie chcesz "
-            "pozwolić na modyfikacje w tym czasopiśmie."
+    """Perform an arbitrary request to the OJS API within the safeguard's
+    limits."""
+    method = (method or "GET").strip().upper()
+    if method not in READ_METHODS and not config.allow_writes:
+        raise WritesDisabledError(
+            f"Method {method} changes data, and the server is running in "
+            "read-only mode. Set OJS_ALLOW_WRITES=1 if you deliberately "
+            "want to allow modifications in this journal."
         )
-    czysta = waliduj_sciezke(sciezka)
-    kontekst = await katalog.rozwiaz(czasopismo)
-    return await client.zadanie(
-        metoda,
-        czysta,
-        parametry=_splaszcz(parametry),
-        cialo=cialo,
-        czasopismo=kontekst,
+    clean = validate_path(path)
+    context = await catalog.resolve(journal)
+    return await client.request(
+        method,
+        clean,
+        params=_flatten(params),
+        body=body,
+        journal=context,
     )
 
 
-def zarejestruj_furtke(
-    mcp, client: OjsClient, katalog: Katalog, config: Config
-) -> None:
-    """Zarejestruj narzędzie `ojs_zapytanie`."""
+def register_gateway(mcp, client: OjsClient, catalog: Catalog, config: Config) -> None:
+    """Register the `ojs_request` tool."""
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def ojs_zapytanie(
-        sciezka: str,
-        metoda: str = "GET",
-        parametry: dict | None = None,
-        cialo: dict | None = None,
-        czasopismo: str | None = None,
+    @with_readable_error
+    async def ojs_request(
+        path: str,
+        method: str = "GET",
+        params: dict | None = None,
+        body: dict | None = None,
+        journal: str | None = None,
     ) -> Any:
-        """Wywołaj dowolny endpoint REST API OJS spoza gotowych narzędzi.
+        """Call any OJS REST API endpoint outside the ready-made tools.
 
-        `sciezka` jest względna wobec api/v1, np. 'submissions/12/files'.
-        Listę endpointów zwraca zasób `ojs://endpointy`.
-        `czasopismo="index"` sięga po endpointy poziomu witryny.
-        Bez OJS_ALLOW_WRITES dozwolone są wyłącznie żądania odczytu (GET/HEAD).
-        Z flagą —
-        to narzędzie NIE pilnuje listy pól z `edytuj_metadane_publikacji`;
-        jedynym bezpiecznikiem zapisu jest tu sama flaga OJS_ALLOW_WRITES.
+        `path` is relative to api/v1, e.g. 'submissions/12/files'. The
+        `ojs://endpoints` resource returns the list of endpoints.
+        `journal="index"` reaches site-level endpoints.
+        Without OJS_ALLOW_WRITES, only read requests (GET/HEAD) are
+        allowed. With the flag —
+        this tool does NOT enforce the field list from
+        `edit_publication_metadata`; the only write safeguard here is the
+        OJS_ALLOW_WRITES flag itself.
         """
-        return await zapytanie_impl(
-            client, katalog, config, sciezka, metoda, parametry, cialo, czasopismo
+        return await request_impl(
+            client, catalog, config, path, method, params, body, journal
         )

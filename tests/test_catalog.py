@@ -144,9 +144,7 @@ async def test_cold_fetches_from_different_users_do_not_serialize():
         await asyncio.sleep(delay)
         return httpx.Response(200, json={"itemsMax": 0, "items": []})
 
-    respx.get("https://x.edu/index.php/annual/api/v1/contexts").mock(
-        side_effect=_slow
-    )
+    respx.get("https://x.edu/index.php/annual/api/v1/contexts").mock(side_effect=_slow)
     _, client, catalog = _setup()
 
     async def user(token: str) -> list[dict]:

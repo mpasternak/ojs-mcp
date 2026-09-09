@@ -1,8 +1,8 @@
-# Indeks endpointów REST API OJS (wygenerowany z swagger-source.json)
-# Format: METODY ścieżka | parametry | opis
-# Wszystkie ścieżki są względne wobec {base}/index.php/{czasopismo}/api/v1
-# Kolekcje zwracają {"items": [...], "itemsMax": N} i stronicują się
-# parametrami count (max 100) oraz offset.
+# Index of OJS REST API endpoints (generated from swagger-source.json)
+# Format: METHODS path | params | description
+# All paths are relative to {base}/index.php/{journal}/api/v1
+# Collections return {"items": [...], "itemsMax": N} and paginate via the
+# count (max 100) and offset parameters.
 
 PUT /_payments | - | Save payment settings.
 GET /_submissions | - | Get submissions.

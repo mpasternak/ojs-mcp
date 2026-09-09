@@ -1,99 +1,110 @@
-"""Narzędzia zapisu — modyfikują dane PRODUKCYJNE czasopisma.
+"""Write tools — they modify PRODUCTION journal data.
 
-Rejestrowane WYŁĄCZNIE przy ``config.allow_writes`` (patrz
-``server.zbuduj_serwer``) — bez flagi model ich w ogóle nie widzi.
+Registered EXCLUSIVELY when ``config.allow_writes`` is set (see
+``server.build_server``) — without the flag, the model does not see
+them at all.
 
-Ten moduł jest inny niż ``tools_read.py``: dodanie decyzji redakcyjnej
-wysyła powiadomienia e-mail do autorów i recenzentów, a publikacja albo
-ogłoszenie stają się widoczne publicznie. Stąd trzy zasady konsekwentnie
-stosowane w każdym narzędziu poniżej:
+This module is different from ``tools_read.py``: adding an editorial
+decision sends email notifications to authors and reviewers, and a
+publication or announcement becomes publicly visible. Hence three rules
+applied consistently in every tool below:
 
-1. Opis KAŻDEGO narzędzia zarejestrowanego w ``zarejestruj_zapis`` zaczyna
-   się od ostrzeżenia ``UWAGA: modyfikuje dane produkcyjne czasopisma``.
-   Model widzi wyłącznie nazwę, sygnaturę i opis — to jedyne miejsce, gdzie
-   może się dowiedzieć, że wywołanie ma realne konsekwencje.
-2. Wartości słowne, nie liczby (``decyzja="odrzuc"``, nie ``decyzja=6``) —
-   tłumaczone przez ``slowniki.na_wartosci``/``slowniki.DECYZJE``, z błędem
-   wymieniającym dozwolone nazwy, ZANIM cokolwiek poleci do OJS.
-3. ``edytuj_metadane_publikacji`` przyjmuje wyłącznie pola z jawnej listy
-   ``POLA_EDYTOWALNE`` — wszystko spoza niej jest odrzucane z komunikatem
-   wymieniającym dozwolone pola. Bez tego narzędzie po cichu psułoby
-   metadane, nadpisując pola tylko do odczytu (np. ``id``, ``authors``,
-   ``galleys``) albo pola, które w rzeczywistości są ``readOnly`` mimo że
-   wyglądają na zwykłe metadane — patrz uwaga przy ``POLA_EDYTOWALNE``.
+1. The description of EVERY tool registered in ``register_write_tools``
+   starts with the warning ``WARNING: modifies production journal
+   data``. The model sees only the name, signature and description —
+   that is the only place it can learn that a call has real
+   consequences.
+2. Word-level values, not numbers (``decision="decline"``, not
+   ``decision=6``) — translated through ``dictionaries.to_values``/
+   ``dictionaries.DECISIONS``, with an error listing the allowed names,
+   BEFORE anything is sent to OJS.
+3. ``edit_publication_metadata`` accepts EXCLUSIVELY fields from the
+   explicit ``EDITABLE_FIELDS`` list — anything outside it is rejected
+   with a message listing the allowed fields. Without this, the tool
+   would silently corrupt metadata, overwriting read-only fields (e.g.
+   ``id``, ``authors``, ``galleys``) or fields that are actually
+   ``readOnly`` despite looking like plain metadata — see the note at
+   ``EDITABLE_FIELDS``.
 
-Logika siedzi w funkcjach ``*_impl`` (testowalne bez serwera MCP);
-``zarejestruj_zapis`` jest cienką warstwą rejestracji — dokładnie ten sam
-podział, co w ``tools_read.py``. Przycinanie odpowiedzi (krotki ``POLA_*``
-i funkcja ``zbuduj_widok_publikacji`` z ``pola.py``) i tłumaczenie nazw
-słownych (``slowniki.na_nazwe``) też są reużyte z tych samych modułów co
-w odczycie.
+The logic lives in ``*_impl`` functions (testable without an MCP
+server); ``register_write_tools`` is a thin registration layer —
+exactly the same split as in ``tools_read.py``. Trimming responses (the
+``*_FIELDS`` tuples and the ``build_publication_view`` function from
+``fields.py``) and translating word-level names
+(``dictionaries.to_name``) are also reused from those same modules as in
+the read tools.
 
-Wyjątki z walidacji własnej (nie z OJS) podnoszą ``bledy.BladWejscia``,
-nie goły ``ValueError`` — patrz jej docstring: ``mcp_errors.BLEDY_DOMENOWE``
-musi móc odróżnić komunikat napisany świadomie dla czytelnika od
-przypadkowego ``ValueError`` będącego w istocie usterką programistyczną
-(recenzja Rundy 1 Tasku 13).
+Exceptions from our own validation (not from OJS) raise
+``exceptions.InputError``, not a bare ``ValueError`` — see its
+docstring: ``mcp_errors.DOMAIN_ERRORS`` must be able to tell a message
+deliberately written for the reader apart from an accidental
+``ValueError`` that is actually a programming defect (Round 1 review of
+Task 13).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from .bledy import BladWejscia
-from .catalog import Katalog
+from .catalog import Catalog
 from .client import OjsClient
-from .mcp_errors import z_czytelnym_bledem
-from .pola import POLA_DECYZJI, POLA_OGLOSZENIA, przytnij, zbuduj_widok_publikacji
-from .slowniki import DECYZJE, ETAPY, STATUSY, na_nazwe, na_wartosci
+from .dictionaries import DECISIONS, STAGES, STATUSES, to_name, to_values
+from .exceptions import InputError
+from .fields import ANNOUNCEMENT_FIELDS, DECISION_FIELDS, build_publication_view, trim
+from .mcp_errors import with_readable_error
 
-# Lista pól edytowalnych publikacji przez `edytuj_metadane_publikacji`.
+# The list of a publication's fields editable through
+# `edit_publication_metadata`.
 #
-# ZWERYFIKOWANE bezpośrednio wobec obu schematów z GitHuba (pkp/pkp-lib i
-# pkp/ojs, gałąź `main`, pobrane 2026-09-09) — DWÓCH, nie jednego: pole
-# publikacji w OJS to złożenie schematu bazowego z `pkp-lib` (wspólny dla
-# OJS/OMP/OPS) i dokładki z `pkp/ojs` (m.in. `sectionId`, `issueId`,
-# `pages`) — patrz też uwaga w docstringu `pola.POLA_PUBLIKACJI_PELNE`
-# o tej samej pułapce.
+# VERIFIED directly against both schemas on GitHub (pkp/pkp-lib and
+# pkp/ojs, `main` branch, fetched 2026-09-09) — TWO, not one: a
+# publication field in OJS is the base schema from `pkp-lib` (shared by
+# OJS/OMP/OPS) combined with an addition from `pkp/ojs` (among others
+# `sectionId`, `issueId`, `pages`) — see also the note in the
+# `fields.PUBLICATION_FIELDS_FULL` docstring about the same pitfall.
 #
-# Reguła doboru z briefu Tasku 13: pole bez `readOnly` i bez
-# `writeDisabledInApi` w `schemas/publication.json` (obu plikach).
-# `writeDisabledInApi` NIE występuje w żadnym z dwóch plików
-# `publication.json` — to realna flaga schematu OJS
-# (`PKPBaseController::getWriteDisabledErrors`), ale jest używana wyłącznie
-# dla `schemas/submission.json` (`PKPSubmissionController::add`/`edit`), nie
-# dla publikacji.
+# The selection rule from the Task 13 brief: a field without `readOnly`
+# and without `writeDisabledInApi` in `schemas/publication.json` (both
+# files). `writeDisabledInApi` does NOT appear in either
+# `publication.json` file — it is a real OJS schema flag
+# (`PKPBaseController::getWriteDisabledErrors`), but is only used for
+# `schemas/submission.json` (`PKPSubmissionController::add`/`edit`), not
+# for publications.
 #
-# TA LISTA JEST PRZECIĘCIEM reguły z briefu i listy z briefu, NIE dosłownym
-# przepisaniem żadnej z nich osobno (recenzja Rundy 1 Tasku 13, potwierdzone
-# niezależnie): reguła sama w sobie, wzięta dosłownie, wpuściłaby też pola
-# `readOnly`/operacyjne, których brief NIE wymieniał — m.in. `status`,
-# `submissionId`, `lastModified`, `createdAt`, `seq`,
-# `versionMajor`/`versionMinor`/`versionStage`, `primaryContactId`. Część
-# z nich pozwoliłaby PRZESTAWIĆ IDENTYFIKATOR ZGŁOSZENIA (`submissionId`)
-# albo obejść `opublikuj_publikacje`/`cofnij_publikacje` przez bezpośrednie
-# nadpisanie `status`. NIE „naprawiaj” tej listy do pełnego zbioru pól bez
-# `readOnly` w schemacie — to byłaby usterka krytyczna, nie porządkowanie.
+# THIS LIST IS THE INTERSECTION of the rule from the brief and the list
+# from the brief, NOT a verbatim copy of either one alone (Round 1
+# review of Task 13, confirmed independently): the rule taken literally,
+# by itself, would also let through `readOnly`/operational fields the
+# brief did NOT mention — among others `status`, `submissionId`,
+# `lastModified`, `createdAt`, `seq`,
+# `versionMajor`/`versionMinor`/`versionStage`, `primaryContactId`. Some
+# of these would let you MOVE A SUBMISSION'S IDENTIFIER
+# (`submissionId`) or bypass `publish_publication`/
+# `unpublish_publication` by overwriting `status` directly. Do NOT
+# "fix" this list to the full set of non-`readOnly` schema fields — that
+# would be a critical defect, not tidying up.
 #
-# ODCHYLENIE W DRUGĄ STRONĘ — trzy pola z listy podanej w briefie Tasku 13
-# są w `pkp-lib/schemas/publication.json` oznaczone `"readOnly": true` i
-# zostały tu ŚWIADOMIE pominięte, mimo że brief je wymieniał:
-#   - `categoryIds` — readOnly; brak też dedykowanego endpointu do zapisu
-#     kategorii publikacji (kategorie same w sobie mają `/categories`, ale
-#     to inny zasób — przypisania kategorii do publikacji nie da się
-#     ustawić przez `PUT .../publications/{id}`).
-#   - `citationsRaw` — readOnly; brak odpowiadającego mu endpointu zapisu
-#     w indeksie API tego serwera.
-#   - `locale` — readOnly (dziedziczone z lokalizacji podstawowej
-#     zgłoszenia, nie ustawiane per publikacja).
-# Wysłanie takiego pola w ciele `PUT` NIE jest w OJS niezawodnie odrzucane
-# (`PKPSchemaService::sanitize()`, które faktycznie filtruje `readOnly`,
-# nie jest wołane na tej ścieżce — `Repo::publication()->edit()` scala
-# `$params` bez filtrowania), więc nasza WŁASNA lista jest jedynym
-# rzeczywistym zabezpieczeniem — stąd trzymanie się reguły z briefu
-# ("pole bez readOnly/writeDisabledInApi"), a nie dosłownej listy, gdy obie
-# się rozjeżdżają. Patrz raport Tasku 13 (Runda 1) po pełne uzasadnienie.
-POLA_EDYTOWALNE: tuple[str, ...] = (
+# DEVIATION IN THE OTHER DIRECTION — three fields from the list given in
+# the Task 13 brief are flagged `"readOnly": true` in
+# `pkp-lib/schemas/publication.json` and were DELIBERATELY left out
+# here, even though the brief mentioned them:
+#   - `categoryIds` — readOnly; there is also no dedicated endpoint to
+#     write a publication's category assignments (categories themselves
+#     have `/categories`, but that is a different resource — a
+#     publication's category assignments cannot be set through
+#     `PUT .../publications/{id}`).
+#   - `citationsRaw` — readOnly; no matching write endpoint in this
+#     server's index of the API.
+#   - `locale` — readOnly (inherited from the submission's base
+#     locale, not set per publication).
+# Sending such a field in the `PUT` body is NOT reliably rejected by OJS
+# (`PKPSchemaService::sanitize()`, which actually filters out `readOnly`,
+# is not called on this path — `Repo::publication()->edit()` merges
+# `$params` without filtering), so OUR OWN list is the only real
+# safeguard here — hence sticking to the rule from the brief ("a field
+# without readOnly/writeDisabledInApi"), not the literal list, when the
+# two diverge. See the Task 13 report (Round 1) for the full reasoning.
+EDITABLE_FIELDS: tuple[str, ...] = (
     "title",
     "subtitle",
     "abstract",
@@ -116,393 +127,405 @@ POLA_EDYTOWALNE: tuple[str, ...] = (
 )
 
 
-def _sprawdz_pola_edytowalne(pola: dict[str, Any]) -> None:
-    """Odrzuć pusty słownik albo pola spoza ``POLA_EDYTOWALNE``.
+def _check_editable_fields(fields: dict[str, Any]) -> None:
+    """Reject an empty dict, or fields outside ``EDITABLE_FIELDS``.
 
-    :raises BladWejscia: gdy ``pola`` jest puste, albo zawiera choć jeden
-        klucz spoza listy.
+    :raises InputError: when ``fields`` is empty, or contains at least
+        one key outside the list.
     """
-    if not pola:
-        raise BladWejscia(
-            "Nie podano żadnych pól do edycji — to byłby zapis bez treści. "
-            f"Podaj co najmniej jedno z: {', '.join(POLA_EDYTOWALNE)}."
+    if not fields:
+        raise InputError(
+            "No fields to edit were given — that would be a write with "
+            f"no content. Give at least one of: {', '.join(EDITABLE_FIELDS)}."
         )
-    nieznane = sorted(k for k in pola if k not in POLA_EDYTOWALNE)
-    if nieznane:
-        dozwolone = ", ".join(POLA_EDYTOWALNE)
-        raise BladWejscia(
-            f"Nie można edytować pól: {', '.join(nieznane)} — to narzędzie "
-            f"przyjmuje wyłącznie: {dozwolone}."
+    unknown = sorted(k for k in fields if k not in EDITABLE_FIELDS)
+    if unknown:
+        allowed = ", ".join(EDITABLE_FIELDS)
+        raise InputError(
+            f"Cannot edit the fields: {', '.join(unknown)} — this tool "
+            f"only accepts: {allowed}."
         )
 
 
-def _potwierdzenie_bez_tresci(kontekst: str) -> dict[str, Any]:
-    """Potwierdzenie wykonania, gdy OJS odpowiedział 2xx bez treści JSON.
+def _confirmation_without_content(context: str) -> dict[str, Any]:
+    """A confirmation of execution, when OJS responded 2xx with no JSON
+    body.
 
-    Bez tego narzędzie oddawałoby modelowi wyłącznie ``{"czasopismo": ...}``
-    — nieodróżnialne od pomyłki w naszym kodzie przycinającym odpowiedź.
-    W praktyce endpointy zapisu tego serwera zawsze zwracają zmapowany
-    obiekt (zweryfikowane w kodzie kontrolerów PKP), więc ta gałąź jest
-    zabezpieczeniem na wypadek innej wersji/wtyczki OJS, nie oczekiwaną
-    ścieżką.
+    Without this, the tool would hand the model just
+    ``{"journal": ...}`` — indistinguishable from a bug in our response-
+    trimming code. In practice this server's write endpoints always
+    return a mapped object (verified in the PKP controllers' code), so
+    this branch is a safeguard for a different OJS version/plugin, not
+    an expected path.
     """
     return {
-        "czasopismo": kontekst,
-        "wykonano": True,
-        "uwaga": "OJS potwierdził wykonanie (odpowiedź 2xx), ale nie zwrócił treści.",
+        "journal": context,
+        "completed": True,
+        "note": (
+            "OJS confirmed the operation (a 2xx response), but returned no content."
+        ),
     }
 
 
-def _wynik_publikacji(dane: Any, kontekst: str) -> dict[str, Any]:
-    """Zbuduj odpowiedź narzędzia z surowej publikacji zwróconej przez OJS.
+def _publication_result(data: Any, context: str) -> dict[str, Any]:
+    """Build a tool response from the raw publication OJS returned.
 
-    Przycinanie (w tym zagnieżdżonych ``authors``/``galleys``) mieszka
-    w ``pola.zbuduj_widok_publikacji`` — dzielone z
-    ``tools_read.pobierz_publikacje_impl``, bo ``editPublication``/
-    ``publishPublication``/``unpublishPublication`` w PKP zwracają
-    dokładnie ten sam kształt, co pełny ``GET``. ``status_nazwa`` dokładane
-    jest TUTAJ, nie w ``pola.py`` — patrz uzasadnienie w docstringu
-    ``pola.zbuduj_widok_publikacji``.
+    Trimming (including nested ``authors``/``galleys``) lives in
+    ``fields.build_publication_view`` — shared with
+    ``tools_read.get_publication_impl``, because ``editPublication``/
+    ``publishPublication``/``unpublishPublication`` in PKP return
+    exactly the same shape as a full ``GET``. ``status_name`` is added
+    HERE, not in ``fields.py`` — see the reasoning in the docstring of
+    ``fields.build_publication_view``.
     """
-    if not isinstance(dane, dict):
-        return _potwierdzenie_bez_tresci(kontekst)
-    wynik = zbuduj_widok_publikacji(dane)
-    if "status" in wynik:
-        wynik["status_nazwa"] = na_nazwe(wynik["status"], STATUSY)
-    wynik["czasopismo"] = kontekst
-    return wynik
+    if not isinstance(data, dict):
+        return _confirmation_without_content(context)
+    result = build_publication_view(data)
+    if "status" in result:
+        result["status_name"] = to_name(result["status"], STATUSES)
+    result["journal"] = context
+    return result
 
 
-# --- Decyzje redakcyjne --------------------------------------------------------
+# --- Editorial decisions --------------------------------------------------------
 
 
-async def dodaj_decyzje_impl(
+async def add_editorial_decision_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    zgloszenie: int,
-    decyzja: str,
-    runda_recenzji: int | None = None,
-    akcje: list[dict[str, Any]] | None = None,
-    czasopismo: str | None = None,
+    submission: int,
+    decision: str,
+    review_round: int | None = None,
+    actions: list[dict[str, Any]] | None = None,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Dodaj decyzję redakcyjną do zgłoszenia.
+    """Add an editorial decision to a submission.
 
-    ``POST /submissions/{zgloszenie}/decisions``, ciało
-    ``{decision, reviewRoundId?, actions?}``. ``stageId`` NIE jest wysyłany
-    — OJS wylicza go sam z typu decyzji (``decisionType->getStageId()`` w
-    ``PKPSubmissionController::addDecision``), więc wysłanie własnego
-    ``stageId`` byłoby i tak ignorowane.
+    ``POST /submissions/{submission}/decisions``, body
+    ``{decision, reviewRoundId?, actions?}``. ``stageId`` is NOT sent —
+    OJS computes it itself from the decision type
+    (``decisionType->getStageId()`` in
+    ``PKPSubmissionController::addDecision``), so sending our own
+    ``stageId`` would be ignored anyway.
 
-    :raises BladWejscia: gdy ``decyzja`` nie jest jedną z nazw w
-        ``slowniki.DECYZJE`` — komunikat wymienia dozwolone nazwy, zanim
-        cokolwiek poleci do OJS.
+    :raises InputError: when ``decision`` is not one of the names in
+        ``dictionaries.DECISIONS`` — the message lists the allowed
+        names, before anything is sent to OJS.
     """
-    # `na_wartosci` daje wspólną walidację i komunikat błędu (identyczne jak
-    # przy filtrach odczytu) — używamy go WYŁĄCZNIE dla tego efektu
-    # (podniesienia `BladWejscia` dla nieznanej nazwy) i odrzucamy zwróconego
-    # stringa: wartość do ciała JSON bierzemy wprost ze słownika, żeby nie
-    # robić zbędnej konwersji liczba -> tekst -> liczba.
-    na_wartosci(decyzja, DECYZJE, "decyzja")
-    kod_decyzji = DECYZJE[decyzja]
-    kontekst = await katalog.rozwiaz(czasopismo)
+    # `to_values` gives us shared validation and error message (identical
+    # to the read-side filters) — we use it EXCLUSIVELY for that effect
+    # (raising `InputError` for an unknown name) and discard the
+    # returned string: we take the body value straight from the
+    # dictionary, to avoid a pointless number -> text -> number
+    # conversion.
+    to_values(decision, DECISIONS, "decision")
+    decision_code = DECISIONS[decision]
+    context = await catalog.resolve(journal)
 
-    cialo: dict[str, Any] = {"decision": kod_decyzji}
-    if runda_recenzji is not None:
-        cialo["reviewRoundId"] = runda_recenzji
-    if akcje is not None:
-        cialo["actions"] = akcje
+    body: dict[str, Any] = {"decision": decision_code}
+    if review_round is not None:
+        body["reviewRoundId"] = review_round
+    if actions is not None:
+        body["actions"] = actions
 
-    dane = await client.zadanie(
+    data = await client.request(
         "POST",
-        f"submissions/{zgloszenie}/decisions",
-        cialo=cialo,
-        czasopismo=kontekst,
+        f"submissions/{submission}/decisions",
+        body=body,
+        journal=context,
     )
-    if not isinstance(dane, dict):
-        return _potwierdzenie_bez_tresci(kontekst)
-    wynik = przytnij(dane, POLA_DECYZJI)
-    if "decision" in wynik:
-        wynik["decyzja_nazwa"] = na_nazwe(wynik["decision"], DECYZJE)
-    if "stageId" in wynik:
-        wynik["etap_nazwa"] = na_nazwe(wynik["stageId"], ETAPY)
-    wynik["czasopismo"] = kontekst
-    return wynik
+    if not isinstance(data, dict):
+        return _confirmation_without_content(context)
+    result = trim(data, DECISION_FIELDS)
+    if "decision" in result:
+        result["decision_name"] = to_name(result["decision"], DECISIONS)
+    if "stageId" in result:
+        result["stage_name"] = to_name(result["stageId"], STAGES)
+    result["journal"] = context
+    return result
 
 
-# --- Publikacje ------------------------------------------------------------
+# --- Publications ------------------------------------------------------------
 
 
-async def edytuj_metadane_impl(
+async def edit_publication_metadata_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    zgloszenie: int,
-    publikacja: int,
-    pola: dict[str, Any],
-    czasopismo: str | None = None,
+    submission: int,
+    publication: int,
+    fields: dict[str, Any],
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Edytuj metadane jednej wersji (publikacji) zgłoszenia.
+    """Edit the metadata of one version (publication) of a submission.
 
-    ``PUT /submissions/{zgloszenie}/publications/{publikacja}``, ciało to
-    dokładnie ``pola`` (po walidacji kluczy). Pola wielojęzyczne (np.
-    ``title``) przyjmuj jako słownik kodów języków, np.
-    ``{"pl": "…", "en": "…"}`` — przechodzą bez zmian, to OJS interpretuje
-    ich kształt.
+    ``PUT /submissions/{submission}/publications/{publication}``, the
+    body is exactly ``fields`` (after key validation). Give multilingual
+    fields (e.g. ``title``) as a dict of language codes, e.g.
+    ``{"pl": "…", "en": "…"}`` — they pass through unchanged, OJS
+    interprets their shape.
 
-    :raises BladWejscia: gdy ``pola`` jest puste albo zawiera klucz spoza
-        ``POLA_EDYTOWALNE`` — patrz jej docstring po listę i uzasadnienie.
+    :raises InputError: when ``fields`` is empty, or contains a key
+        outside ``EDITABLE_FIELDS`` — see its docstring for the list and
+        the reasoning.
     """
-    _sprawdz_pola_edytowalne(pola)
-    kontekst = await katalog.rozwiaz(czasopismo)
-    dane = await client.zadanie(
+    _check_editable_fields(fields)
+    context = await catalog.resolve(journal)
+    data = await client.request(
         "PUT",
-        f"submissions/{zgloszenie}/publications/{publikacja}",
-        cialo=pola,
-        czasopismo=kontekst,
+        f"submissions/{submission}/publications/{publication}",
+        body=fields,
+        journal=context,
     )
-    return _wynik_publikacji(dane, kontekst)
+    return _publication_result(data, context)
 
 
-async def opublikuj_impl(
+async def publish_publication_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    zgloszenie: int,
-    publikacja: int,
-    czasopismo: str | None = None,
+    submission: int,
+    publication: int,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Opublikuj wersję zgłoszenia (``PUT .../publish``, bez ciała)."""
-    kontekst = await katalog.rozwiaz(czasopismo)
-    dane = await client.zadanie(
+    """Publish a version of a submission (``PUT .../publish``, no body)."""
+    context = await catalog.resolve(journal)
+    data = await client.request(
         "PUT",
-        f"submissions/{zgloszenie}/publications/{publikacja}/publish",
-        czasopismo=kontekst,
+        f"submissions/{submission}/publications/{publication}/publish",
+        journal=context,
     )
-    return _wynik_publikacji(dane, kontekst)
+    return _publication_result(data, context)
 
 
-async def cofnij_impl(
+async def unpublish_publication_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    zgloszenie: int,
-    publikacja: int,
-    czasopismo: str | None = None,
+    submission: int,
+    publication: int,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Cofnij publikację wersji zgłoszenia (``PUT .../unpublish``, bez ciała)."""
-    kontekst = await katalog.rozwiaz(czasopismo)
-    dane = await client.zadanie(
+    """Unpublish a version of a submission (``PUT .../unpublish``, no
+    body)."""
+    context = await catalog.resolve(journal)
+    data = await client.request(
         "PUT",
-        f"submissions/{zgloszenie}/publications/{publikacja}/unpublish",
-        czasopismo=kontekst,
+        f"submissions/{submission}/publications/{publication}/unpublish",
+        journal=context,
     )
-    return _wynik_publikacji(dane, kontekst)
+    return _publication_result(data, context)
 
 
-# --- Ogłoszenia --------------------------------------------------------------
+# --- Announcements --------------------------------------------------------------
 
 
-async def utworz_ogloszenie_impl(
+async def create_announcement_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    tytul: dict[str, str],
-    tresc: dict[str, str] | None = None,
-    streszczenie: dict[str, str] | None = None,
-    typ_id: int | None = None,
-    data_wygasniecia: str | None = None,
-    czasopismo: str | None = None,
+    title: dict[str, str],
+    content: dict[str, str] | None = None,
+    summary: dict[str, str] | None = None,
+    type_id: int | None = None,
+    expiry_date: str | None = None,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Utwórz ogłoszenie czasopisma (``POST /announcements``).
+    """Create a journal announcement (``POST /announcements``).
 
-    ``tytul`` jest wymagany i wielojęzyczny — słownik kodów języków, np.
-    ``{"pl": "…", "en": "…"}``, tak samo ``tresc``/``streszczenie``.
-    ``assocType``/``assocId`` NIE są przyjmowane — OJS ustawia je sam z
-    bieżącego kontekstu (``PKPAnnouncementController::add``), więc czasopismo
-    docelowe wyznacza wyłącznie parametr ``czasopismo``/``OJS_JOURNAL``.
+    ``title`` is required and multilingual — a dict of language codes,
+    e.g. ``{"pl": "…", "en": "…"}``, same for ``content``/``summary``.
+    ``assocType``/``assocId`` are NOT accepted — OJS sets them itself
+    from the current context (``PKPAnnouncementController::add``), so
+    the target journal is determined exclusively by the
+    ``journal``/``OJS_JOURNAL`` parameter.
 
-    ``sendEmail`` jest wysyłane na sztywno jako ``False`` — parametr
-    sterujący wysyłką maila do WSZYSTKICH subskrybentów czasopisma nie jest
-    częścią specyfikacji tego narzędzia (recenzja Rundy 1 Tasku 13: to
-    parametr o największym zasięgu w całym module, nie wolno go dodawać po
-    cichu ponad to, o co poproszono). Klucz mimo to trafia do ciała, bo
-    ``PKPAnnouncementController::add`` czyta go bez wartości domyślnej.
+    ``sendEmail`` is hardcoded to ``False`` — the parameter controlling
+    whether an email is sent to ALL of the journal's subscribers is not
+    part of this tool's spec (Round 1 review of Task 13: this is the
+    widest-reaching parameter in the whole module, it must not be added
+    silently beyond what was asked for). The key still goes into the
+    body regardless, because ``PKPAnnouncementController::add`` reads it
+    without a default value.
 
-    :raises BladWejscia: gdy ``tytul`` jest pusty.
+    :raises InputError: when ``title`` is empty.
     """
-    if not tytul:
-        raise BladWejscia(
-            "Tytuł ogłoszenia jest wymagany — słownik {kod_języka: tekst}, "
-            'np. {"pl": "Nabór do numeru specjalnego"}.'
+    if not title:
+        raise InputError(
+            "An announcement title is required — a "
+            '{language_code: text} dict, e.g. {"en": "Call for a special issue"}.'
         )
-    kontekst = await katalog.rozwiaz(czasopismo)
+    context = await catalog.resolve(journal)
 
-    cialo: dict[str, Any] = {"title": tytul, "sendEmail": False}
-    if tresc is not None:
-        cialo["description"] = tresc
-    if streszczenie is not None:
-        cialo["descriptionShort"] = streszczenie
-    if typ_id is not None:
-        cialo["typeId"] = typ_id
-    if data_wygasniecia is not None:
-        cialo["dateExpire"] = data_wygasniecia
+    body: dict[str, Any] = {"title": title, "sendEmail": False}
+    if content is not None:
+        body["description"] = content
+    if summary is not None:
+        body["descriptionShort"] = summary
+    if type_id is not None:
+        body["typeId"] = type_id
+    if expiry_date is not None:
+        body["dateExpire"] = expiry_date
 
-    dane = await client.zadanie(
-        "POST", "announcements", cialo=cialo, czasopismo=kontekst
-    )
-    if not isinstance(dane, dict):
-        return _potwierdzenie_bez_tresci(kontekst)
-    wynik = przytnij(dane, POLA_OGLOSZENIA)
-    wynik["czasopismo"] = kontekst
-    return wynik
+    data = await client.request("POST", "announcements", body=body, journal=context)
+    if not isinstance(data, dict):
+        return _confirmation_without_content(context)
+    result = trim(data, ANNOUNCEMENT_FIELDS)
+    result["journal"] = context
+    return result
 
 
-# --- Rejestracja w serwerze MCP ------------------------------------------------
+# --- Registration on the MCP server ------------------------------------------
 
 
-def zarejestruj_zapis(mcp, client: OjsClient, katalog: Katalog) -> None:
-    """Zarejestruj narzędzia modyfikujące dane czasopisma.
+def register_write_tools(mcp, client: OjsClient, catalog: Catalog) -> None:
+    """Register the tools that modify journal data.
 
-    Wołane WYŁĄCZNIE z ``server.zbuduj_serwer`` przy ``config.allow_writes``
-    — patrz docstring modułu po uzasadnienie każdej z trzech zasad
-    bezpieczeństwa poniżej.
+    Called EXCLUSIVELY from ``server.build_server`` when
+    ``config.allow_writes`` is set — see the module docstring for the
+    reasoning behind each of the three security rules above.
     """
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def dodaj_decyzje_redakcyjna(
-        zgloszenie: int,
-        decyzja: str,
-        runda_recenzji: int | None = None,
-        akcje: list[dict] | None = None,
-        czasopismo: str | None = None,
+    @with_readable_error
+    async def add_editorial_decision(
+        submission: int,
+        decision: str,
+        review_round: int | None = None,
+        actions: list[dict] | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """UWAGA: modyfikuje dane produkcyjne czasopisma.
+        """WARNING: modifies production journal data.
 
-        Dodaje decyzję redakcyjną do zgłoszenia — może wysłać powiadomienie
-        e-mail do autorów i/lub recenzentów (zależnie od typu decyzji i
-        `akcje`). Nieodwracalne jednym poleceniem.
+        Adds an editorial decision to a submission — may send an email
+        notification to authors and/or reviewers (depending on the
+        decision type and `actions`). Irreversible with a single call.
 
-        `decyzja` (nazwa słowna, nie liczba): akceptuj,
-        do_recenzji_zewnetrznej, wymagane_poprawki, do_ponownego_zgloszenia,
-        odrzuc, do_produkcji, odrzuc_wstepnie, rekomenduj_akceptacje,
-        rekomenduj_poprawki, rekomenduj_ponowne_zgloszenie,
-        rekomenduj_odrzucenie, nowa_runda_recenzji, cofnij_odrzucenie,
-        pomin_recenzje_zewnetrzna, cofnij_z_produkcji, cofnij_z_redakcji.
+        `decision` (a word-level name, not a number): accept,
+        external_review, pending_revisions, resubmit, decline,
+        send_to_production, initial_decline, recommend_accept,
+        recommend_pending_revisions, recommend_resubmit,
+        recommend_decline, new_external_round, revert_decline,
+        skip_external_review, back_from_production, back_from_copyediting.
 
-        `runda_recenzji`: ID rundy recenzji (z `recenzje_zgloszenia`) — wymagane
-        przez OJS dla decyzji podejmowanych na etapie recenzji zewnętrznej.
-        `akcje`: opcjonalna lista dodatkowych akcji specyficznych dla typu
-        decyzji (np. treść e-maila do autora). `stageId` NIE jest
-        przyjmowany — OJS wylicza go sam z typu decyzji.
+        `review_round`: the review round ID (from
+        `get_submission_reviews`) — required by OJS for decisions made
+        at the external review stage. `actions`: an optional list of
+        additional actions specific to the decision type (e.g. email
+        text to the author). `stageId` is NOT accepted — OJS computes it
+        itself from the decision type.
         """
-        return await dodaj_decyzje_impl(
+        return await add_editorial_decision_impl(
             client,
-            katalog,
-            zgloszenie=zgloszenie,
-            decyzja=decyzja,
-            runda_recenzji=runda_recenzji,
-            akcje=akcje,
-            czasopismo=czasopismo,
+            catalog,
+            submission=submission,
+            decision=decision,
+            review_round=review_round,
+            actions=actions,
+            journal=journal,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def edytuj_metadane_publikacji(
-        zgloszenie: int,
-        publikacja: int,
-        pola: dict,
-        czasopismo: str | None = None,
+    @with_readable_error
+    async def edit_publication_metadata(
+        submission: int,
+        publication: int,
+        fields: dict,
+        journal: str | None = None,
     ) -> dict:
-        """UWAGA: modyfikuje dane produkcyjne czasopisma.
+        """WARNING: modifies production journal data.
 
-        Nadpisuje metadane wskazanej wersji (publikacji) zgłoszenia.
+        Overwrites the metadata of the given version (publication) of a
+        submission.
 
-        `pola`: słownik {nazwa_pola: wartość}, NIEPUSTY, WYŁĄCZNIE spośród:
-        title, subtitle, abstract, prefix, keywords, subjects, disciplines,
-        supportingAgencies, coverage, rights, source, type, datePublished,
-        licenseUrl, copyrightHolder, copyrightYear, sectionId, issueId,
-        pages. Każde inne pole zostaje odrzucone błędem wymieniającym
-        dozwolone — to jedyna ochrona przed nadpisaniem pól tylko do
-        odczytu (np. `id`, `authors`, `galleys`, `categoryIds`, `locale`,
-        `citationsRaw` — zarządzane przez OJS albo osobne endpointy, nie
-        przez to narzędzie). Pola wielojęzyczne (title, subtitle, abstract,
-        keywords, ...) przyjmują słownik kodów języków, np.
-        `{"pl": "…", "en": "…"}`.
+        `fields`: a {field_name: value} dict, NON-EMPTY, EXCLUSIVELY
+        from among: title, subtitle, abstract, prefix, keywords,
+        subjects, disciplines, supportingAgencies, coverage, rights,
+        source, type, datePublished, licenseUrl, copyrightHolder,
+        copyrightYear, sectionId, issueId, pages. Any other field is
+        rejected with an error listing the allowed ones — this is the
+        only protection against overwriting read-only fields (e.g.
+        `id`, `authors`, `galleys`, `categoryIds`, `locale`,
+        `citationsRaw` — managed by OJS or by separate endpoints, not by
+        this tool). Multilingual fields (title, subtitle, abstract,
+        keywords, ...) accept a dict of language codes, e.g.
+        `{"en": "…", "pl": "…"}`.
         """
-        return await edytuj_metadane_impl(
+        return await edit_publication_metadata_impl(
             client,
-            katalog,
-            zgloszenie=zgloszenie,
-            publikacja=publikacja,
-            pola=pola,
-            czasopismo=czasopismo,
+            catalog,
+            submission=submission,
+            publication=publication,
+            fields=fields,
+            journal=journal,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def opublikuj_publikacje(
-        zgloszenie: int, publikacja: int, czasopismo: str | None = None
+    @with_readable_error
+    async def publish_publication(
+        submission: int, publication: int, journal: str | None = None
     ) -> dict:
-        """UWAGA: modyfikuje dane produkcyjne czasopisma.
+        """WARNING: modifies production journal data.
 
-        Publikuje wskazaną wersję zgłoszenia. Od tego momentu treść jest
-        WIDOCZNA PUBLICZNIE na stronie czasopisma.
+        Publishes the given version of a submission. From this moment on
+        the content is PUBLICLY VISIBLE on the journal's website.
         """
-        return await opublikuj_impl(
+        return await publish_publication_impl(
             client,
-            katalog,
-            zgloszenie=zgloszenie,
-            publikacja=publikacja,
-            czasopismo=czasopismo,
+            catalog,
+            submission=submission,
+            publication=publication,
+            journal=journal,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def cofnij_publikacje(
-        zgloszenie: int, publikacja: int, czasopismo: str | None = None
+    @with_readable_error
+    async def unpublish_publication(
+        submission: int, publication: int, journal: str | None = None
     ) -> dict:
-        """UWAGA: modyfikuje dane produkcyjne czasopisma.
+        """WARNING: modifies production journal data.
 
-        Cofa publikację wskazanej wersji zgłoszenia — znika z publicznej
-        strony czasopisma.
+        Unpublishes the given version of a submission — it disappears
+        from the journal's public website.
         """
-        return await cofnij_impl(
+        return await unpublish_publication_impl(
             client,
-            katalog,
-            zgloszenie=zgloszenie,
-            publikacja=publikacja,
-            czasopismo=czasopismo,
+            catalog,
+            submission=submission,
+            publication=publication,
+            journal=journal,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def utworz_ogloszenie(
-        tytul: dict,
-        tresc: dict | None = None,
-        streszczenie: dict | None = None,
-        typ_id: int | None = None,
-        data_wygasniecia: str | None = None,
-        czasopismo: str | None = None,
+    @with_readable_error
+    async def create_announcement(
+        title: dict,
+        content: dict | None = None,
+        summary: dict | None = None,
+        type_id: int | None = None,
+        expiry_date: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """UWAGA: modyfikuje dane produkcyjne czasopisma.
+        """WARNING: modifies production journal data.
 
-        Tworzy nowe ogłoszenie WIDOCZNE PUBLICZNIE na stronie czasopisma
-        (bez wysyłki e-mail do subskrybentów — to narzędzie tego nie robi).
+        Creates a new announcement PUBLICLY VISIBLE on the journal's
+        website (without emailing subscribers — this tool does not do
+        that).
 
-        `tytul` (wymagany), `tresc` i `streszczenie` to pola wielojęzyczne —
-        słownik kodów języków, np. `{"pl": "…", "en": "…"}`. `typ_id`: ID
-        typu ogłoszenia (z konfiguracji czasopisma). `data_wygasniecia`
-        w formacie RRRR-MM-DD.
+        `title` (required), `content` and `summary` are multilingual
+        fields — a dict of language codes, e.g.
+        `{"en": "…", "pl": "…"}`. `type_id`: the announcement type ID
+        (from the journal's configuration). `expiry_date` in YYYY-MM-DD
+        format.
         """
-        return await utworz_ogloszenie_impl(
+        return await create_announcement_impl(
             client,
-            katalog,
-            tytul=tytul,
-            tresc=tresc,
-            streszczenie=streszczenie,
-            typ_id=typ_id,
-            data_wygasniecia=data_wygasniecia,
-            czasopismo=czasopismo,
+            catalog,
+            title=title,
+            content=content,
+            summary=summary,
+            type_id=type_id,
+            expiry_date=expiry_date,
+            journal=journal,
         )

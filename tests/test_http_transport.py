@@ -1,6 +1,7 @@
-"""Testy trybu http: walidacja Origin, przekazywanie tokenu, brak wycieku
-poświadczeń serwera. Zero realnego ruchu sieciowego i zero realnego serwera
-na porcie — wszystko przez ``httpx.ASGITransport`` na sztucznych aplikacjach.
+"""Tests for http mode: Origin validation, token forwarding, no leaking of
+server credentials. Zero real network traffic and zero real server on a
+port — everything through ``httpx.ASGITransport`` on synthetic
+applications.
 """
 
 from __future__ import annotations
@@ -18,87 +19,88 @@ from mcp.client.streamable_http import streamable_http_client
 from starlette.responses import JSONResponse
 
 import ojs_mcp.http_transport as ht
-from ojs_mcp.auth import token_zadania, ustaw_token_zadania, zbuduj_auth_http
-from ojs_mcp.bledy import BladUwierzytelnienia
+from ojs_mcp.auth import build_auth_http, request_token, set_request_token
 from ojs_mcp.config import Config
+from ojs_mcp.exceptions import AuthenticationError
 from ojs_mcp.http_transport import (
     OriginMiddleware,
     TokenMiddleware,
-    _ostrzez_o_ignorowanych_poswiadczeniach,
-    sprawdz_origin,
-    uruchom_http,
-    zbuduj_aplikacje,
+    _warn_ignored_credentials,
+    build_app,
+    check_origin,
+    run_http,
 )
 
 
 class _Spy:
-    """Sztuczna aplikacja ASGI, która zapamiętuje czy i z jakim tokenem
-    w kontekście została wywołana — bez tego nie dałoby się odróżnić
-    "middleware przepuścił" od "middleware zbudował 200 sam z siebie"."""
+    """A synthetic ASGI application that remembers whether, and with what
+    token in context, it was called — without this it would be
+    impossible to tell "the middleware let it through" apart from "the
+    middleware built a 200 on its own"."""
 
     def __init__(self) -> None:
-        self.wywolane = False
-        self.token_w_srodku: str | None = "NIE_WYWOLANO"
+        self.called = False
+        self.token_inside: str | None = "NOT_CALLED"
 
     async def __call__(self, scope, receive, send) -> None:
-        self.wywolane = True
-        self.token_w_srodku = token_zadania()
-        odpowiedz = JSONResponse({"ok": True})
-        await odpowiedz(scope, receive, send)
+        self.called = True
+        self.token_inside = request_token()
+        response = JSONResponse({"ok": True})
+        await response(scope, receive, send)
 
 
 @asynccontextmanager
-async def _uruchom_lifespan(aplikacja):
-    """Steruj ręcznie protokołem ASGI lifespan wokół `aplikacja`.
+async def _run_lifespan(app):
+    """Manually drive the ASGI lifespan protocol around `app`.
 
-    Od Rundy 2 `zbuduj_aplikacje` opakowuje PRAWDZIWY `mcp.streamable_http_app()`
-    (Starlette), którego `session_manager.run()` startuje właśnie na
-    zdarzeniu ``lifespan.startup`` — bez tego każde żądanie kończy się
+    Since Round 2, `build_app` wraps a REAL `mcp.streamable_http_app()`
+    (Starlette), whose `session_manager.run()` starts precisely on the
+    ``lifespan.startup`` event — without this, every request ends with
     `RuntimeError: Task group is not initialized`. `httpx.ASGITransport`
-    (używany w tych testach) NIE wywołuje lifespan samo z siebie, więc
-    trzeba to zasymulować ręcznie, tak jak zrobiłby to prawdziwy serwer
-    ASGI (uvicorn) przy starcie/zatrzymaniu.
+    (used in these tests) does NOT trigger the lifespan by itself, so it
+    has to be simulated manually, the way a real ASGI server (uvicorn)
+    would on startup/shutdown.
     """
-    do_aplikacji_wys, do_aplikacji_odb = anyio.create_memory_object_stream(1)
-    z_aplikacji_wys, z_aplikacji_odb = anyio.create_memory_object_stream(1)
+    to_app_send, to_app_recv = anyio.create_memory_object_stream(1)
+    from_app_send, from_app_recv = anyio.create_memory_object_stream(1)
 
-    async def odbierz():
-        return await do_aplikacji_odb.receive()
+    async def receive():
+        return await to_app_recv.receive()
 
-    async def wyslij(wiadomosc) -> None:
-        await z_aplikacji_wys.send(wiadomosc)
+    async def send(message) -> None:
+        await from_app_send.send(message)
 
     async with anyio.create_task_group() as tg:
-        tg.start_soon(aplikacja, {"type": "lifespan"}, odbierz, wyslij)
-        await do_aplikacji_wys.send({"type": "lifespan.startup"})
-        komunikat = await z_aplikacji_odb.receive()
-        assert komunikat["type"] == "lifespan.startup.complete", komunikat
+        tg.start_soon(app, {"type": "lifespan"}, receive, send)
+        await to_app_send.send({"type": "lifespan.startup"})
+        message = await from_app_recv.receive()
+        assert message["type"] == "lifespan.startup.complete", message
 
         try:
             yield
         finally:
-            await do_aplikacji_wys.send({"type": "lifespan.shutdown"})
-            komunikat = await z_aplikacji_odb.receive()
-            assert komunikat["type"] == "lifespan.shutdown.complete", komunikat
+            await to_app_send.send({"type": "lifespan.shutdown"})
+            message = await from_app_recv.receive()
+            assert message["type"] == "lifespan.shutdown.complete", message
 
 
-async def _wyslij(aplikacja, **kwargs) -> httpx.Response:
-    transport = httpx.ASGITransport(app=aplikacja)
+async def _send(app, **kwargs) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
-    ) as klient:
-        return await klient.get("/mcp", **kwargs)
+    ) as client:
+        return await client.get("/mcp", **kwargs)
 
 
-async def _wyslij_post(aplikacja, **kwargs) -> httpx.Response:
-    transport = httpx.ASGITransport(app=aplikacja)
+async def _send_post(app, **kwargs) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
-    ) as klient:
-        return await klient.post("/mcp", **kwargs)
+    ) as client:
+        return await client.post("/mcp", **kwargs)
 
 
-def _cialo_initialize() -> dict:
+def _initialize_body() -> dict:
     return {
         "jsonrpc": "2.0",
         "id": 1,
@@ -106,221 +108,222 @@ def _cialo_initialize() -> dict:
         "params": {
             "protocolVersion": "2025-06-18",
             "capabilities": {},
-            "clientInfo": {"name": "test-recenzenta", "version": "0"},
+            "clientInfo": {"name": "test-reviewer", "version": "0"},
         },
     }
 
 
-async def _wywolaj_z_klientem(klient_http, czasopismo: str | None = None):
-    """Jak niżej, ale na JUŻ ISTNIEJĄCYM `httpx.AsyncClient` — do testów,
-    które celowo współdzielą jedną pulę połączeń (nagłówek `Authorization`
-    bierze się z domyślnych nagłówków `klient_http` w chwili wywołania).
+async def _call_with_client(http_client, journal: str | None = None):
+    """Like below, but on an ALREADY EXISTING `httpx.AsyncClient` — for
+    tests that deliberately share one connection pool (the
+    `Authorization` header comes from `http_client`'s default headers at
+    call time).
     """
-    argumenty = {"czasopismo": czasopismo} if czasopismo is not None else {}
+    arguments = {"journal": journal} if journal is not None else {}
     async with (
-        streamable_http_client("http://testserver/mcp", http_client=klient_http) as (
+        streamable_http_client("http://testserver/mcp", http_client=http_client) as (
             read_stream,
             write_stream,
         ),
         ClientSession(read_stream, write_stream) as session,
     ):
         await session.initialize()
-        return await session.call_tool("kim_jestem", argumenty)
+        return await session.call_tool("whoami", arguments)
 
 
-async def _wywolaj_kim_jestem(aplikacja, token: str, czasopismo: str | None = None):
-    """Prawdziwa rozmowa protokołem MCP z aplikacją zbudowaną przez
-    `zbuduj_aplikacje` — przez `httpx.ASGITransport`, bez żadnego portu ani
-    realnej sieci. Klient (`httpx.AsyncClient`) niesie SWÓJ WŁASNY nagłówek
-    `Authorization`, dokładnie tak, jak zrobiłby to prawdziwy użytkownik
-    trybu http.
+async def _call_whoami(app, token: str, journal: str | None = None):
+    """A real MCP-protocol conversation with an application built by
+    `build_app` — through `httpx.ASGITransport`, without any port or real
+    network. The client (`httpx.AsyncClient`) carries ITS OWN
+    `Authorization` header, exactly as a real http-mode user would.
     """
-    klient_http = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=aplikacja),
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
         base_url="http://testserver",
         headers={"Authorization": f"Bearer {token}"},
     )
-    return await _wywolaj_z_klientem(klient_http, czasopismo=czasopismo)
+    return await _call_with_client(http_client, journal=journal)
 
 
 @pytest.mark.parametrize(
-    "origin,dozwolone,wynik",
+    "origin,allowed,result",
     [
-        # Brak nagłówka = klient nie-przeglądarkowy (np. Claude Desktop).
+        # No header = a non-browser client (e.g. Claude Desktop).
         (None, (), True),
-        (None, ("https://a.pl",), True),
-        # Bez konfiguracji nie wpuszczamy żadnego originu przeglądarkowego —
-        # ochrona przed DNS rebinding wymagana przez specyfikację MCP.
-        ("https://zly.pl", (), False),
-        ("https://a.pl", ("https://a.pl",), True),
-        ("https://zly.pl", ("https://a.pl",), False),
+        (None, ("https://a.example",), True),
+        # Without configuration we allow no browser origin at all —
+        # protection against DNS rebinding required by the MCP spec.
+        ("https://evil.example", (), False),
+        ("https://a.example", ("https://a.example",), True),
+        ("https://evil.example", ("https://a.example",), False),
     ],
 )
-def test_sprawdz_origin(origin, dozwolone, wynik):
-    assert sprawdz_origin(origin, dozwolone) is wynik
+def test_check_origin(origin, allowed, result):
+    assert check_origin(origin, allowed) is result
 
 
-def test_http_nigdy_nie_uzywa_poswiadczen_serwera():
-    """Najważniejszy test bezpieczeństwa w całym projekcie.
+def test_http_never_uses_server_credentials():
+    """The most important security test in the whole project.
 
-    Gdyby tryb http schodził do OJS_API_TOKEN, hostowany serwer stałby się
-    kontem serwisowym dostępnym dla każdego, kto zna URL. Od Rundy 2
-    `zbuduj_auth_http` samo nie podnosi już wyjątku (może być wywołane raz,
-    przy starcie procesu) — sprawdzenie tokenu przeniosło się do
-    `auth_flow`, wołanego przy KAŻDYM wychodzącym żądaniu do OJS.
+    If http mode fell back to OJS_API_TOKEN, a hosted server would
+    become a service account available to anyone who knows the URL.
+    Since Round 2, `build_auth_http` itself no longer raises (it can be
+    called once, at process start) — the token check moved to
+    `auth_flow`, called on EVERY outgoing request to OJS.
     """
     cfg = Config(
         base_url="https://x.edu",
         journal="r",
-        api_token="TOKEN-SERWERA",
+        api_token="SERVER-TOKEN",
         username="admin",
-        password="tajne",
+        password="secret",
         transport="http",
     )
-    auth = zbuduj_auth_http(cfg)
-    ustaw_token_zadania(None)
-    zadanie = httpx.Request("GET", "https://x.edu/")
-    with pytest.raises(BladUwierzytelnienia) as exc:
-        next(auth.auth_flow(zadanie))
+    auth = build_auth_http(cfg)
+    set_request_token(None)
+    request = httpx.Request("GET", "https://x.edu/")
+    with pytest.raises(AuthenticationError) as exc:
+        next(auth.auth_flow(request))
     assert exc.value.status == 401
-    assert "TOKEN-SERWERA" not in str(exc.value)
+    assert "SERVER-TOKEN" not in str(exc.value)
 
 
 # --- OriginMiddleware -------------------------------------------------
 
 
-async def test_origin_middleware_przepuszcza_brak_naglowka():
+async def test_origin_middleware_passes_a_missing_header():
     spy = _Spy()
-    aplikacja = OriginMiddleware(spy, dozwolone=())
-    odpowiedz = await _wyslij(aplikacja)
-    assert odpowiedz.status_code == 200
-    assert spy.wywolane
+    app = OriginMiddleware(spy, allowed=())
+    response = await _send(app)
+    assert response.status_code == 200
+    assert spy.called
 
 
-async def test_origin_middleware_przepuszcza_dozwolony_origin():
+async def test_origin_middleware_passes_an_allowed_origin():
     spy = _Spy()
-    aplikacja = OriginMiddleware(spy, dozwolone=("https://a.pl",))
-    odpowiedz = await _wyslij(aplikacja, headers={"Origin": "https://a.pl"})
-    assert odpowiedz.status_code == 200
-    assert spy.wywolane
+    app = OriginMiddleware(spy, allowed=("https://a.example",))
+    response = await _send(app, headers={"Origin": "https://a.example"})
+    assert response.status_code == 200
+    assert spy.called
 
 
-async def test_origin_middleware_odrzuca_origin_spoza_listy():
+async def test_origin_middleware_rejects_an_origin_outside_the_list():
     spy = _Spy()
-    aplikacja = OriginMiddleware(spy, dozwolone=("https://a.pl",))
-    odpowiedz = await _wyslij(aplikacja, headers={"Origin": "https://zly.pl"})
-    assert odpowiedz.status_code == 403
-    assert not spy.wywolane
+    app = OriginMiddleware(spy, allowed=("https://a.example",))
+    response = await _send(app, headers={"Origin": "https://evil.example"})
+    assert response.status_code == 403
+    assert not spy.called
 
 
-async def test_origin_middleware_pusta_lista_odrzuca_kazdy_browserowy_origin():
+async def test_origin_middleware_empty_list_rejects_every_browser_origin():
     spy = _Spy()
-    aplikacja = OriginMiddleware(spy, dozwolone=())
-    odpowiedz = await _wyslij(aplikacja, headers={"Origin": "https://cokolwiek.pl"})
-    assert odpowiedz.status_code == 403
-    assert not spy.wywolane
+    app = OriginMiddleware(spy, allowed=())
+    response = await _send(app, headers={"Origin": "https://anything.example"})
+    assert response.status_code == 403
+    assert not spy.called
 
 
 # --- TokenMiddleware ----------------------------------------------------
 
 
-async def test_token_middleware_bez_tokenu_to_401_i_brak_wywolania():
+async def test_token_middleware_no_token_is_401_and_no_call():
     spy = _Spy()
-    aplikacja = TokenMiddleware(spy)
-    ustaw_token_zadania(None)
-    odpowiedz = await _wyslij(aplikacja)
-    assert odpowiedz.status_code == 401
-    assert not spy.wywolane
-    # Kontekst musi zostać nietknięty — nic nie miało prawa go ustawić.
-    assert token_zadania() is None
+    app = TokenMiddleware(spy)
+    set_request_token(None)
+    response = await _send(app)
+    assert response.status_code == 401
+    assert not spy.called
+    # The context must be left untouched — nothing had the right to set it.
+    assert request_token() is None
 
 
-async def test_token_middleware_przenosi_token_i_czysci_po_sobie():
+async def test_token_middleware_carries_the_token_and_cleans_up_after_itself():
     spy = _Spy()
-    aplikacja = TokenMiddleware(spy)
-    ustaw_token_zadania(None)
-    odpowiedz = await _wyslij(
-        aplikacja, headers={"Authorization": "Bearer tok-z-zadania"}
-    )
-    assert odpowiedz.status_code == 200
-    assert spy.wywolane
-    # W środku obsługi token był widoczny w kontekście.
-    assert spy.token_w_srodku == "tok-z-zadania"
-    # Po zakończeniu obsługi kontekst jest wyczyszczony — nie wycieka do
-    # kolejnego żądania obsługiwanego w tym samym kontekście.
-    assert token_zadania() is None
+    app = TokenMiddleware(spy)
+    set_request_token(None)
+    response = await _send(app, headers={"Authorization": "Bearer token-from-request"})
+    assert response.status_code == 200
+    assert spy.called
+    # The token was visible in context while handling the request.
+    assert spy.token_inside == "token-from-request"
+    # After handling, the context is cleared — it does not leak into the
+    # next request served in the same context.
+    assert request_token() is None
 
 
-# --- Kolejność warstw: Origin przed Token --------------------------------
+# --- Layer order: Origin before Token --------------------------------
 
 
-async def test_odrzucenie_po_origin_nastepuje_bez_siegania_po_token():
-    """Odrzucenie po ``Origin`` ma zapadać ZANIM ktokolwiek dotknie tokenu.
+async def test_rejection_by_origin_happens_without_touching_the_token():
+    """Rejection by ``Origin`` must happen BEFORE anyone touches the
+    token.
 
-    Regresja W4 (recenzja): wersja tego testu, która sama składała stos
-    (``OriginMiddleware(TokenMiddleware(spy), ...)``), sprawdzała dokładnie
-    to, co sama zbudowała — odwrócenie kolejności w PRAWDZIWYM `_zloz_stos`
-    nie wywalało jej. Wersja pełnostosowa z nagłówkiem `Authorization`
-    (``test_pelny_stos_origin_spoza_listy_dostaje_403`` niżej) też by nie
-    złapała odwrócenia: token o dowolnej wartości jest w `TokenMiddleware`
-    tylko OBECNY, nigdy nie jest weryfikowany wobec OJS, więc żądanie
-    przeszłoby przez warstwę tokenu niezależnie od kolejności i i tak
-    dostałoby 403 na Origin. Jedyny sposób złapać odwrócenie: żądanie z
-    niedozwolonym ``Origin`` I BEZ ``Authorization`` — poprawna kolejność
-    (Origin pierwszy) daje 403, odwrócona dałaby 401 (Token pierwszy).
-    Budujemy więc PRAWDZIWY stos przez ``zbuduj_aplikacje``, nie atrapę.
+    Regression W4 (review): a version of this test that built its own
+    stack (``OriginMiddleware(TokenMiddleware(spy), ...)``) checked
+    exactly what it had built itself — reversing the order in the REAL
+    `_build_stack` did not fail it. The full-stack version with an
+    `Authorization` header (`test_full_stack_origin_outside_the_list_gets_403`
+    below) would not catch the reversal either: a token of any value is
+    only PRESENT to `TokenMiddleware`, never verified against OJS, so the
+    request would pass through the token layer regardless of order and
+    would still get a 403 for Origin either way. The only way to catch a
+    reversal: a request with a disallowed ``Origin`` AND NO
+    ``Authorization`` — the correct order (Origin first) gives 403, a
+    reversed one would give 401 (Token first). So we build the REAL
+    stack via ``build_app``, not a stub.
     """
     cfg = Config(
         base_url="https://x.edu",
         journal="r",
         transport="http",
-        allowed_origins=("https://redakcja.example",),
+        allowed_origins=("https://editorial.example",),
     )
-    ustaw_token_zadania(None)
-    aplikacja = zbuduj_aplikacje(cfg)
+    set_request_token(None)
+    app = build_app(cfg)
 
-    odpowiedz = await _wyslij(aplikacja, headers={"Origin": "https://zly.pl"})
+    response = await _send(app, headers={"Origin": "https://evil.example"})
 
-    # 403 (Origin), NIE 401 (Token) — czyli Origin zadziałał pierwszy.
-    assert odpowiedz.status_code == 403
-    # Kontekst pozostał pusty — TokenMiddleware nigdy nie zdążył go ustawić.
-    assert token_zadania() is None
-
-
-# --- Pełny stos: brak tokenu w żądaniu -> 401, zero wycieku poświadczeń --
+    # 403 (Origin), NOT 401 (Token) — i.e. Origin acted first.
+    assert response.status_code == 403
+    # The context stayed empty — TokenMiddleware never got a chance to set it.
+    assert request_token() is None
 
 
-async def test_pelny_stos_http_bez_tokenu_konczy_sie_401_bez_wycieku_konfiguracji():
-    """To jest dokładnie scenariusz z brief-u: instancja skonfigurowana (przez
-    pomyłkę albo świadomie) z poświadczeniami serwera w trybie http, klient
-    nie przysyła własnego tokenu — odpowiedź MUSI być 401, a jej treść nie
-    może zdradzić żadnej wartości poświadczenia z konfiguracji serwera.
+# --- Full stack: no token in the request -> 401, zero credential leak --
+
+
+async def test_full_stack_http_no_token_ends_in_401_without_leaking_config():
+    """This is exactly the scenario from the brief: an instance
+    configured (by mistake or deliberately) with server credentials in
+    http mode, the client sends no token of its own — the response MUST
+    be 401, and its content must not reveal any credential value from
+    the server configuration.
     """
     cfg = Config(
         base_url="https://x.edu",
         journal="r",
-        api_token="TOKEN-SERWERA-SEKRET",
-        username="administrator-instancji",
-        password="haslo-administratora",
+        api_token="SERVER-TOKEN-SECRET",
+        username="instance-administrator",
+        password="administrator-password",
         transport="http",
     )
-    ustaw_token_zadania(None)
-    aplikacja = zbuduj_aplikacje(cfg)
-    odpowiedz = await _wyslij(aplikacja)  # brak Origin i brak Authorization
+    set_request_token(None)
+    app = build_app(cfg)
+    response = await _send(app)  # no Origin and no Authorization
 
-    assert odpowiedz.status_code == 401
-    tresc = odpowiedz.text
-    assert "TOKEN-SERWERA-SEKRET" not in tresc
-    assert "administrator-instancji" not in tresc
-    assert "haslo-administratora" not in tresc
-    # Kontekst pozostaje czysty po odrzuconym żądaniu.
-    assert token_zadania() is None
-
-
-# --- Ostrzeżenie przy starcie ---------------------------------------------
+    assert response.status_code == 401
+    content = response.text
+    assert "SERVER-TOKEN-SECRET" not in content
+    assert "instance-administrator" not in content
+    assert "administrator-password" not in content
+    # The context stays clean after a rejected request.
+    assert request_token() is None
 
 
-def test_ostrzega_gdy_poswiadczenia_ustawione_mimo_http(caplog):
+# --- Startup warning ---------------------------------------------
+
+
+def test_warns_when_credentials_are_set_despite_http(caplog):
     caplog.set_level(logging.WARNING)
     cfg = Config(
         base_url="https://x.edu",
@@ -328,499 +331,498 @@ def test_ostrzega_gdy_poswiadczenia_ustawione_mimo_http(caplog):
         api_token="t",
         transport="http",
     )
-    _ostrzez_o_ignorowanych_poswiadczeniach(cfg)
+    _warn_ignored_credentials(cfg)
     assert "OJS_API_TOKEN" in caplog.text
-    assert "IGNOROWANE" in caplog.text
+    assert "IGNORED" in caplog.text
 
 
-def test_brak_ostrzezenia_gdy_brak_poswiadczen(caplog):
+def test_no_warning_when_there_are_no_credentials(caplog):
     caplog.set_level(logging.WARNING)
     cfg = Config(base_url="https://x.edu", journal="r", transport="http")
-    _ostrzez_o_ignorowanych_poswiadczeniach(cfg)
-    assert "IGNOROWANE" not in caplog.text
+    _warn_ignored_credentials(cfg)
+    assert "IGNORED" not in caplog.text
 
 
-# --- W1 (recenzja): OJS_MCP_ALLOWED_ORIGINS przez PEŁNY stos, nie atrapę --
+# --- W1 (review): OJS_MCP_ALLOWED_ORIGINS through the FULL stack, not a stub -
 
 
-async def test_pelny_stos_origin_z_listy_przechodzi_przez_warstwe_sdk():
-    """Regresja W1 z recenzji: bez wyłączenia własnej ochrony DNS-rebinding
-    SDK (`enable_dns_rebinding_protection`), origin z NASZEJ listy i tak
-    dostawał 403 dwie warstwy niżej — SDK domyślnie włącza ją samo dla hosta
-    127.0.0.1/localhost/::1, z zaszytą na sztywno WŁASNĄ listą originów,
-    niezależną od `OJS_MCP_ALLOWED_ORIGINS`. Test na atrapie (`_Spy`) tego
-    nie łapie, bo atrapa nigdy nie dochodzi do `mcp.streamable_http_app()`.
+async def test_full_stack_origin_from_the_list_passes_through_the_sdk_layer():
+    """Regression W1 from the review: without disabling the SDK's own
+    DNS-rebinding protection (`enable_dns_rebinding_protection`), an
+    origin from OUR list still got a 403 two layers below — the SDK
+    enables it by default for a host of 127.0.0.1/localhost/::1, with its
+    OWN hardcoded list of origins, independent of
+    `OJS_MCP_ALLOWED_ORIGINS`. A test on the stub (`_Spy`) does not catch
+    this, because the stub never reaches
+    `mcp.streamable_http_app()`.
     """
     cfg = Config(
         base_url="https://x.edu",
         journal="r",
         transport="http",
-        allowed_origins=("https://redakcja.example",),
+        allowed_origins=("https://editorial.example",),
     )
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    app = build_app(cfg)
+    set_request_token(None)
 
-    async with _uruchom_lifespan(aplikacja):
-        odpowiedz = await _wyslij_post(
-            aplikacja,
-            json=_cialo_initialize(),
+    async with _run_lifespan(app):
+        response = await _send_post(
+            app,
+            json=_initialize_body(),
             headers={
-                "Origin": "https://redakcja.example",
-                "Authorization": "Bearer dowolny-token-klienta",
+                "Origin": "https://editorial.example",
+                "Authorization": "Bearer any-client-token",
                 "Accept": "application/json, text/event-stream",
             },
         )
 
-    assert odpowiedz.status_code == 200, odpowiedz.text
-    assert "result" in odpowiedz.json()
+    assert response.status_code == 200, response.text
+    assert "result" in response.json()
 
 
-async def test_pelny_stos_origin_spoza_listy_dostaje_403():
+async def test_full_stack_origin_outside_the_list_gets_403():
     cfg = Config(
         base_url="https://x.edu",
         journal="r",
         transport="http",
-        allowed_origins=("https://redakcja.example",),
+        allowed_origins=("https://editorial.example",),
     )
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    app = build_app(cfg)
+    set_request_token(None)
 
-    odpowiedz = await _wyslij_post(
-        aplikacja,
-        json=_cialo_initialize(),
+    response = await _send_post(
+        app,
+        json=_initialize_body(),
         headers={
-            "Origin": "https://zly.example",
-            "Authorization": "Bearer dowolny-token-klienta",
+            "Origin": "https://evil.example",
+            "Authorization": "Bearer any-client-token",
             "Accept": "application/json, text/event-stream",
         },
     )
 
-    assert odpowiedz.status_code == 403
+    assert response.status_code == 403
 
 
-# --- W2 (recenzja): inwariant transportu na obu publicznych funkcjach ----
+# --- W2 (review): the transport invariant on both public functions ----
 
 
-def test_zbuduj_aplikacje_wymaga_trybu_http():
-    """Regresja W2: `zbuduj_aplikacje`/`uruchom_http` z transportem innym
-    niż http omijałyby jedyny strażnik reguły "serwer nie przechowuje
-    poświadczeń" — `zbuduj_serwer` sięgnąłby po poświadczenia z `Config`.
+def test_build_app_requires_http_transport():
+    """Regression W2: `build_app`/`run_http` with a transport other than
+    http would bypass the only guard for the "the server holds no
+    credentials" rule — `build_server` would reach for the credentials in
+    `Config`.
     """
     cfg = Config(
         base_url="https://x.edu",
         journal="r",
-        api_token="SEKRET-SERWERA",
+        api_token="SERVER-SECRET",
         transport="stdio",
     )
     with pytest.raises(ValueError, match="http"):
-        zbuduj_aplikacje(cfg)
+        build_app(cfg)
 
 
-def test_uruchom_http_wymaga_trybu_http():
+def test_run_http_requires_http_transport():
     cfg = Config(base_url="https://x.edu", journal="r", transport="stdio")
     with pytest.raises(ValueError, match="http"):
-        uruchom_http(cfg)
+        run_http(cfg)
 
 
-# --- W3 (recenzja): teza całego zadania — token dociera do OJS ----------
+# --- W3 (review): the thesis of the whole task — the token reaches OJS ----
 
 
 @respx.mock
-async def test_token_klienta_trafia_do_zadania_wychodzacego_do_ojs():
-    """To jest teza całego Tasku 12: token PRZEKAZANY przez klienta MCP
-    trafia do nagłówka `Authorization` żądania, które faktycznie leci do
-    OJS — nie tylko do zmiennej kontekstowej wewnątrz atrapy testowej.
+async def test_client_token_reaches_the_outgoing_request_to_ojs():
+    """This is the thesis of the whole Task 12: the token PASSED by the
+    MCP client reaches the `Authorization` header of the request that
+    actually goes out to OJS — not just a context variable inside the
+    test stub.
 
-    Od Rundy 2 serwer/klient są budowane RAZ (`zbuduj_aplikacje`), więc ten
-    test dowodzi czegoś silniejszego niż w Rundzie 1: że współdzielony,
-    długożyjący `OjsClient` mimo to niesie WŁAŚCIWY token per żądanie.
+    Since Round 2 the server/client are built ONCE (`build_app`), so this
+    test proves something stronger than in Round 1: that a shared,
+    long-lived `OjsClient` nonetheless carries the RIGHT token per
+    request.
     """
-    trasa = respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
+    route = respx.get("https://example.edu/index.php/annual/api/v1/submissions").mock(
         return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
     )
 
-    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    cfg = Config(base_url="https://example.edu", journal="annual", transport="http")
+    app = build_app(cfg)
+    set_request_token(None)
 
-    async with _uruchom_lifespan(aplikacja):
-        await _wywolaj_kim_jestem(aplikacja, "token-klienta-X")
+    async with _run_lifespan(app):
+        await _call_whoami(app, "client-token-X")
 
-    assert trasa.called
-    assert trasa.calls.last.request.headers["authorization"] == "Bearer token-klienta-X"
-    # Kontekst nie wycieka poza obsłużone już żądanie.
-    assert token_zadania() is None
+    assert route.called
+    assert route.calls.last.request.headers["authorization"] == "Bearer client-token-X"
+    # The context does not leak past the request already handled.
+    assert request_token() is None
 
 
 @respx.mock
-async def test_rownolegle_klienci_z_roznymi_tokenami_nie_mieszaja_ich():
-    """Dwóch użytkowników naraz, dwa różne tokeny — każdy z nich musi
-    dotrzeć do OJS ze SWOIM tokenem, nigdy z cudzym. JEDEN, współdzielony
-    `OjsClient` (Runda 2) obsługuje wszystkich naraz."""
-    trasa = respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
+async def test_concurrent_clients_with_different_tokens_do_not_mix_them():
+    """Two users at once, two different tokens — each of them must reach
+    OJS with THEIR OWN token, never someone else's. ONE, shared
+    `OjsClient` (Round 2) serves all of them at once."""
+    route = respx.get("https://example.edu/index.php/annual/api/v1/submissions").mock(
         return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
     )
 
-    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    cfg = Config(base_url="https://example.edu", journal="annual", transport="http")
+    app = build_app(cfg)
+    set_request_token(None)
 
-    tokeny = [f"token-{i}" for i in range(5)]
-    async with _uruchom_lifespan(aplikacja):
-        await asyncio.gather(*[_wywolaj_kim_jestem(aplikacja, t) for t in tokeny])
+    tokens = [f"token-{i}" for i in range(5)]
+    async with _run_lifespan(app):
+        await asyncio.gather(*[_call_whoami(app, t) for t in tokens])
 
-    naglowki_wyslane = sorted(
-        wywolanie.request.headers["authorization"] for wywolanie in trasa.calls
-    )
-    naglowki_oczekiwane = sorted(f"Bearer {t}" for t in tokeny)
-    assert naglowki_wyslane == naglowki_oczekiwane
+    headers_sent = sorted(call.request.headers["authorization"] for call in route.calls)
+    headers_expected = sorted(f"Bearer {t}" for t in tokens)
+    assert headers_sent == headers_expected
 
 
-# --- Runda 2: serwer/klient budowane RAZ, nie per żądanie ---------------
+# --- Round 2: server/client built ONCE, not per request ---------------
 
 
-async def test_zbuduj_serwer_wolane_raz_a_nie_per_zadanie(monkeypatch):
-    """Rdzeń naprawy wydajnościowej: `zbuduj_aplikacje` woła `zbuduj_serwer`
-    RAZ, przy montażu aplikacji — kolejne żądania (nawet wielu różnych
-    użytkowników) używają TEGO SAMEGO serwera/klienta, a nie budują
-    nowego za każdym razem (jak w Rundzie 1)."""
-    licznik = 0
-    oryginalny_zbuduj_serwer = ht.zbuduj_serwer
+async def test_build_server_called_once_not_per_request(monkeypatch):
+    """The core of the performance fix: `build_app` calls `build_server`
+    ONCE, when assembling the application — subsequent requests (even
+    from many different users) use THE SAME server/client, instead of
+    building a new one every time (as in Round 1)."""
+    count = 0
+    original_build_server = ht.build_server
 
-    def _policz(config):
-        nonlocal licznik
-        licznik += 1
-        return oryginalny_zbuduj_serwer(config)
+    def _count(config):
+        nonlocal count
+        count += 1
+        return original_build_server(config)
 
-    monkeypatch.setattr(ht, "zbuduj_serwer", _policz)
+    monkeypatch.setattr(ht, "build_server", _count)
 
     with respx.mock:
-        respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
+        respx.get("https://example.edu/index.php/annual/api/v1/submissions").mock(
             return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
         )
 
-        cfg = Config(
-            base_url="https://przyklad.edu", journal="rocznik", transport="http"
-        )
-        aplikacja = zbuduj_aplikacje(cfg)
-        assert licznik == 1  # budowa aplikacji już zbudowała serwer
+        cfg = Config(base_url="https://example.edu", journal="annual", transport="http")
+        app = build_app(cfg)
+        assert count == 1  # building the app already built the server
 
-        ustaw_token_zadania(None)
-        async with _uruchom_lifespan(aplikacja):
+        set_request_token(None)
+        async with _run_lifespan(app):
             for i in range(5):
-                await _wywolaj_kim_jestem(aplikacja, f"token-{i}")
+                await _call_whoami(app, f"token-{i}")
 
-    # Pięciu kolejnych "użytkowników" — serwer wciąż zbudowany raz.
-    assert licznik == 1
+    # Five successive "users" — the server is still built only once.
+    assert count == 1
 
 
-class _FalszywyKlient:
+class _FakeClient:
     def __init__(self) -> None:
-        self.zamkniety = False
-        self.podniesc_bledem = False
+        self.closed = False
+        self.raise_on_close = False
 
     async def aclose(self) -> None:
-        self.zamkniety = True
-        if self.podniesc_bledem:
-            raise RuntimeError("awaryjne zamknięcie klienta")
+        self.closed = True
+        if self.raise_on_close:
+            raise RuntimeError("emergency client shutdown")
 
 
-async def _prosta_aplikacja(scope, receive, send) -> None:
+async def _plain_app(scope, receive, send) -> None:
     if scope["type"] == "lifespan":
         while True:
-            wiadomosc = await receive()
-            if wiadomosc["type"] == "lifespan.startup":
+            message = await receive()
+            if message["type"] == "lifespan.startup":
                 await send({"type": "lifespan.startup.complete"})
-            elif wiadomosc["type"] == "lifespan.shutdown":
+            elif message["type"] == "lifespan.shutdown":
                 await send({"type": "lifespan.shutdown.complete"})
                 return
 
 
-async def test_zamkniecie_klienta_na_lifespan_dopiero_po_shutdown(caplog):
-    """N4+N5 (recenzja Rundy 2): zamknięcie WSPÓLNEGO klienta OJS jest
-    wpięte w protokół ASGI lifespan tej samej aplikacji — nie wcześniej niż
-    `lifespan.shutdown.complete` (serwer wciąż mógłby obsługiwać żądania),
-    i to TA SAMA droga dla `uruchom_http` (uvicorn) i `zbuduj_aplikacje`
-    (testy) — patrz `_ZamkniecieKlientaNaLifespan`.
+async def test_client_closes_on_lifespan_only_after_shutdown(caplog):
+    """N4+N5 (Round 2 review): closing the SHARED OJS client is wired
+    into this same application's ASGI lifespan protocol — no earlier than
+    `lifespan.shutdown.complete` (the server could still be serving
+    requests), and it is the SAME path for `run_http` (uvicorn) and
+    `build_app` (tests) — see `_CloseClientOnLifespan`.
     """
-    klient = _FalszywyKlient()
-    aplikacja = ht._ZamkniecieKlientaNaLifespan(_prosta_aplikacja, klient)
+    client = _FakeClient()
+    app = ht._CloseClientOnLifespan(_plain_app, client)
 
-    async with _uruchom_lifespan(aplikacja):
-        assert not klient.zamkniety  # NIE zamknięty w trakcie działania
+    async with _run_lifespan(app):
+        assert not client.closed  # NOT closed while running
 
-    assert klient.zamkniety  # zamknięty PO lifespan.shutdown.complete
+    assert client.closed  # closed AFTER lifespan.shutdown.complete
 
 
-async def test_zamkniecie_klienta_na_lifespan_nie_wywala_sie_na_bledzie(caplog):
-    """N4: błąd `client.aclose()` jest logowany, nie podnoszony — to
-    sprzątanie PO zakończeniu lifespan, więc nie ma już wyjątku serwera,
-    który mogłoby przykryć, ale i tak nie może się cicho zgubić."""
+async def test_client_close_on_lifespan_does_not_fail_on_an_error(caplog):
+    """N4: an error from `client.aclose()` is logged, not raised — this
+    is cleanup AFTER the lifespan has ended, so there is no server
+    exception left for it to mask, but it still must not be silently
+    lost."""
     caplog.set_level(logging.ERROR)
-    klient = _FalszywyKlient()
-    klient.podniesc_bledem = True
-    aplikacja = ht._ZamkniecieKlientaNaLifespan(_prosta_aplikacja, klient)
+    client = _FakeClient()
+    client.raise_on_close = True
+    app = ht._CloseClientOnLifespan(_plain_app, client)
 
-    async with _uruchom_lifespan(aplikacja):
-        pass  # nie podnosi wyjątku mimo błędu w `aclose()`
+    async with _run_lifespan(app):
+        pass  # does not raise despite the error in `aclose()`
 
-    assert klient.zamkniety
-    assert "Nie udało się zamknąć klienta" in caplog.text
+    assert client.closed
+    assert "Could not close the HTTP client" in caplog.text
 
 
-# --- Runda 3 (N2): katalog izolowany między użytkownikami, bez zatrucia -
+# --- Round 3 (N2): catalog isolated between users, no poisoning -------
 
 
 @respx.mock
-async def test_katalog_izolowany_miedzy_uzytkownikami_nie_wspoldzielony():
-    """N2 (recenzja Rundy 2, WAŻNA — blokująca): `Katalog` jest teraz
-    obiektem WSPÓLNYM dla całego procesu (jak `OjsClient`), ale jego cache
-    NIE MOŻE przeciekać między użytkownikami — inaczej pierwszy z nich
-    (nawet awaryjny fallback bez uprawnień, patrz test niżej) narzucałby
-    swój katalog wszystkim kolejnym aż do restartu procesu. Klient PODAJE
-    `czasopismo` (scenariusz docelowy trybu http — bez `OJS_JOURNAL` MUSI
-    je podawać), co zmusza `Katalog.rozwiaz()` do sięgnięcia po katalog —
-    KAŻDY użytkownik ma to zrobić WŁASNYM tokenem, osobno.
+async def test_catalog_isolated_between_users_not_shared():
+    """N2 (Round 2 review, IMPORTANT — blocking): `Catalog` is now an
+    object SHARED by the whole process (like `OjsClient`), but its cache
+    MUST NOT leak between users — otherwise the first one (even the
+    emergency fallback without permissions, see the test below) would
+    impose their catalog on every subsequent one until the process
+    restarts. The client SUPPLIES `journal` (the target scenario for
+    http mode — without `OJS_JOURNAL` it MUST supply it), which forces
+    `Catalog.resolve()` to reach for the catalog — EVERY user is meant to
+    do this with THEIR OWN token, separately.
     """
-    trasa_katalog = respx.get(
-        "https://przyklad.edu/index.php/rocznik/api/v1/contexts"
+    catalog_route = respx.get(
+        "https://example.edu/index.php/annual/api/v1/contexts"
     ).mock(
         return_value=httpx.Response(
             200,
             json={
-                "items": [{"urlPath": "rocznik", "name": {"en_US": "Rocznik"}}],
+                "items": [{"urlPath": "annual", "name": {"en_US": "Annual"}}],
                 "itemsMax": 1,
             },
         )
     )
-    trasa_submissions = respx.get(
-        "https://przyklad.edu/index.php/rocznik/api/v1/submissions"
+    submissions_route = respx.get(
+        "https://example.edu/index.php/annual/api/v1/submissions"
     ).mock(return_value=httpx.Response(200, json={"items": [], "itemsMax": 0}))
 
-    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    cfg = Config(base_url="https://example.edu", journal="annual", transport="http")
+    app = build_app(cfg)
+    set_request_token(None)
 
-    async with _uruchom_lifespan(aplikacja):
-        await _wywolaj_kim_jestem(aplikacja, "token-uzytkownik-1", czasopismo="rocznik")
-        await _wywolaj_kim_jestem(aplikacja, "token-uzytkownik-2", czasopismo="rocznik")
+    async with _run_lifespan(app):
+        await _call_whoami(app, "token-user-1", journal="annual")
+        await _call_whoami(app, "token-user-2", journal="annual")
 
-    # KAŻDY użytkownik pobrał katalog OSOBNO, własnym tokenem — zero
-    # współdzielenia cache'u między nimi.
-    assert trasa_katalog.call_count == 2
+    # EVERY user fetched the catalog SEPARATELY, with their own token —
+    # zero cache sharing between them.
+    assert catalog_route.call_count == 2
     assert (
-        trasa_katalog.calls[0].request.headers["authorization"]
-        == "Bearer token-uzytkownik-1"
+        catalog_route.calls[0].request.headers["authorization"] == "Bearer token-user-1"
     )
     assert (
-        trasa_katalog.calls[1].request.headers["authorization"]
-        == "Bearer token-uzytkownik-2"
+        catalog_route.calls[1].request.headers["authorization"] == "Bearer token-user-2"
     )
-    assert trasa_submissions.call_count == 2
+    assert submissions_route.call_count == 2
 
 
 @respx.mock
-async def test_brak_zatrucia_katalogu_nieuprzywilejowany_potem_administrator():
-    """Punkt 8 weryfikacji obowiązkowej (Runda 3): użytkownik BEZ uprawnień
-    do listy czasopism łączy się PIERWSZY (dostaje awaryjny, jednoelementowy
-    katalog — patrz `Katalog.czasopisma()`), potem administrator —
-    administrator MA WIDZIEĆ PEŁNY katalog i móc pracować z DOWOLNYM
-    czasopismem, mimo że proces (i `Katalog`) jest ten sam, współdzielony.
+async def test_no_catalog_poisoning_unprivileged_then_administrator():
+    """Mandatory verification point 8 (Round 3): a user WITHOUT permission
+    to list journals connects FIRST (gets the emergency, single-entry
+    catalog — see `Catalog.journals()`), then an administrator — the
+    administrator MUST see the FULL catalog and be able to work with ANY
+    journal, even though the process (and `Catalog`) is the same, shared
+    one.
     """
-    respx.get("https://przyklad.edu/index.php/rocznik/api/v1/contexts").mock(
+    respx.get("https://example.edu/index.php/annual/api/v1/contexts").mock(
         side_effect=[
-            # Nieuprzywilejowany: 500 (HasRoles bez nullsafe — patrz
-            # `Katalog.czasopisma()`/`test_500_daje_katalog_jednoelementowy_z_journal`).
+            # Unprivileged: 500 (HasRoles without a nullsafe operator —
+            # see `Catalog.journals()`/
+            # `test_500_gives_a_single_entry_catalog_from_journal`).
             httpx.Response(500, json={"error": "Server error"}),
-            # Administrator: pełny katalog, DWA czasopisma.
+            # Administrator: a full catalog, TWO journals.
             httpx.Response(
                 200,
                 json={
                     "items": [
-                        {"urlPath": "rocznik", "name": {"en_US": "Rocznik"}},
-                        {"urlPath": "kwartalnik", "name": {"en_US": "Kwartalnik"}},
+                        {"urlPath": "annual", "name": {"en_US": "Annual"}},
+                        {"urlPath": "quarterly", "name": {"en_US": "Quarterly"}},
                     ],
                     "itemsMax": 2,
                 },
             ),
         ]
     )
-    respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
+    respx.get("https://example.edu/index.php/annual/api/v1/submissions").mock(
         return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
     )
-    respx.get("https://przyklad.edu/index.php/kwartalnik/api/v1/submissions").mock(
+    respx.get("https://example.edu/index.php/quarterly/api/v1/submissions").mock(
         return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
     )
 
-    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    cfg = Config(base_url="https://example.edu", journal="annual", transport="http")
+    app = build_app(cfg)
+    set_request_token(None)
 
-    async with _uruchom_lifespan(aplikacja):
-        # 1) Nieuprzywilejowany użytkownik — dostaje fallback do OJS_JOURNAL.
-        wynik_nieuprzywilejowany = await _wywolaj_kim_jestem(
-            aplikacja, "token-bez-uprawnien", czasopismo="rocznik"
+    async with _run_lifespan(app):
+        # 1) Unprivileged user — gets the OJS_JOURNAL fallback.
+        unprivileged_result = await _call_whoami(
+            app, "token-without-permissions", journal="annual"
         )
-        assert not wynik_nieuprzywilejowany.is_error
+        assert not unprivileged_result.is_error
 
-        # 2) Administrator, INNE czasopismo niż OJS_JOURNAL — musiałby
-        # dostać błąd "nie ma takiego czasopisma", gdyby odziedziczył
-        # jednoelementowy fallback nieuprzywilejowanego użytkownika.
-        wynik_administratora = await _wywolaj_kim_jestem(
-            aplikacja, "token-administrator", czasopismo="kwartalnik"
+        # 2) Administrator, a journal DIFFERENT from OJS_JOURNAL — would
+        # have to get a "no such journal" error if it inherited the
+        # unprivileged user's single-entry fallback.
+        administrator_result = await _call_whoami(
+            app, "token-administrator", journal="quarterly"
         )
 
-    assert not wynik_administratora.is_error, wynik_administratora
+    assert not administrator_result.is_error, administrator_result
 
 
-# --- Runda 2: weryfikacja obowiązkowa (raport koordynatora) -------------
+# --- Round 2: mandatory verification (coordinator's report) -------------
 
 
 @respx.mock
-async def test_izolacja_tokenow_pod_wymuszonym_przeplotem_30_rownoleglych():
-    """Weryfikacja obowiązkowa #1: co najmniej 20 równoległych żądań z
-    różnymi tokenami, z WYMUSZONYM przeplotem (opóźnienie po stronie
-    atrapy OJS) — każde żądanie wychodzące ma nieść WŁASNY token, nigdy
-    cudzy. Bez prawdziwego ``await`` wewnątrz atrapy respx potrafi
-    rozwiązać zamockowaną odpowiedź całkowicie synchronicznie, więc zadania
-    nie przeplatałyby się naprawdę — stąd `anyio.sleep` w ``side_effect``
-    (ta sama pułapka metodologiczna, co w raporcie Task 11).
+async def test_token_isolation_under_30_forced_concurrent_interleaving():
+    """Mandatory verification #1: at least 20 concurrent requests with
+    different tokens, with FORCED interleaving (a delay on the OJS stub
+    side) — every outgoing request must carry ITS OWN token, never
+    someone else's. Without a real ``await`` inside the respx stub, it
+    can resolve a mocked response completely synchronously, so tasks
+    would not actually interleave — hence ``anyio.sleep`` in
+    ``side_effect`` (the same methodological pitfall as in the Task 11
+    report).
     """
 
-    async def _powolna_odpowiedz(request):
+    async def _slow_response(request):
         await anyio.sleep(0.005)
         return httpx.Response(200, json={"items": [], "itemsMax": 0})
 
-    trasa = respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
-        side_effect=_powolna_odpowiedz
+    route = respx.get("https://example.edu/index.php/annual/api/v1/submissions").mock(
+        side_effect=_slow_response
     )
 
-    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    cfg = Config(base_url="https://example.edu", journal="annual", transport="http")
+    app = build_app(cfg)
+    set_request_token(None)
 
     n = 30
-    tokeny = [f"token-{i}" for i in range(n)]
-    async with _uruchom_lifespan(aplikacja):
-        wyniki = await asyncio.gather(
-            *[_wywolaj_kim_jestem(aplikacja, t) for t in tokeny]
-        )
+    tokens = [f"token-{i}" for i in range(n)]
+    async with _run_lifespan(app):
+        results = await asyncio.gather(*[_call_whoami(app, t) for t in tokens])
 
-    assert all(not w.is_error for w in wyniki)
-    assert trasa.call_count == n
-    naglowki_wyslane = sorted(
-        wywolanie.request.headers["authorization"] for wywolanie in trasa.calls
-    )
-    naglowki_oczekiwane = sorted(f"Bearer {t}" for t in tokeny)
-    assert naglowki_wyslane == naglowki_oczekiwane
+    assert all(not r.is_error for r in results)
+    assert route.call_count == n
+    headers_sent = sorted(call.request.headers["authorization"] for call in route.calls)
+    headers_expected = sorted(f"Bearer {t}" for t in tokens)
+    assert headers_sent == headers_expected
 
 
 @respx.mock
-async def test_sekwencja_a_401_b_na_jednym_polaczeniu_bez_odwrotu_do_a():
-    """Weryfikacja obowiązkowa #3: na JEDNYM, współdzielonym
-    `httpx.AsyncClient` (ta sama pula połączeń) — token A → 200 (OJS widzi
-    A), brak tokenu → 401 surowe (BEZ odwrotu do A, zero dodatkowego
-    żądania do OJS), token B → 200 (OJS widzi B, nie A).
+async def test_sequence_a_401_b_on_one_connection_without_reverting_to_a():
+    """Mandatory verification #3: on ONE, shared `httpx.AsyncClient` (the
+    same connection pool) — token A -> 200 (OJS sees A), no token -> a
+    raw 401 (WITHOUT reverting to A, zero extra requests to OJS), token B
+    -> 200 (OJS sees B, not A).
     """
-    trasa = respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
+    route = respx.get("https://example.edu/index.php/annual/api/v1/submissions").mock(
         return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
     )
 
-    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    cfg = Config(base_url="https://example.edu", journal="annual", transport="http")
+    app = build_app(cfg)
+    set_request_token(None)
 
-    klient_http = httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=aplikacja), base_url="http://testserver"
+    http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
     )
     try:
-        async with _uruchom_lifespan(aplikacja):
-            # 1) token A -> 200, OJS widzi A.
-            klient_http.headers["Authorization"] = "Bearer token-A"
-            wynik_a = await _wywolaj_z_klientem(klient_http)
-            assert not wynik_a.is_error
-            assert trasa.calls.last.request.headers["authorization"] == "Bearer token-A"
-            wywolania_po_a = trasa.call_count
+        async with _run_lifespan(app):
+            # 1) token A -> 200, OJS sees A.
+            http_client.headers["Authorization"] = "Bearer token-A"
+            result_a = await _call_with_client(http_client)
+            assert not result_a.is_error
+            assert route.calls.last.request.headers["authorization"] == "Bearer token-A"
+            calls_after_a = route.call_count
 
-            # 2) brak tokenu, NA TYM SAMYM kliencie -> 401 surowe, zero
-            # nowego żądania do OJS (żadnego odwrotu do tokenu A).
-            del klient_http.headers["Authorization"]
-            odpowiedz_bez_tokenu = await klient_http.post(
+            # 2) no token, on the SAME client -> a raw 401, zero new
+            # requests to OJS (no reverting to token A).
+            del http_client.headers["Authorization"]
+            response_without_token = await http_client.post(
                 "/mcp",
-                json=_cialo_initialize(),
+                json=_initialize_body(),
                 headers={"Accept": "application/json, text/event-stream"},
             )
-            assert odpowiedz_bez_tokenu.status_code == 401
-            assert trasa.call_count == wywolania_po_a  # bez zmian
+            assert response_without_token.status_code == 401
+            assert route.call_count == calls_after_a  # unchanged
 
-            # 3) token B -> 200, OJS widzi B, nie A.
-            klient_http.headers["Authorization"] = "Bearer token-B"
-            wynik_b = await _wywolaj_z_klientem(klient_http)
-            assert not wynik_b.is_error
-            assert trasa.calls.last.request.headers["authorization"] == "Bearer token-B"
+            # 3) token B -> 200, OJS sees B, not A.
+            http_client.headers["Authorization"] = "Bearer token-B"
+            result_b = await _call_with_client(http_client)
+            assert not result_b.is_error
+            assert route.calls.last.request.headers["authorization"] == "Bearer token-B"
     finally:
-        await klient_http.aclose()
+        await http_client.aclose()
 
-    assert trasa.call_count == wywolania_po_a + 1
-    assert trasa.calls[0].request.headers["authorization"] == "Bearer token-A"
-    assert trasa.calls[-1].request.headers["authorization"] == "Bearer token-B"
+    assert route.call_count == calls_after_a + 1
+    assert route.calls[0].request.headers["authorization"] == "Bearer token-A"
+    assert route.calls[-1].request.headers["authorization"] == "Bearer token-B"
 
 
-# --- Runda 3: weryfikacja obowiązkowa — punkt 7 (N1) ---------------------
+# --- Round 3: mandatory verification — point 7 (N1) ---------------------
 
 
 @respx.mock
-async def test_brak_przecieku_ciasteczek_pod_obciazeniem_50_uzytkownikow():
-    """Punkt 7 weryfikacji obowiązkowej (Runda 3, N1 — KRYTYCZNA): atrapa
-    OJS odsyła `Set-Cookie` z sesją; co najmniej 50 różnych użytkowników
-    (różne tokeny) — ŻADNE wychodzące żądanie nie może nieść cudzego (ani w
-    ogóle żadnego) ciasteczka sesji.
+async def test_no_cookie_leak_under_a_load_of_50_users():
+    """Mandatory verification point 7 (Round 3, N1 — CRITICAL): the OJS
+    stub sends back a `Set-Cookie` with a session; at least 50 different
+    users (different tokens) — NO outgoing request may carry someone
+    else's (or indeed any) session cookie.
 
-    Runda 4 (recenzja Rundy 3): ROZGRZEWKA SEKWENCYJNA jest tu KLUCZOWA, nie
-    kosmetyczna. Odpalenie wszystkich 50 „zimnych” użytkowników JEDNYM
-    `asyncio.gather` (jak w pierwszej wersji tego testu) NIE ŁAPIE regresji
-    — każde z 50 żądań buduje swoje nagłówki (czyta jeszcze PUSTY magazyn
-    ciasteczek) zanim JAKAKOLWIEK odpowiedź zdąży go wypełnić, więc test
-    przechodził na zielono NAWET z cofniętą poprawką N1 (zweryfikowane
-    empirycznie: 50 zimnych żądań naraz → 0/50 przecieku mimo cofniętej
-    poprawki; 1 rozgrzewka + 49 równoległych → 49/50 przecieku bez
-    poprawki — patrz raport Task 12, Runda 4). Dlatego najpierw JEDNO
-    żądanie w pełni sekwencyjne (dostaje i przetwarza `Set-Cookie`), DOPIERO
-    POTEM fala równoległa — odtwarza realny scenariusz, w którym ktoś już
-    ma ciasteczko w (współdzielonym, źle zaimplementowanym) magazynie,
-    zanim kolejni użytkownicy zaczną wysyłać swoje żądania.
+    Round 4 (Round 3 review): the SEQUENTIAL WARM-UP is KEY here, not
+    cosmetic. Firing all 50 "cold" users with ONE `asyncio.gather` (as in
+    the first version of this test) does NOT catch the regression — each
+    of the 50 requests builds its headers (still reading the EMPTY cookie
+    store) before ANY response has a chance to fill it, so the test
+    passed green EVEN with the N1 fix reverted (verified empirically: 50
+    cold requests at once -> 0/50 leaks despite the reverted fix; 1
+    warm-up + 49 concurrent -> 49/50 leaks without the fix — see the Task
+    12 report, Round 4). Hence first ONE fully sequential request (it
+    receives and processes the `Set-Cookie`), ONLY THEN the concurrent
+    wave — this reproduces the real scenario where someone already has a
+    cookie in the (shared, poorly implemented) store before other users
+    start sending their requests.
     """
 
-    async def _z_ciasteczkiem_sesji(request: httpx.Request) -> httpx.Response:
+    async def _with_session_cookie(request: httpx.Request) -> httpx.Response:
         await anyio.sleep(0.005)
-        naglowek_auth = request.headers.get("authorization", "?")
+        auth_header = request.headers.get("authorization", "?")
         return httpx.Response(
             200,
             json={"items": [], "itemsMax": 0},
-            headers={"Set-Cookie": f"OJSSID=sesja-dla-{naglowek_auth}"},
+            headers={"Set-Cookie": f"OJSSID=session-for-{auth_header}"},
         )
 
-    trasa = respx.get("https://przyklad.edu/index.php/rocznik/api/v1/submissions").mock(
-        side_effect=_z_ciasteczkiem_sesji
+    route = respx.get("https://example.edu/index.php/annual/api/v1/submissions").mock(
+        side_effect=_with_session_cookie
     )
 
-    cfg = Config(base_url="https://przyklad.edu", journal="rocznik", transport="http")
-    aplikacja = zbuduj_aplikacje(cfg)
-    ustaw_token_zadania(None)
+    cfg = Config(base_url="https://example.edu", journal="annual", transport="http")
+    app = build_app(cfg)
+    set_request_token(None)
 
     n = 50
-    tokeny = [f"token-{i}" for i in range(n)]
-    async with _uruchom_lifespan(aplikacja):
-        # Rozgrzewka SEKWENCYJNA, w pełni zakończona (łącznie z odebraniem
-        # `Set-Cookie`) PRZED falą równoległą — patrz uzasadnienie wyżej.
-        wynik_rozgrzewki = await _wywolaj_kim_jestem(aplikacja, tokeny[0])
-        assert not wynik_rozgrzewki.is_error
+    tokens = [f"token-{i}" for i in range(n)]
+    async with _run_lifespan(app):
+        # SEQUENTIAL warm-up, fully finished (including receiving the
+        # `Set-Cookie`) BEFORE the concurrent wave — see the reasoning
+        # above.
+        warmup_result = await _call_whoami(app, tokens[0])
+        assert not warmup_result.is_error
 
-        wyniki = await asyncio.gather(
-            *[_wywolaj_kim_jestem(aplikacja, t) for t in tokeny[1:]]
-        )
+        results = await asyncio.gather(*[_call_whoami(app, t) for t in tokens[1:]])
 
-    assert all(not w.is_error for w in wyniki)
-    assert trasa.call_count == n
-    for wywolanie in trasa.calls:
-        assert "cookie" not in {h.lower() for h in wywolanie.request.headers}
+    assert all(not r.is_error for r in results)
+    assert route.call_count == n
+    for call in route.calls:
+        assert "cookie" not in {h.lower() for h in call.request.headers}

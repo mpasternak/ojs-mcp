@@ -1,17 +1,18 @@
-"""Generator kompaktowego indeksu endpointów API OJS.
+"""Generator of the compact OJS API endpoint index.
 
-Uruchamiany ręcznie przy podbiciu wersji OJS:
+Run manually when bumping the OJS version:
 
     uv run python tools/build_index.py
 
-Pełny `swagger-source.json` ma 353 KB — za dużo, żeby wciskać go w całości
-do kontekstu modelu przy każdym wywołaniu furtki `ojs_zapytanie`. Indeks
-zawiera tylko to, czego model naprawdę potrzebuje, żeby trafnie jej użyć:
-ścieżkę, metody, jedno zdanie opisu i nazwy parametrów.
+The full `swagger-source.json` is 353 KB — too much to stuff whole into
+the model's context on every call to the `ojs_request` gateway. The
+index contains only what the model really needs to use it accurately:
+the path, methods, one description sentence, and parameter names.
 
-Uwaga: `definitions` w swaggerze to placeholdery (`"Submission": "submission"`),
-rozwijane dopiero przez `lib/pkp/tools/buildSwagger.php` ze `schemas/*.json`.
-Dlatego kształtów odpowiedzi stąd nie bierzemy.
+Note: `definitions` in the swagger file are placeholders
+(`"Submission": "submission"`), only expanded by
+`lib/pkp/tools/buildSwagger.php` from `schemas/*.json`. That is why
+response shapes are not taken from here.
 """
 
 from __future__ import annotations
@@ -21,59 +22,62 @@ import sys
 import urllib.request
 from pathlib import Path
 
-ZRODLO = "https://raw.githubusercontent.com/pkp/ojs/main/docs/dev/swagger-source.json"
-CEL = (
-    Path(__file__).parent.parent / "src" / "ojs_mcp" / "data" / "endpointy.compact.txt"
+SOURCE = "https://raw.githubusercontent.com/pkp/ojs/main/docs/dev/swagger-source.json"
+TARGET = (
+    Path(__file__).parent.parent / "src" / "ojs_mcp" / "data" / "endpoints.compact.txt"
 )
 
-NAGLOWEK = """\
-# Indeks endpointów REST API OJS (wygenerowany z swagger-source.json)
-# Format: METODY ścieżka | parametry | opis
-# Wszystkie ścieżki są względne wobec {base}/index.php/{czasopismo}/api/v1
-# Kolekcje zwracają {"items": [...], "itemsMax": N} i stronicują się
-# parametrami count (max 100) oraz offset.
+HEADER = """\
+# Index of OJS REST API endpoints (generated from swagger-source.json)
+# Format: METHODS path | params | description
+# All paths are relative to {base}/index.php/{journal}/api/v1
+# Collections return {"items": [...], "itemsMax": N} and paginate via the
+# count (max 100) and offset parameters.
 """
 
-# Maksymalna długość opisu w jednej linii indeksu — dłuższe są przycinane
-# z wielokropkiem (grupa E, recenzja: dawniej twardo, mid-word — dwa wpisy
-# na 141 kończyły się w połowie wyrazu).
-LIMIT_OPISU = 110
+# Maximum length of a description on a single index line — longer ones
+# are truncated with an ellipsis (group E, review: previously done
+# rigidly, mid-word — two entries out of 141 ended in the middle of a word).
+DESCRIPTION_LIMIT = 110
 
 
 def main() -> int:
-    """Pobierz spec z GitHub i wygeneruj indeks."""
-    with urllib.request.urlopen(ZRODLO, timeout=60) as odp:
-        spec = json.load(odp)
+    """Fetch the spec from GitHub and generate the index."""
+    with urllib.request.urlopen(SOURCE, timeout=60) as resp:
+        spec = json.load(resp)
 
-    linie: list[str] = [NAGLOWEK]
-    for sciezka in sorted(spec.get("paths", {})):
-        operacje = spec["paths"][sciezka]
-        metody = [
+    lines: list[str] = [HEADER]
+    for path in sorted(spec.get("paths", {})):
+        operations = spec["paths"][path]
+        methods = [
             m.upper()
-            for m in operacje
+            for m in operations
             if m in ("get", "post", "put", "delete", "patch")
         ]
-        if not metody:
+        if not methods:
             continue
-        pierwsza = operacje[metody[0].lower()]
-        opis = (pierwsza.get("summary") or pierwsza.get("description") or "").strip()
-        opis = " ".join(opis.split())
-        if len(opis) > LIMIT_OPISU:
-            opis = opis[: LIMIT_OPISU - 1].rstrip() + "…"
-        nazwy = []
-        for parametr in pierwsza.get("parameters", []):
-            nazwa = parametr.get("name")
-            if nazwa and parametr.get("in") == "query":
-                nazwy.append(nazwa)
-        czesc_param = ",".join(nazwy) if nazwy else "-"
-        linie.append(f"{'/'.join(metody)} {sciezka} | {czesc_param} | {opis}")
+        first = operations[methods[0].lower()]
+        description = (first.get("summary") or first.get("description") or "").strip()
+        description = " ".join(description.split())
+        if len(description) > DESCRIPTION_LIMIT:
+            description = description[: DESCRIPTION_LIMIT - 1].rstrip() + "…"
+        names = []
+        for parameter in first.get("parameters", []):
+            name = parameter.get("name")
+            if name and parameter.get("in") == "query":
+                names.append(name)
+        param_part = ",".join(names) if names else "-"
+        lines.append(f"{'/'.join(methods)} {path} | {param_part} | {description}")
 
-    CEL.parent.mkdir(parents=True, exist_ok=True)
-    CEL.write_text("\n".join(linie) + "\n", encoding="utf-8")
-    rozmiar = CEL.stat().st_size
-    print(f"Zapisano {CEL} ({rozmiar} B, {len(linie) - 1} endpointów)")
-    if rozmiar > 60_000:
-        print("UWAGA: indeks przekroczył 60 kB — przytnij opisy.", file=sys.stderr)
+    TARGET.parent.mkdir(parents=True, exist_ok=True)
+    TARGET.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    size = TARGET.stat().st_size
+    print(f"Wrote {TARGET} ({size} B, {len(lines) - 1} endpoints)")
+    if size > 60_000:
+        print(
+            "WARNING: the index exceeded 60 KB — trim the descriptions.",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

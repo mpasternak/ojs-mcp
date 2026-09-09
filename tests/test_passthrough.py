@@ -3,159 +3,157 @@ import pytest
 import respx
 
 from ojs_mcp.auth import TokenAuth
-from ojs_mcp.catalog import Katalog
+from ojs_mcp.catalog import Catalog
 from ojs_mcp.client import OjsClient
 from ojs_mcp.config import Config
-from ojs_mcp.passthrough import waliduj_sciezke, zapytanie_impl
+from ojs_mcp.passthrough import request_impl, validate_path
 
-BAZA = "https://x.edu/index.php/rocznik/api/v1"
+BASE = "https://x.edu/index.php/annual/api/v1"
 
 
-def _zestaw(allow_writes=False):
-    cfg = Config(base_url="https://x.edu", journal="rocznik", allow_writes=allow_writes)
-    klient = OjsClient(cfg, TokenAuth("tok"))
-    return cfg, klient, Katalog(klient, cfg)
+def _setup(allow_writes=False):
+    cfg = Config(base_url="https://x.edu", journal="annual", allow_writes=allow_writes)
+    client = OjsClient(cfg, TokenAuth("tok"))
+    return cfg, client, Catalog(client, cfg)
 
 
 @pytest.mark.parametrize(
-    "zla", ["../../etc", "https://zly.example/x", "//zly", "a/../../b"]
+    "bad", ["../../etc", "https://evil.example/x", "//evil", "a/../../b"]
 )
-def test_waliduj_sciezke_odrzuca_wyjscie_poza_api(zla):
+def test_validate_path_rejects_escaping_the_api(bad):
     with pytest.raises(ValueError):
-        waliduj_sciezke(zla)
+        validate_path(bad)
 
 
-def test_waliduj_sciezke_przyjmuje_zwykla():
-    assert waliduj_sciezke("/submissions/1") == "submissions/1"
-
-
-@respx.mock
-async def test_get_dziala_bez_flagi():
-    respx.get(f"{BAZA}/vocabs").mock(return_value=httpx.Response(200, json={"ok": 1}))
-    cfg, klient, katalog = _zestaw()
-    assert await zapytanie_impl(klient, katalog, cfg, "vocabs") == {"ok": 1}
-    await klient.aclose()
+def test_validate_path_accepts_a_plain_path():
+    assert validate_path("/submissions/1") == "submissions/1"
 
 
 @respx.mock
-async def test_zapis_bez_flagi_odrzucony():
-    cfg, klient, katalog = _zestaw(allow_writes=False)
+async def test_get_works_without_the_flag():
+    respx.get(f"{BASE}/vocabs").mock(return_value=httpx.Response(200, json={"ok": 1}))
+    cfg, client, catalog = _setup()
+    assert await request_impl(client, catalog, cfg, "vocabs") == {"ok": 1}
+    await client.aclose()
+
+
+@respx.mock
+async def test_write_without_the_flag_is_rejected():
+    cfg, client, catalog = _setup(allow_writes=False)
     with pytest.raises(PermissionError) as exc:
-        await zapytanie_impl(klient, katalog, cfg, "announcements", metoda="POST")
+        await request_impl(client, catalog, cfg, "announcements", method="POST")
     assert "OJS_ALLOW_WRITES" in str(exc.value)
-    await klient.aclose()
+    await client.aclose()
 
 
 @respx.mock
-async def test_zapis_z_flaga_przechodzi():
-    respx.post(f"{BAZA}/announcements").mock(
+async def test_write_with_the_flag_goes_through():
+    respx.post(f"{BASE}/announcements").mock(
         return_value=httpx.Response(200, json={"id": 5})
     )
-    cfg, klient, katalog = _zestaw(allow_writes=True)
-    wynik = await zapytanie_impl(
-        klient, katalog, cfg, "announcements", metoda="POST", cialo={"title": "x"}
+    cfg, client, catalog = _setup(allow_writes=True)
+    result = await request_impl(
+        client, catalog, cfg, "announcements", method="POST", body={"title": "x"}
     )
-    assert wynik == {"id": 5}
-    await klient.aclose()
+    assert result == {"id": 5}
+    await client.aclose()
 
 
 @respx.mock
-async def test_czasopismo_index_daje_poziom_witryny():
+async def test_journal_index_gives_the_site_level():
     respx.get("https://x.edu/index.php/index/api/v1/contexts").mock(
         return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
     )
-    cfg, klient, katalog = _zestaw()
-    await zapytanie_impl(klient, katalog, cfg, "contexts", czasopismo="index")
-    await klient.aclose()
+    cfg, client, catalog = _setup()
+    await request_impl(client, catalog, cfg, "contexts", journal="index")
+    await client.aclose()
 
 
 @respx.mock
-async def test_listy_w_parametrach_kodowane_przecinkiem():
-    trasa = respx.get(f"{BAZA}/submissions").mock(
+async def test_lists_in_params_are_comma_encoded():
+    route = respx.get(f"{BASE}/submissions").mock(
         return_value=httpx.Response(200, json={"items": [], "itemsMax": 0})
     )
-    cfg, klient, katalog = _zestaw()
-    await zapytanie_impl(
-        klient, katalog, cfg, "submissions", parametry={"status": [1, 3]}
-    )
-    assert trasa.calls.last.request.url.params["status"] == "1,3"
-    await klient.aclose()
+    cfg, client, catalog = _setup()
+    await request_impl(client, catalog, cfg, "submissions", params={"status": [1, 3]})
+    assert route.calls.last.request.url.params["status"] == "1,3"
+    await client.aclose()
 
 
-# Testy bezpieczeństwa — white-list walidacji
+# Security tests — path-validation allow-list
 
 
 @pytest.mark.parametrize(
-    "musi_odrzucic",
+    "must_reject",
     [
-        # Schematy
+        # Schemes
         "HTTPS://evil.com",
         "HtTpS://evil.com",
         "javascript://evil.com",
         "http://evil.com",
-        # Ścieżki sieciowe
+        # Network-style paths
         "//evil.com",
         "///evil.com",
-        "​//evil.com",  # ZERO WIDTH SPACE (U+200B) przed //
-        "﻿//evil.com",  # BOM (U+FEFF) przed //
-        # Wychodzenie w górę
+        "​//evil.com",  # ZERO WIDTH SPACE (U+200B) before //
+        "﻿//evil.com",  # BOM (U+FEFF) before //
+        # Going up a level
         "..",
         "../etc",
         "a/..",
         "a/../etc",
-        # Backslashe
+        # Backslashes
         "\\\\evil.com",
         "http:\\\\evil.com",
         "/\\evil.com",
-        # Procentowanie
+        # Percent-encoding
         "submissions/%2e%2e/1",
         "submissions/..%2f1",
-        # Znaki sterujące
+        # Control characters
         "submissions/\r1",
         "submissions/\n1",
         "submissions/\x001",
-        # Puste segmenty
+        # Empty segments
         "",
         "/",
         "submissions//files",
         "submissions/",
         "/submissions/",
-        # Spacja
+        # Whitespace
         " ",
     ],
 )
-def test_waliduj_sciezke_musi_odrzucic(musi_odrzucic):
-    """Testy bezpieczeństwa — wszystkie niebezpieczne wejścia muszą zostać odrzucone."""
+def test_validate_path_must_reject(must_reject):
+    """Security tests — every dangerous input must be rejected."""
     with pytest.raises(ValueError):
-        waliduj_sciezke(musi_odrzucic)
+        validate_path(must_reject)
 
 
 @pytest.mark.parametrize(
-    "musi_przepuscic",
+    "must_allow",
     [
-        # Zwykłe ścieżki
+        # Plain paths
         "submissions/1",
         "/submissions/1",
         "issues/current",
         "vocabs",
-        # Bardziej złożone
+        # More complex
         "stats/publications/timeline",
         "emailTemplates/SUBMISSION_ACK",
-        # Punkty wewnątrz segmentów (nie „..")
-        "plik..txt",
+        # Dots inside segments (not "..")
+        "file..txt",
         "..submissions",
         "submissions..",
         "sub..mission",
     ],
 )
-def test_waliduj_sciezke_musi_przepuscic(musi_przepuscic):
-    """Testy regresji — legalne ścieżki muszą przechodzić bez zmian."""
-    # Sprawdzenie, że nie rzuca ValueError.
-    wynik = waliduj_sciezke(musi_przepuscic)
-    # Wiodący / powinien być obcięty.
-    assert not wynik.startswith("/")
-    # Sama ścieżka powinna być niezmieniona (poza wiodącym /).
-    if musi_przepuscic.startswith("/"):
-        assert wynik == musi_przepuscic[1:]
+def test_validate_path_must_allow(must_allow):
+    """Regression tests — legal paths must pass through unchanged."""
+    # Check that it does not raise ValueError.
+    result = validate_path(must_allow)
+    # A leading / should be stripped.
+    assert not result.startswith("/")
+    # The path itself should be unchanged (apart from the leading /).
+    if must_allow.startswith("/"):
+        assert result == must_allow[1:]
     else:
-        assert wynik == musi_przepuscic
+        assert result == must_allow

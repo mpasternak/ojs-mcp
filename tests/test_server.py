@@ -6,302 +6,306 @@ import anyio
 import pytest
 import respx
 
-from ojs_mcp.auth import ustaw_token_zadania
-from ojs_mcp.bledy import BladUwierzytelnienia
+from ojs_mcp.auth import set_request_token
 from ojs_mcp.config import Config
-from ojs_mcp.mcp_errors import jest_opakowana
-from ojs_mcp.server import _uruchom_stdio_i_zamknij, main, zbuduj_serwer
-from ojs_mcp.slowniki import DECYZJE
-from ojs_mcp.tools_write import POLA_EDYTOWALNE
+from ojs_mcp.dictionaries import DECISIONS
+from ojs_mcp.exceptions import AuthenticationError
+from ojs_mcp.mcp_errors import is_wrapped
+from ojs_mcp.server import _run_stdio_and_close, build_server, main
+from ojs_mcp.tools_write import EDITABLE_FIELDS
 
-# Nazwy WSZYSTKICH pięciu narzędzi zapisu (Task 13) — używane w kilku
-# testach niżej, więc trzymane w jednym miejscu.
-NARZEDZIA_ZAPISU = {
-    "dodaj_decyzje_redakcyjna",
-    "edytuj_metadane_publikacji",
-    "opublikuj_publikacje",
-    "cofnij_publikacje",
-    "utworz_ogloszenie",
+# Names of ALL FIVE write tools (Task 13) — used in several tests below,
+# so kept in one place.
+WRITE_TOOLS = {
+    "add_editorial_decision",
+    "edit_publication_metadata",
+    "publish_publication",
+    "unpublish_publication",
+    "create_announcement",
 }
 
 
-async def _nazwy_narzedzi(mcp):
+async def _tool_names(mcp):
     return {n.name for n in await mcp.list_tools()}
 
 
-class _ProstyHandlerJson(BaseHTTPRequestHandler):
-    """Odpowiada 200 JSON na każde GET. HTTP/1.1 + Content-Length => keep-alive.
+class _SimpleJsonHandler(BaseHTTPRequestHandler):
+    """Answers every GET with 200 JSON. HTTP/1.1 + Content-Length => keep-alive.
 
-    Bez jawnego `Content-Length` httpcore nie wie, kiedy kończy się ciało
-    odpowiedzi, więc nigdy nie odda połączenia z powrotem do puli
-    keep-alive — a to właśnie ta pula jest źródłem błędu, który testujemy.
+    Without an explicit `Content-Length`, httpcore does not know when the
+    response body ends, so it never returns the connection to the
+    keep-alive pool — and that pool is exactly the source of the defect
+    these tests check for.
     """
 
     protocol_version = "HTTP/1.1"
 
-    def do_GET(self) -> None:  # nazwa metody narzucona przez BaseHTTPRequestHandler
-        cialo = b"{}"
+    def do_GET(self) -> None:  # method name imposed by BaseHTTPRequestHandler
+        body = b"{}"
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(cialo)))
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(cialo)
+        self.wfile.write(body)
 
     def log_message(self, *args: object) -> None:
-        # Ciszej w testach — domyślnie loguje każde żądanie na stderr.
+        # Quieter in tests — by default it logs every request to stderr.
         pass
 
 
 @pytest.fixture
-def serwer_http_keepalive():
-    """Prawdziwy serwer HTTP lokalny, żeby OjsClient otworzył realny socket.
+def keepalive_http_server():
+    """A real local HTTP server, so OjsClient opens a real socket.
 
-    `respx` tu nie wystarczy — podmienia transport httpx, więc nigdy nie
-    powstaje prawdziwe połączenie keep-alive powiązane z pętlą zdarzeń,
-    a to jest właśnie mechanizm usterki, którą te testy sprawdzają.
+    `respx` is not enough here — it swaps out httpx's transport, so a
+    real keep-alive connection tied to the event loop never comes into
+    being, and that is exactly the mechanism of the defect these tests
+    check for.
     """
-    serwer = ThreadingHTTPServer(("127.0.0.1", 0), _ProstyHandlerJson)
-    watek = threading.Thread(target=serwer.serve_forever, daemon=True)
-    watek.start()
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _SimpleJsonHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
     try:
-        yield f"http://127.0.0.1:{serwer.server_port}"
+        yield f"http://127.0.0.1:{server.server_port}"
     finally:
-        serwer.shutdown()
-        watek.join(timeout=5)
-        serwer.server_close()
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
 
 
-async def test_bez_allow_writes_brak_narzedzi_zapisu():
+async def test_without_allow_writes_no_write_tools():
     cfg = Config(
         base_url="https://x.edu", journal="r", api_token="t", allow_writes=False
     )
-    mcp, klient = zbuduj_serwer(cfg)
-    nazwy = await _nazwy_narzedzi(mcp)
-    assert "szukaj_zgloszen" in nazwy
-    # Kluczowa właściwość: model NIE WIDZI ŻADNEGO z pięciu narzędzi zapisu
-    # (D8, recenzja Rundy 1 Tasku 13: dawniej sprawdzano tylko 2 z 5).
-    assert not (nazwy & NARZEDZIA_ZAPISU), nazwy & NARZEDZIA_ZAPISU
-    await klient.aclose()
+    mcp, client = build_server(cfg)
+    names = await _tool_names(mcp)
+    assert "search_submissions" in names
+    # Key property: the model does NOT SEE ANY of the five write tools
+    # (D8, Round 1 review of Task 13: previously only 2 of 5 were checked).
+    assert not (names & WRITE_TOOLS), names & WRITE_TOOLS
+    await client.aclose()
 
 
-async def test_z_allow_writes_narzedzia_zapisu_sa(caplog):
+async def test_with_allow_writes_the_write_tools_are_there(caplog):
     caplog.set_level(logging.WARNING)
     cfg = Config(
         base_url="https://x.edu", journal="r", api_token="t", allow_writes=True
     )
-    mcp, klient = zbuduj_serwer(cfg)
-    nazwy = await _nazwy_narzedzi(mcp)
-    # Task 13: `tools_write` ma teraz pełną implementację — przy
-    # allow_writes=True model MA widzieć wszystkie pięć narzędzi zapisu.
-    assert NARZEDZIA_ZAPISU <= nazwy
-    # Jedyny sygnał dla operatora, że instancja może modyfikować dane
-    # produkcyjne czasopisma — musi zostać, nawet po refaktorze.
+    mcp, client = build_server(cfg)
+    names = await _tool_names(mcp)
+    # Task 13: `tools_write` now has a full implementation — with
+    # allow_writes=True the model MUST see all five write tools.
+    assert WRITE_TOOLS <= names
+    # The only signal to the operator that this instance may modify
+    # production journal data — must stay, even after a refactor.
     assert "OJS_ALLOW_WRITES" in caplog.text
-    await klient.aclose()
+    await client.aclose()
 
 
 @pytest.mark.parametrize("allow_writes", [False, True])
-async def test_wszystkie_narzedzia_maja_dekorator_bledow(allow_writes):
-    """W2, recenzja Rundy 1 Tasku 13: cała wartość `mcp_errors.z_czytelnym_bledem`
-    opiera się na tym, że KAŻDE zarejestrowane narzędzie faktycznie przez
-    niego przeszło. Nic wcześniej tego nie pilnowało — narzędzie dopisane
-    bez dekoratora przechodziłoby całą zieloną serię testów, a model
-    dostawałby dla niego gołe "Error executing tool X" zamiast czytelnego
-    komunikatu (patrz `mcp_errors.py`).
+async def test_all_tools_have_the_error_decorator(allow_writes):
+    """W2, Round 1 review of Task 13: the entire value of
+    `mcp_errors.with_readable_error` rests on EVERY registered tool
+    actually having gone through it. Nothing previously enforced that —
+    a tool added without the decorator would pass the whole green test
+    run, and the model would get a bare "Error executing tool X" for it
+    instead of a readable message (see `mcp_errors.py`).
 
-    `mcp._tool_manager` jest atrybutem prywatnym SDK, ale to jedyny sposób
-    dotrzeć do FAKTYCZNIE zarejestrowanej funkcji (`Tool.fn`) — publiczne
-    `MCPServer.list_tools()` konwertuje do protokołowego `MCPTool`, które
-    `fn` już nie niesie.
+    `mcp._tool_manager` is a private SDK attribute, but it is the only
+    way to reach the ACTUALLY registered function (`Tool.fn`) — the
+    public `MCPServer.list_tools()` converts to the protocol's `MCPTool`,
+    which no longer carries `fn`.
     """
     cfg = Config(
         base_url="https://x.edu", journal="r", api_token="t", allow_writes=allow_writes
     )
-    mcp, klient = zbuduj_serwer(cfg)
-    narzedzia = mcp._tool_manager.list_tools()
-    assert narzedzia  # test jest bezwartościowy, jeśli lista jest pusta
-    bez_dekoratora = [t.name for t in narzedzia if not jest_opakowana(t.fn)]
-    assert not bez_dekoratora, f"Narzędzia bez @z_czytelnym_bledem: {bez_dekoratora}"
-    await klient.aclose()
+    mcp, client = build_server(cfg)
+    tools = mcp._tool_manager.list_tools()
+    assert tools  # the test is worthless if the list is empty
+    unwrapped = [t.name for t in tools if not is_wrapped(t.fn)]
+    assert not unwrapped, f"Tools without @with_readable_error: {unwrapped}"
+    await client.aclose()
 
 
-async def test_opisy_narzedzi_zapisu_widoczne_dla_modelu():
-    """D11, recenzja Rundy 1 Tasku 13: ostrzeżenie „UWAGA: modyfikuje dane
-    produkcyjne czasopisma” musi być sprawdzone w opisie, jaki NAPRAWDĘ
-    widzi model (`Tool.description` z prawdziwego `MCPServer.list_tools()`),
-    nie przez odczyt `fn.__doc__` na atrapie rejestrującej — te dwie rzeczy
-    dziś się zgadzają, ale nie ma na to gwarancji (np. jawny
-    `@mcp.tool(description=...)` by je rozjechał, a test na atrapie by tego
-    nie złapał).
+async def test_write_tool_descriptions_visible_to_the_model():
+    """D11, Round 1 review of Task 13: the "WARNING: modifies production
+    journal data" warning must be checked in the description the model
+    ACTUALLY sees (`Tool.description` from a real
+    `MCPServer.list_tools()`), not by reading `fn.__doc__` on the
+    registration stub — the two agree today, but there is no guarantee
+    of that (e.g. an explicit `@mcp.tool(description=...)` would make
+    them diverge, and a stub-based test would not catch it).
 
-    D6: nazwy decyzji (`slowniki.DECYZJE`) i pól edytowalnych
-    (`tools_write.POLA_EDYTOWALNE`) są wpisane w opisach narzędzi NA
-    SZTYWNO, obok słowników — rozjazd nie wywołałby żadnego innego testu.
-    Ten test iteruje po słownikach/krotce i sprawdza, że każda nazwa
-    faktycznie występuje w opisie narzędzia, które ją waliduje.
+    D6: the decision names (`dictionaries.DECISIONS`) and the editable
+    fields (`tools_write.EDITABLE_FIELDS`) are hardcoded into the tool
+    descriptions, next to the dictionaries — a drift would not fail any
+    other test. This test iterates over the dictionaries/tuple and
+    checks that every name actually appears in the description of the
+    tool that validates it.
     """
     cfg = Config(
         base_url="https://x.edu", journal="r", api_token="t", allow_writes=True
     )
-    mcp, klient = zbuduj_serwer(cfg)
-    narzedzia = {t.name: t for t in await mcp.list_tools()}
+    mcp, client = build_server(cfg)
+    tools = {t.name: t for t in await mcp.list_tools()}
 
-    for nazwa in NARZEDZIA_ZAPISU:
-        opis = narzedzia[nazwa].description or ""
-        assert opis.startswith("UWAGA: modyfikuje dane produkcyjne czasopisma."), (
-            f"{nazwa} nie zaczyna opisu od ostrzeżenia: {opis!r}"
+    for name in WRITE_TOOLS:
+        description = tools[name].description or ""
+        assert description.startswith("WARNING: modifies production journal data."), (
+            f"{name} does not start its description with the warning: {description!r}"
         )
 
-    opis_decyzji = narzedzia["dodaj_decyzje_redakcyjna"].description
-    for nazwa_decyzji in DECYZJE:
-        assert nazwa_decyzji in opis_decyzji, (
-            f"decyzja {nazwa_decyzji!r} nie jest wymieniona w opisie narzędzia"
+    decision_description = tools["add_editorial_decision"].description
+    for decision_name in DECISIONS:
+        assert decision_name in decision_description, (
+            f"decision {decision_name!r} is not listed in the tool's description"
         )
 
-    opis_edycji = narzedzia["edytuj_metadane_publikacji"].description
-    for pole in POLA_EDYTOWALNE:
-        assert pole in opis_edycji, (
-            f"pole {pole!r} nie jest wymienione w opisie narzędzia"
+    edit_description = tools["edit_publication_metadata"].description
+    for field in EDITABLE_FIELDS:
+        assert field in edit_description, (
+            f"field {field!r} is not listed in the tool's description"
         )
-    await klient.aclose()
+    await client.aclose()
 
 
-def test_main_bez_base_url_konczy_bledem(monkeypatch, capsys):
+def test_main_without_base_url_ends_with_an_error(monkeypatch, capsys):
     monkeypatch.delenv("OJS_BASE_URL", raising=False)
     assert main([]) == 2
     assert "OJS_BASE_URL" in capsys.readouterr().err
 
 
-def test_main_bez_poswiadczen_stdio_konczy_czytelnym_bledem(monkeypatch, capsys):
-    """W2 (recenzja): brak poświadczeń w trybie stdio dawał surowy
-    traceback (`BladUwierzytelnienia` z `zbuduj_auth` nie było łapane w
-    `main()`) — druga najczęstsza pomyłka konfiguracyjna po `OJS_BASE_URL`,
-    a w bundlu MCPB pole tokenu jest opcjonalne.
+def test_main_without_stdio_credentials_ends_with_a_readable_error(monkeypatch, capsys):
+    """W2 (review): missing credentials in stdio mode used to give a raw
+    traceback (`AuthenticationError` from `build_auth` was not caught in
+    `main()`) — the second most common configuration mistake after
+    `OJS_BASE_URL`, and in the MCPB bundle the token field is optional.
     """
     monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
-    monkeypatch.setenv("OJS_JOURNAL", "rocznik")
+    monkeypatch.setenv("OJS_JOURNAL", "annual")
     monkeypatch.delenv("OJS_API_TOKEN", raising=False)
     monkeypatch.delenv("OJS_USERNAME", raising=False)
     monkeypatch.delenv("OJS_PASSWORD", raising=False)
     monkeypatch.delenv("OJS_MCP_TRANSPORT", raising=False)
     assert main([]) == 2
-    blad = capsys.readouterr().err
-    assert "OJS_API_TOKEN" in blad
-    assert "OJS_USERNAME" in blad
+    error = capsys.readouterr().err
+    assert "OJS_API_TOKEN" in error
+    assert "OJS_USERNAME" in error
 
 
-def test_wersja(capsys):
+def test_version(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
 
 
-async def test_sciezka_auth_http_jest_token_mimo_braku_api_token_w_konfiguracji():
-    # Poprawka do briefu: `sciezka_auth` zależy od transportu, nie tylko od
-    # obecności tokenu w konfiguracji — w trybie http token pochodzi z
-    # nagłówka żądania, nigdy ze zmiennej środowiskowej.
-    ustaw_token_zadania("token-z-naglowka-zadania")
+async def test_auth_mode_http_is_token_despite_no_api_token_in_config():
+    # A fix to the brief: `auth_mode` depends on the transport, not just
+    # on whether a token is present in the configuration — in http mode
+    # the token always comes from the request header, never from an
+    # environment variable.
+    set_request_token("token-from-request-header")
     try:
         cfg = Config(base_url="https://x.edu", journal="r", transport="http")
-        mcp, klient = zbuduj_serwer(cfg)
+        mcp, client = build_server(cfg)
         try:
-            assert klient.sciezka_auth == "token"
+            assert client.auth_mode == "token"
         finally:
-            await klient.aclose()
+            await client.aclose()
     finally:
-        ustaw_token_zadania(None)
+        set_request_token(None)
 
 
-async def test_http_budowa_serwera_nie_wymaga_tokenu_w_kontekscie():
-    """Runda 2: budowa serwera http jest teraz bezpieczna do wywołania RAZ,
-    przy starcie procesu — zanim jakikolwiek token w ogóle istnieje.
-    `zbuduj_auth_http`/`TokenZadaniaAuth` (patrz `auth.py`) nie sprawdzają
-    już tokenu przy budowie; sprawdzenie przeniosło się do `auth_flow`,
-    czyli do chwili, gdy klient faktycznie próbuje porozmawiać z OJS.
+async def test_http_building_the_server_does_not_require_a_token_in_context():
+    """Round 2: building the http server is now safe to call ONCE, at
+    process start — before any token exists at all.
+    `build_auth_http`/`RequestTokenAuth` (see `auth.py`) no longer check
+    for a token at build time; the check moved to `auth_flow`, i.e. to
+    the moment the client actually tries to talk to OJS.
     """
-    ustaw_token_zadania(None)
+    set_request_token(None)
     cfg = Config(base_url="https://x.edu", journal="r", transport="http")
-    mcp, klient = zbuduj_serwer(cfg)  # NIE podnosi wyjątku
+    mcp, client = build_server(cfg)  # does NOT raise
     try:
-        assert klient.sciezka_auth == "token"
+        assert client.auth_mode == "token"
     finally:
-        await klient.aclose()
+        await client.aclose()
 
 
 @respx.mock
-async def test_http_bez_tokenu_zadanie_do_ojs_konczy_sie_bledem_uwierzytelnienia():
-    # Reguła bezpieczeństwa: w trybie http, gdy PRÓBA ROZMOWY Z OJS (nie
-    # sama budowa serwera — patrz test wyżej) nie ma tokenu w kontekście,
-    # kończy się BladUwierzytelnienia — a komunikat NIE MOŻE ujawniać
-    # żadnej wartości poświadczenia zapisanej w konfiguracji (OJS_API_TOKEN,
-    # OJS_USERNAME, OJS_PASSWORD).
+async def test_http_no_token_a_request_to_ojs_ends_with_an_authentication_error():
+    # Security rule: in http mode, when the ATTEMPT TO TALK TO OJS (not
+    # building the server itself — see the test above) has no token in
+    # context, it ends with AuthenticationError — and the message MUST
+    # NOT reveal any credential value stored in the configuration
+    # (OJS_API_TOKEN, OJS_USERNAME, OJS_PASSWORD).
     #
-    # N7 (recenzja Task 12, Runda 2): `@respx.mock` bez żadnej zamontowanej
-    # trasy — jeśli `TokenZadaniaAuth.auth_flow` kiedyś przestałaby
-    # podnosić wyjątek PRZED `yield`, żądanie poleciałoby do respx, które
-    # podniosłoby `AllMockedAssertionError` (nie `BladUwierzytelnienia`),
-    # więc test i tak by się wywalił — ale w sposób kontrolowany, bez
-    # realnego wyjścia do sieci/DNS.
-    ustaw_token_zadania(None)
+    # N7 (Task 12 review, Round 2): `@respx.mock` with no route mounted
+    # at all — if `RequestTokenAuth.auth_flow` ever stopped raising
+    # BEFORE `yield`, the request would go out to respx, which would
+    # raise `AllMockedAssertionError` (not `AuthenticationError`), so the
+    # test would still fail — but in a controlled way, without any real
+    # egress to the network/DNS.
+    set_request_token(None)
     cfg = Config(
         base_url="https://x.edu",
         journal="r",
-        api_token="sekret-z-konfiguracji",
-        username="administrator-instancji",
-        password="haslo-administratora",
+        api_token="secret-from-configuration",
+        username="instance-administrator",
+        password="administrator-password",
         transport="http",
     )
-    mcp, klient = zbuduj_serwer(cfg)
+    mcp, client = build_server(cfg)
     try:
-        with pytest.raises(BladUwierzytelnienia) as exc:
-            await klient.get("submissions")
+        with pytest.raises(AuthenticationError) as exc:
+            await client.get("submissions")
     finally:
-        await klient.aclose()
-        ustaw_token_zadania(None)
+        await client.aclose()
+        set_request_token(None)
 
-    komunikat = str(exc.value)
-    assert "sekret-z-konfiguracji" not in komunikat
-    assert "administrator-instancji" not in komunikat
-    assert "haslo-administratora" not in komunikat
+    message = str(exc.value)
+    assert "secret-from-configuration" not in message
+    assert "instance-administrator" not in message
+    assert "administrator-password" not in message
 
 
-async def test_zamkniecie_klienta_po_realnym_ruchu_http_w_jednej_petli(
-    serwer_http_keepalive,
+async def test_client_closes_after_real_http_traffic_in_one_loop(
+    keepalive_http_server,
 ):
-    """To jest dokładnie sekwencja `main()` w trybie stdio, tyle że
-    `run_stdio_async` jest podmienione na realne żądanie HTTP zamiast
-    obsługi protokołu MCP. Sprawdza naprawę: `run_stdio_async` i
-    `client.aclose()` w jednej wspólnej pętli zdarzeń.
+    """This is exactly `main()`'s sequence in stdio mode, except
+    `run_stdio_async` is substituted with a real HTTP request instead of
+    handling the MCP protocol. It checks the fix: `run_stdio_async` and
+    `client.aclose()` in one shared event loop.
     """
-    cfg = Config(base_url=serwer_http_keepalive, journal="site", api_token="t")
-    mcp, klient = zbuduj_serwer(cfg)
+    cfg = Config(base_url=keepalive_http_server, journal="site", api_token="t")
+    mcp, client = build_server(cfg)
 
-    async def udaje_obsluge_zadania_mcp() -> None:
-        odpowiedz = await klient.get("cokolwiek")
-        assert odpowiedz == {}
+    async def fake_mcp_request_handling() -> None:
+        response = await client.get("anything")
+        assert response == {}
 
-    mcp.run_stdio_async = udaje_obsluge_zadania_mcp
+    mcp.run_stdio_async = fake_mcp_request_handling
 
-    # Kluczowe: to NIE MOŻE rzucić `RuntimeError: Event loop is closed`.
-    await _uruchom_stdio_i_zamknij(mcp, klient)
+    # Key: this must NOT raise `RuntimeError: Event loop is closed`.
+    await _run_stdio_and_close(mcp, client)
 
 
-def test_zamkniecie_w_nowej_petli_po_realnym_ruchu_konczy_sie_bledem(
-    serwer_http_keepalive,
+def test_closing_in_a_new_loop_after_real_traffic_ends_with_an_error(
+    keepalive_http_server,
 ):
-    """Odtwarza dokładnie usterkę, dla której istnieje
-    `_uruchom_stdio_i_zamknij`: httpx/httpcore trzymają połączenie
-    keep-alive powiązane z pętlą zdarzeń, w której powstało. Zamknięcie
-    klienta w INNEJ, nowej pętli (dokładnie to, co robiłoby osobne
-    `mcp.run()` + `asyncio.run(client.aclose())`) kończy się
-    `RuntimeError: Event loop is closed` — ale dopiero PO co najmniej
-    jednym realnym żądaniu, bo pusta pula połączeń nie ma czego zamykać.
-    Ten test dokumentuje, dlaczego nie wolno wrócić do dwóch pętli.
+    """Reproduces exactly the defect `_run_stdio_and_close` exists for:
+    httpx/httpcore hold a keep-alive connection tied to the event loop it
+    was created in. Closing the client in a DIFFERENT, new loop (exactly
+    what a separate `mcp.run()` + `asyncio.run(client.aclose())` would
+    do) ends with `RuntimeError: Event loop is closed` — but only AFTER
+    at least one real request, because an empty connection pool has
+    nothing to close. This test documents why we must not go back to two
+    loops.
     """
-    cfg = Config(base_url=serwer_http_keepalive, journal="site", api_token="t")
-    mcp, klient = zbuduj_serwer(cfg)
+    cfg = Config(base_url=keepalive_http_server, journal="site", api_token="t")
+    mcp, client = build_server(cfg)
 
-    anyio.run(klient.get, "cokolwiek")  # żądanie w PIERWSZEJ pętli
+    anyio.run(client.get, "anything")  # a request in the FIRST loop
 
     with pytest.raises(RuntimeError, match="Event loop is closed"):
-        anyio.run(klient.aclose)  # zamknięcie w DRUGIEJ, nowej pętli
+        anyio.run(client.aclose)  # closing in a SECOND, new loop

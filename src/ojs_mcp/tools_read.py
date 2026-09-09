@@ -1,11 +1,11 @@
-"""Narzędzia odczytu. Logika siedzi w funkcjach ``*_impl``, żeby dało się
-je testować bez uruchamiania serwera MCP — rejestracja w ``zarejestruj_odczyt``
-jest tylko cienką warstwą tłumaczącą sygnaturę narzędzia MCP na wywołanie
-``*_impl``.
+"""Read tools. The logic lives in ``*_impl`` functions, so it can be
+tested without running the MCP server — registration in
+``register_read_tools`` is only a thin layer translating an MCP tool's
+signature into a call to ``*_impl``.
 
-Krotki pól do przycinania odpowiedzi (``POLA_*``) i funkcja ``przytnij``
-mieszkają w ``pola.py`` — patrz docstring tamtego modułu po uzasadnienie
-i źródła, na których są oparte.
+The field tuples for trimming responses (``*_FIELDS``) and the ``trim``
+function live in ``fields.py`` — see that module's docstring for the
+reasoning and the sources they are based on.
 """
 
 from __future__ import annotations
@@ -13,53 +13,53 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .bledy import (
-    BladLogowania,
-    BladNieZnaleziono,
-    BladOjs,
-    BladUwierzytelnienia,
-    BladWejscia,
-)
-from .catalog import Katalog
+from .catalog import Catalog
 from .client import MAX_COUNT, OjsClient
-from .mcp_errors import z_czytelnym_bledem
-from .pola import (
-    POLA_DOI,
-    POLA_NUMERU,
-    POLA_PLIKU,
-    POLA_PRZYPISANIA_RECENZJI,
-    POLA_PUBLIKACJI,
-    POLA_PUBLIKACJI_W_STATYSTYKACH,
-    POLA_RECENZENTA,
-    POLA_RUNDY_RECENZJI,
-    POLA_SEKCJI,
-    POLA_STATYSTYK_PUBLIKACJI,
-    POLA_STATYSTYKI_REDAKCYJNEJ,
-    POLA_TOZSAMOSCI,
-    POLA_UZYTKOWNIKA,
-    POLA_ZGLOSZENIA,
-    POLA_ZGLOSZENIA_PELNE,
-    przytnij,
-    zbuduj_widok_publikacji,
+from .dictionaries import (
+    DOI_STATUSES,
+    FILE_STAGES,
+    ROLE_IDS,
+    STAGES,
+    STATUSES,
+    to_name,
+    to_values,
 )
-from .slowniki import (
-    ETAPY,
-    ETAPY_PLIKU,
-    ROLE_NA_ID,
-    STATUSY,
-    STATUSY_DOI,
-    na_nazwe,
-    na_wartosci,
+from .exceptions import (
+    AuthenticationError,
+    InputError,
+    LoginError,
+    NotFoundError,
+    OjsError,
 )
+from .fields import (
+    DOI_FIELDS,
+    EDITORIAL_STATS_FIELDS,
+    FILE_FIELDS,
+    IDENTITY_FIELDS,
+    ISSUE_FIELDS,
+    PUBLICATION_FIELDS,
+    PUBLICATION_IN_STATS_FIELDS,
+    PUBLICATION_STATS_FIELDS,
+    REVIEW_ASSIGNMENT_FIELDS,
+    REVIEW_ROUND_FIELDS,
+    REVIEWER_FIELDS,
+    SECTION_FIELDS,
+    SUBMISSION_FIELDS,
+    SUBMISSION_FIELDS_FULL,
+    USER_FIELDS,
+    build_publication_view,
+    trim,
+)
+from .mcp_errors import with_readable_error
 
 logger = logging.getLogger(__name__)
 
-# classes/submission/Collector.php / spec §3.10 — jedyne dozwolone wartości
-# `orderBy` dla GET /submissions. UWAGA: to nazwy PARAMETRU zapytania, nie
-# nazwy pól w odpowiedzi JSON — stąd np. `lastActivity`, a nie
-# `dateLastActivity` (to pole odpowiedzi, którym pierwotnie było pomyłkowo
-# podmienione tu jako wartość domyślna).
-SORTOWANIE_ZGLOSZEN = (
+# classes/submission/Collector.php / spec §3.10 — the only allowed
+# values for `orderBy` on GET /submissions. NOTE: these are QUERY
+# PARAMETER names, not response field names — hence e.g. `lastActivity`,
+# not `dateLastActivity` (that is a response field, which was originally
+# mistakenly substituted here as the default value).
+SUBMISSION_ORDER_BY = (
     "datePublished",
     "dateSubmitted",
     "lastActivity",
@@ -68,11 +68,11 @@ SORTOWANIE_ZGLOSZEN = (
     "title",
 )
 
-# classes/issue/Collector.php (repo pkp/ojs) — jedyne dozwolone wartości
-# `orderBy` dla GET /issues. Kierunek sortowania jest tam ustalany przez
-# OJS wewnętrznie dla każdej z tych wartości (patrz uwaga przy
-# `lista_numerow_impl`) — `orderDirection` nie ma tu żadnego efektu.
-SORTOWANIE_NUMEROW = (
+# classes/issue/Collector.php (repo pkp/ojs) — the only allowed values
+# for `orderBy` on GET /issues. The sort direction is set internally by
+# OJS for each of these values (see the note at `list_issues_impl`) —
+# `orderDirection` has no effect here.
+ISSUE_ORDER_BY = (
     "datePublished",
     "lastModified",
     "seq",
@@ -81,1033 +81,1049 @@ SORTOWANIE_NUMEROW = (
     "shelf",
 )
 
-_STATUSY_KONTA = ("active", "disabled", "all")
+_ACCOUNT_STATUSES = ("active", "disabled", "all")
 
 
-def _sprawdz_wartosc(wartosc: str, dozwolone: tuple[str, ...], etykieta: str) -> None:
-    """Sprawdź, że ``wartosc`` należy do zamkniętego zbioru dozwolonych.
+def _check_value(value: str, allowed: tuple[str, ...], label: str) -> None:
+    """Check that ``value`` belongs to a closed set of allowed values.
 
-    Wspólna walidacja dla parametrów, które są już nazwami słownymi
-    (np. ``orderBy``, ``status`` konta) — w odróżnieniu od ``na_wartosci``,
-    nie tłumaczy na liczby, tylko odrzuca literówki z czytelnym komunikatem.
+    Shared validation for parameters that are already word-level names
+    (e.g. ``orderBy``, an account ``status``) — unlike ``to_values``, it
+    does not translate to numbers, just rejects typos with a readable
+    message.
     """
-    if wartosc not in dozwolone:
-        lista = ", ".join(dozwolone)
-        raise BladWejscia(
-            f"Nieznana wartość {wartosc!r} dla {etykieta!r}. Dozwolone: {lista}."
-        )
+    if value not in allowed:
+        listing = ", ".join(allowed)
+        raise InputError(f"Unknown value {value!r} for {label!r}. Allowed: {listing}.")
 
 
-def _limit_stron(limit: int) -> int:
-    """Ile stron po ``MAX_COUNT`` pozycji trzeba pobrać, żeby uzbierać
-    ``limit`` wpisów."""
+def _page_limit(limit: int) -> int:
+    """How many pages of ``MAX_COUNT`` items must be fetched to gather
+    ``limit`` entries."""
     return max(1, (limit + MAX_COUNT - 1) // MAX_COUNT)
 
 
-def _lokalny_tekst(wartosc: Any) -> str | None:
-    """Wyciągnij jeden czytelny napis z pola wielojęzycznego OJS.
+def _localized_text(value: Any) -> str | None:
+    """Pull a single readable string out of an OJS multilingual field.
 
-    OJS zwraca pola wielojęzyczne jako słownik ``{locale: tekst}``.
-    Wybieramy pierwszy dostępny z preferowanej kolejności (pl, en, en_US),
-    a w braku dopasowania — dowolną pierwszą niepustą wartość. Ta sama
-    logika co ``catalog._nazwa``, ale ogólniejsza (nie tylko dla nazw
-    czasopism).
+    OJS returns multilingual fields as a ``{locale: text}`` dict. We pick
+    the first available one in the preferred order (pl, en, en_US), and
+    failing a match — any first non-empty value. The same logic as
+    ``catalog._name``, but more general (not just for journal names).
     """
-    if isinstance(wartosc, dict):
-        for klucz in ("pl", "en", "en_US"):
-            if wartosc.get(klucz):
-                return str(wartosc[klucz])
-        for tekst in wartosc.values():
-            if tekst:
-                return str(tekst)
+    if isinstance(value, dict):
+        for key in ("pl", "en", "en_US"):
+            if value.get(key):
+                return str(value[key])
+        for text in value.values():
+            if text:
+                return str(text)
         return None
-    if isinstance(wartosc, str) and wartosc:
-        return wartosc
+    if isinstance(value, str) and value:
+        return value
     return None
 
 
-def _dodaj_tytul_i_autorow(wynik: dict, surowe: dict) -> None:
-    """Dołóż czytelny ``tytul``/``autorzy`` z ostatniej publikacji zgłoszenia.
+def _add_title_and_authors(result: dict, raw: dict) -> None:
+    """Add a readable ``title``/``authors`` from the submission's latest
+    publication.
 
-    Spec §4.2 dopuszcza jawną listę wyjątków ponad ``apiSummary`` — bez
-    tytułu model dostaje z ``szukaj_zgloszen`` gołe ID i kody liczbowe
-    i nie umie powiedzieć użytkownikowi, o który artykuł chodzi. Działa
-    defensywnie: gdy ``publications`` nie ma w odpowiedzi (albo jest puste
-    czy złego kształtu), pola po prostu nie pojawiają się w wyniku — bez
-    wyjątku.
+    Spec §4.2 allows an explicit list of exceptions on top of
+    ``apiSummary`` — without a title, the model gets bare IDs and numeric
+    codes from ``search_submissions`` and cannot tell the user which
+    article is meant. Works defensively: when ``publications`` is
+    missing from the response (or empty or the wrong shape), the fields
+    simply do not appear in the result — no exception.
     """
-    publikacje = surowe.get("publications")
-    if not publikacje or not isinstance(publikacje, list):
+    publications = raw.get("publications")
+    if not publications or not isinstance(publications, list):
         return
-    ostatnia = publikacje[-1]
-    if not isinstance(ostatnia, dict):
+    latest = publications[-1]
+    if not isinstance(latest, dict):
         return
-    tytul = _lokalny_tekst(ostatnia.get("title"))
-    if tytul:
-        wynik["tytul"] = tytul
-    autorzy = ostatnia.get("authorsStringShort")
-    if autorzy:
-        wynik["autorzy"] = autorzy
+    title = _localized_text(latest.get("title"))
+    if title:
+        result["title"] = title
+    authors = latest.get("authorsStringShort")
+    if authors:
+        result["authors"] = authors
 
 
-def _dodaj_nazwy_zgloszenia(wynik: dict) -> dict:
-    """Dołóż ``status_nazwa``/``etap_nazwa`` obok kodów ``status``/``stageId``.
+def _add_submission_names(result: dict) -> dict:
+    """Add ``status_name``/``stage_name`` alongside the ``status``/
+    ``stageId`` codes.
 
-    Zasada „nazwy słowne, nie magiczne liczby” dotyczy też wyjścia, nie
-    tylko wejścia — bez tego model dostaje ``status: 3`` i musi zgadywać.
+    The "word-level names, not magic numbers" rule applies to output too,
+    not just input — without this the model gets ``status: 3`` and has to
+    guess.
     """
-    if "status" in wynik:
-        wynik["status_nazwa"] = na_nazwe(wynik["status"], STATUSY)
-    if "stageId" in wynik:
-        wynik["etap_nazwa"] = na_nazwe(wynik["stageId"], ETAPY)
-    return wynik
+    if "status" in result:
+        result["status_name"] = to_name(result["status"], STATUSES)
+    if "stageId" in result:
+        result["stage_name"] = to_name(result["stageId"], STAGES)
+    return result
 
 
-# --- Zgłoszenia --------------------------------------------------------------
+# --- Submissions --------------------------------------------------------------
 
 
-async def szukaj_zgloszen_impl(
+async def search_submissions_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
-    fraza: str | None = None,
+    journal: str | None = None,
+    phrase: str | None = None,
     status: list[str] | None = None,
-    etap: list[str] | None = None,
-    sekcja: list[int] | None = None,
-    bez_aktywnosci_dni: int | None = None,
-    zlozone_od: str | None = None,
-    zlozone_do: str | None = None,
-    sortuj: str = "lastActivity",
-    malejaco: bool = True,
+    stage: list[str] | None = None,
+    section: list[int] | None = None,
+    inactive_days: int | None = None,
+    submitted_from: str | None = None,
+    submitted_to: str | None = None,
+    sort_by: str = "lastActivity",
+    descending: bool = True,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Znajdź zgłoszenia. ``status`` i ``etap`` przyjmują nazwy słowne.
+    """Find submissions. ``status`` and ``stage`` accept word-level names.
 
-    ``sortuj`` to nazwa PARAMETRU zapytania OJS (``orderBy``), nie nazwa pola
-    w odpowiedzi — dozwolone: ``datePublished``, ``dateSubmitted``,
-    ``lastActivity``, ``lastModified``, ``sequence``, ``title`` (spec §3.10).
+    ``sort_by`` is the name of an OJS query PARAMETER (``orderBy``), not a
+    response field name — allowed: ``datePublished``, ``dateSubmitted``,
+    ``lastActivity``, ``lastModified``, ``sequence``, ``title`` (spec
+    §3.10).
 
-    OJS nie ma filtrów dat w ``GET /submissions``, więc ``zlozone_od`` i
-    ``zlozone_do`` są stosowane po naszej stronie, na już pobranych stronach
-    (do ``limit_stron`` wyliczonego z ``limit``). Jeśli zgłoszeń jest więcej
-    niż zdołaliśmy pobrać, filtr dat może NIE dotrzeć do starszych pozycji —
-    pusty albo krótszy wynik nie zawsze znaczy „nie ma takich zgłoszeń”.
-    Pole ``filtrowanie_dat_niepelne`` w odpowiedzi (heurystyka: pobrano
-    dokładnie tyle stron, ile pozwalał limit) sygnalizuje to ryzyko.
+    OJS has no date filters on ``GET /submissions``, so ``submitted_from``
+    and ``submitted_to`` are applied on our side, on the pages already
+    fetched (up to the ``page_limit`` computed from ``limit``). If there
+    are more submissions than we managed to fetch, the date filter may
+    NOT reach the older entries — an empty or shorter result does not
+    always mean "there are no such submissions". The
+    ``date_filtering_incomplete`` response field (a heuristic: exactly as
+    many pages were fetched as the limit allowed) signals this risk.
     """
-    _sprawdz_wartosc(sortuj, SORTOWANIE_ZGLOSZEN, "sortuj")
-    kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {
-        "orderBy": sortuj,
-        "orderDirection": "DESC" if malejaco else "ASC",
+    _check_value(sort_by, SUBMISSION_ORDER_BY, "sort_by")
+    context = await catalog.resolve(journal)
+    params: dict[str, Any] = {
+        "orderBy": sort_by,
+        "orderDirection": "DESC" if descending else "ASC",
     }
-    if fraza:
-        parametry["searchPhrase"] = fraza
+    if phrase:
+        params["searchPhrase"] = phrase
     if status:
-        parametry["status"] = na_wartosci(status, STATUSY, "status")
-    if etap:
-        parametry["stageIds"] = na_wartosci(etap, ETAPY, "etap")
-    if sekcja:
-        parametry["sectionIds"] = ",".join(str(s) for s in sekcja)
-    if bez_aktywnosci_dni is not None:
-        parametry["daysInactive"] = bez_aktywnosci_dni
+        params["status"] = to_values(status, STATUSES, "status")
+    if stage:
+        params["stageIds"] = to_values(stage, STAGES, "stage")
+    if section:
+        params["sectionIds"] = ",".join(str(s) for s in section)
+    if inactive_days is not None:
+        params["daysInactive"] = inactive_days
 
-    limit_stron = _limit_stron(limit)
-    pozycje = await client.pobierz_wszystko(
+    page_limit = _page_limit(limit)
+    items = await client.get_all(
         "submissions",
-        parametry=parametry,
-        czasopismo=kontekst,
-        limit_stron=limit_stron,
+        params=params,
+        journal=context,
+        page_limit=page_limit,
     )
-    # Heurystyka: jeśli pobraliśmy dokładnie tyle pozycji, ile pozwalał limit
-    # stron, prawdopodobnie zatrzymaliśmy się na suficie, a nie dlatego, że
-    # dane się skończyły — filtr dat zastosowany niżej mógł pominąć starsze
-    # zgłoszenia, których nie zdążyliśmy pobrać.
-    mogl_byc_uciety = len(pozycje) >= limit_stron * MAX_COUNT
+    # Heuristic: if we fetched exactly as many items as the page limit
+    # allowed, we probably hit the ceiling, not because the data ran out
+    # — the date filter applied below may have missed older submissions
+    # we did not get to fetch.
+    maybe_truncated = len(items) >= page_limit * MAX_COUNT
 
-    def w_zakresie(poz: dict) -> bool:
-        data = (poz.get("dateSubmitted") or "")[:10]
-        if zlozone_od and data < zlozone_od:
+    def in_range(item: dict) -> bool:
+        date = (item.get("dateSubmitted") or "")[:10]
+        if submitted_from and date < submitted_from:
             return False
-        if zlozone_do and data > zlozone_do:
+        if submitted_to and date > submitted_to:
             return False
         return True
 
-    wybrane = [p for p in pozycje if w_zakresie(p)][:limit]
-    zgloszenia = []
-    for p in wybrane:
-        wpis = przytnij(p, POLA_ZGLOSZENIA)
-        _dodaj_tytul_i_autorow(wpis, p)
-        _dodaj_nazwy_zgloszenia(wpis)
-        zgloszenia.append(wpis)
+    selected = [p for p in items if in_range(p)][:limit]
+    submissions = []
+    for p in selected:
+        entry = trim(p, SUBMISSION_FIELDS)
+        _add_title_and_authors(entry, p)
+        _add_submission_names(entry)
+        submissions.append(entry)
     return {
-        "czasopismo": kontekst,
-        "znaleziono": len(zgloszenia),
-        "zgloszenia": zgloszenia,
-        "filtrowanie_dat_niepelne": bool(
-            mogl_byc_uciety and (zlozone_od or zlozone_do)
+        "journal": context,
+        "found": len(submissions),
+        "submissions": submissions,
+        "date_filtering_incomplete": bool(
+            maybe_truncated and (submitted_from or submitted_to)
         ),
     }
 
 
-async def pobierz_zgloszenie_impl(
+async def get_submission_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    zgloszenie: int,
-    czasopismo: str | None = None,
+    submission: int,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Pobierz jedno zgłoszenie po ID (``GET /submissions/{id}``).
+    """Fetch one submission by ID (``GET /submissions/{id}``).
 
-    Lista jego publikacji (wersji) jest dołączona w skróconej postaci —
-    pełną treść jednej wersji zwraca ``pobierz_publikacje``, a rundy
-    recenzji ``recenzje_zgloszenia`` (nie ma ich tutaj, żeby nie dublować
-    dużej struktury w każdej odpowiedzi).
+    The list of its publications (versions) is included in a trimmed
+    form — the full content of one version is returned by
+    ``get_publication``, and review rounds by
+    ``get_submission_reviews`` (not here, to avoid duplicating a large
+    structure in every response).
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
-    dane = await client.get(f"submissions/{zgloszenie}", czasopismo=kontekst)
-    wynik = przytnij(dane, POLA_ZGLOSZENIA_PELNE)
-    _dodaj_nazwy_zgloszenia(wynik)
-    publikacje = dane.get("publications") or []
-    wynik["publications"] = [przytnij(p, POLA_PUBLIKACJI) for p in publikacje]
-    wynik["czasopismo"] = kontekst
-    return wynik
+    context = await catalog.resolve(journal)
+    data = await client.get(f"submissions/{submission}", journal=context)
+    result = trim(data, SUBMISSION_FIELDS_FULL)
+    _add_submission_names(result)
+    publications = data.get("publications") or []
+    result["publications"] = [trim(p, PUBLICATION_FIELDS) for p in publications]
+    result["journal"] = context
+    return result
 
 
-async def pobierz_publikacje_impl(
+async def get_publication_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    zgloszenie: int,
-    publikacja: int,
-    czasopismo: str | None = None,
+    submission: int,
+    publication: int,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Pobierz jedną wersję (publikację) zgłoszenia — widok SZCZEGÓŁOWY.
+    """Fetch one version (publication) of a submission — the DETAILED view.
 
-    ``GET /submissions/{zgloszenie}/publications/{publikacja}`` — ID
-    publikacji znajdziesz w wyniku ``pobierz_zgloszenie``. W odróżnieniu od
-    skróconych publikacji na liście, zwraca też abstrakt, pełną listę
-    autorów, słowa kluczowe, DOI, numer strony/artykułu (``pages``/
-    ``articleNumber``) oraz ``galleys`` — gotowe pliki tej wersji (PDF,
-    HTML itp.) z publicznymi linkami. Po WSZYSTKIE pliki zgłoszenia
-    (włącznie z etapami roboczymi, nie tylko gotowymi galleyami) użyj
-    ``pliki_zgloszenia``.
+    ``GET /submissions/{submission}/publications/{publication}`` — find
+    the publication ID in the result of ``get_submission``. Unlike the
+    trimmed publications in a list, this also returns the abstract, the
+    full author list, keywords, the DOI, the page/article number
+    (``pages``/``articleNumber``), and ``galleys`` — this version's
+    ready-made files (PDF, HTML, etc.) with public links. For ALL of a
+    submission's files (including working stages, not just the finished
+    galleys) use ``list_submission_files``.
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
-    dane = await client.get(
-        f"submissions/{zgloszenie}/publications/{publikacja}", czasopismo=kontekst
+    context = await catalog.resolve(journal)
+    data = await client.get(
+        f"submissions/{submission}/publications/{publication}", journal=context
     )
-    # Przycinanie (w tym zagnieżdżonych `authors`/`galleys`) mieszka w
-    # `pola.py` — dzielone z `tools_write.py` (edycja/publikacja/cofnięcie
-    # publikacji zwracają dokładnie ten sam kształt odpowiedzi). Patrz
-    # docstring `pola.zbuduj_widok_publikacji` po historię tej zmiany.
-    wynik = zbuduj_widok_publikacji(dane)
-    wynik["czasopismo"] = kontekst
-    return wynik
+    # Trimming (including nested `authors`/`galleys`) lives in
+    # `fields.py` — shared with `tools_write.py` (editing/publishing/
+    # unpublishing a publication return exactly the same OJS response
+    # shape). See the docstring of `fields.build_publication_view` for
+    # the history of this change.
+    result = build_publication_view(data)
+    result["journal"] = context
+    return result
 
 
-async def pliki_zgloszenia_impl(
+async def list_submission_files_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    zgloszenie: int,
-    czasopismo: str | None = None,
+    submission: int,
+    journal: str | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Pobierz pliki dołączone do zgłoszenia (``GET /submissions/{id}/files``).
+    """Fetch the files attached to a submission
+    (``GET /submissions/{id}/files``).
 
-    Zwraca pliki ze WSZYSTKICH etapów przepływu naraz (zgłoszenie, recenzja,
-    redakcja, produkcja itd.) — każdy plik ma ``etap_pliku_nazwa`` obok
-    liczbowego ``fileStage`` (nazwy z ``ETAPY_PLIKU``). Świadomie nie ma
-    filtra ``fileStages`` na wejściu — to celowe zawężenie zakresu tego
-    narzędzia (samo tłumaczenie liczb na nazwy jest zweryfikowane
-    w źródle OJS, ale zawężanie po etapie to osobna funkcja, którą można
-    dodać później).
+    Returns files from ALL workflow stages at once (submission, review,
+    editing, production, etc.) — every file has ``file_stage_name``
+    alongside the numeric ``fileStage`` (names from ``FILE_STAGES``).
+    Deliberately no ``fileStages`` filter on input — that is a
+    deliberate narrowing of this tool's scope (the number-to-name
+    translation itself is verified against the OJS source, but narrowing
+    by stage is a separate feature that could be added later).
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
-    pozycje = await client.pobierz_wszystko(
-        f"submissions/{zgloszenie}/files",
-        czasopismo=kontekst,
-        limit_stron=_limit_stron(limit),
+    context = await catalog.resolve(journal)
+    items = await client.get_all(
+        f"submissions/{submission}/files",
+        journal=context,
+        page_limit=_page_limit(limit),
     )
-    wybrane = pozycje[:limit]
-    pliki = []
-    for p in wybrane:
-        wpis = przytnij(p, POLA_PLIKU)
-        if "fileStage" in wpis:
-            wpis["etap_pliku_nazwa"] = na_nazwe(wpis["fileStage"], ETAPY_PLIKU)
-        pliki.append(wpis)
+    selected = items[:limit]
+    files = []
+    for p in selected:
+        entry = trim(p, FILE_FIELDS)
+        if "fileStage" in entry:
+            entry["file_stage_name"] = to_name(entry["fileStage"], FILE_STAGES)
+        files.append(entry)
     return {
-        "czasopismo": kontekst,
-        "zgloszenie": zgloszenie,
-        "znaleziono": len(pliki),
-        "pliki": pliki,
+        "journal": context,
+        "submission": submission,
+        "found": len(files),
+        "files": files,
     }
 
 
-async def recenzje_zgloszenia_impl(
+async def get_submission_reviews_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    zgloszenie: int,
-    czasopismo: str | None = None,
+    submission: int,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Pobierz rundy recenzji i przypisania recenzentów dla zgłoszenia.
+    """Fetch the review rounds and reviewer assignments for a submission.
 
-    Pola ``reviewRounds`` i ``reviewAssignments`` są dostępne wyłącznie
-    w pełnym ``GET /submissions/{id}`` — nie ma ich na liście zwracanej
-    przez ``szukaj_zgloszen``, więc to narzędzie robi osobne zapytanie.
+    The ``reviewRounds`` and ``reviewAssignments`` fields are only
+    available on the full ``GET /submissions/{id}`` — they are not in
+    the list returned by ``search_submissions``, so this tool makes a
+    separate call.
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
-    dane = await client.get(f"submissions/{zgloszenie}", czasopismo=kontekst)
-    rundy = dane.get("reviewRounds") or []
-    przypisania = dane.get("reviewAssignments") or []
+    context = await catalog.resolve(journal)
+    data = await client.get(f"submissions/{submission}", journal=context)
+    rounds = data.get("reviewRounds") or []
+    assignments = data.get("reviewAssignments") or []
     return {
-        "czasopismo": kontekst,
-        "zgloszenie": zgloszenie,
-        "rundy_recenzji": [przytnij(r, POLA_RUNDY_RECENZJI) for r in rundy],
-        "przypisania_recenzji": [
-            przytnij(p, POLA_PRZYPISANIA_RECENZJI) for p in przypisania
-        ],
+        "journal": context,
+        "submission": submission,
+        "review_rounds": [trim(r, REVIEW_ROUND_FIELDS) for r in rounds],
+        "review_assignments": [trim(p, REVIEW_ASSIGNMENT_FIELDS) for p in assignments],
     }
 
 
-# --- Numery i sekcje ----------------------------------------------------------
+# --- Issues and sections ----------------------------------------------------
 
 
-async def lista_numerow_impl(
+async def list_issues_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
-    fraza: str | None = None,
-    tylko_opublikowane: bool | None = None,
-    sortuj: str = "datePublished",
+    journal: str | None = None,
+    phrase: str | None = None,
+    published_only: bool | None = None,
+    sort_by: str = "datePublished",
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Znajdź numery (wydania) czasopisma (``GET /issues``).
+    """Find a journal's issues (``GET /issues``).
 
-    ``tylko_opublikowane=True`` ogranicza do numerów już opublikowanych,
-    ``False`` do tych jeszcze przygotowywanych; pominięcie zwraca oba rodzaje.
+    ``published_only=True`` restricts to already-published issues,
+    ``False`` to those still being prepared; omitting it returns both
+    kinds.
 
-    ``sortuj``: ``datePublished``, ``lastModified``, ``seq``,
+    ``sort_by``: ``datePublished``, ``lastModified``, ``seq``,
     ``publishedIssues``, ``unpublishedIssues``, ``shelf``
-    (``classes/issue/Collector.php`` w repo ``pkp/ojs``). Bez parametru
-    kierunku sortowania — OJS ustala go sam dla każdej z tych wartości
-    i ignoruje ``orderDirection`` dla numerów (zweryfikowane w źródle:
-    ``api/v1/issues/IssueController.php`` czyta z zapytania tylko
-    ``orderBy``), więc żeby nie wystawiać parametru, który nic by nie robił,
-    to narzędzie (w odróżnieniu od ``szukaj_zgloszen``) nie ma ``malejaco``.
+    (``classes/issue/Collector.php`` in the ``pkp/ojs`` repo). No sort-
+    direction parameter — OJS decides it itself for each of these
+    values and ignores ``orderDirection`` for issues (verified in the
+    source: ``api/v1/issues/IssueController.php`` only reads ``orderBy``
+    from the query), so — to avoid exposing a parameter that would do
+    nothing — this tool (unlike ``search_submissions``) has no
+    ``descending``.
     """
-    _sprawdz_wartosc(sortuj, SORTOWANIE_NUMEROW, "sortuj")
-    kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {"orderBy": sortuj}
-    if fraza:
-        parametry["searchPhrase"] = fraza
-    if tylko_opublikowane is not None:
-        parametry["isPublished"] = 1 if tylko_opublikowane else 0
+    _check_value(sort_by, ISSUE_ORDER_BY, "sort_by")
+    context = await catalog.resolve(journal)
+    params: dict[str, Any] = {"orderBy": sort_by}
+    if phrase:
+        params["searchPhrase"] = phrase
+    if published_only is not None:
+        params["isPublished"] = 1 if published_only else 0
 
-    pozycje = await client.pobierz_wszystko(
+    items = await client.get_all(
         "issues",
-        parametry=parametry,
-        czasopismo=kontekst,
-        limit_stron=_limit_stron(limit),
+        params=params,
+        journal=context,
+        page_limit=_page_limit(limit),
     )
-    wybrane = pozycje[:limit]
+    selected = items[:limit]
     return {
-        "czasopismo": kontekst,
-        "znaleziono": len(wybrane),
-        "numery": [przytnij(p, POLA_NUMERU) for p in wybrane],
+        "journal": context,
+        "found": len(selected),
+        "issues": [trim(p, ISSUE_FIELDS) for p in selected],
     }
 
 
-async def biezacy_numer_impl(
+async def get_current_issue_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Pobierz bieżący numer czasopisma (``GET /issues/current``).
+    """Fetch the journal's current issue (``GET /issues/current``).
 
-    OJS odpowiada 404 z treścią JSON, gdy żaden numer nie jest oznaczony
-    jako bieżący — wtedy zwracamy ``numer: None``, a nie wyjątek. To NIE to
-    samo, co 404 z nieznanego czasopisma (literówka w ``OJS_JOURNAL`` albo
-    w parametrze ``czasopismo``) — tamto 404 ma pustą treść JSON (routing
-    OJS zwraca stronę HTML, ``client._na_blad`` zostawia wtedy ``tresc=None``)
-    i jest przepuszczane dalej jako błąd, żeby literówka nie wyglądała jak
-    poprawna odpowiedź „brak numeru”.
+    OJS responds with a 404 carrying a JSON body when no issue is marked
+    as current — in that case we return ``issue: None``, not an
+    exception. This is NOT the same as a 404 from an unknown journal (a
+    typo in ``OJS_JOURNAL`` or the ``journal`` parameter) — that 404 has
+    an empty JSON body (OJS's routing returns an HTML page,
+    ``client._to_error`` then leaves ``detail=None``) and is passed
+    through as an error, so a typo does not look like a valid "no
+    current issue" response.
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
+    context = await catalog.resolve(journal)
     try:
-        dane = await client.get("issues/current", czasopismo=kontekst)
-    except BladNieZnaleziono as exc:
-        if exc.tresc is None:
+        data = await client.get("issues/current", journal=context)
+    except NotFoundError as exc:
+        if exc.detail is None:
             logger.error(
-                "GET issues/current dla czasopisma %r zwróciło 404 bez "
-                "treści JSON — to zwykle nieznane czasopismo, nie brak "
-                "numeru bieżącego. Sprawdź OJS_JOURNAL/parametr czasopismo.",
-                kontekst,
+                "GET issues/current for journal %r returned a 404 without "
+                "a JSON body — this usually means an unknown journal, not "
+                "a missing current issue. Check OJS_JOURNAL/the journal "
+                "parameter.",
+                context,
             )
             raise
-        # 404 Z treścią JSON z tego endpointu ma jedno znaczenie: czasopismo
-        # istnieje, ale nie ma ustawionego numeru bieżącego — to odpowiedź,
-        # nie błąd.
-        return {"czasopismo": kontekst, "numer": None}
-    return {"czasopismo": kontekst, "numer": przytnij(dane, POLA_NUMERU)}
+        # A 404 WITH a JSON body from this endpoint has one meaning: the
+        # journal exists, but has no current issue set — that is a
+        # response, not an error.
+        return {"journal": context, "issue": None}
+    return {"journal": context, "issue": trim(data, ISSUE_FIELDS)}
 
 
-async def pobierz_numer_impl(
+async def get_issue_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    numer: int,
-    czasopismo: str | None = None,
+    issue: int,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Pobierz jeden numer (wydanie) po ID (``GET /issues/{id}``)."""
-    kontekst = await katalog.rozwiaz(czasopismo)
-    dane = await client.get(f"issues/{numer}", czasopismo=kontekst)
-    wynik = przytnij(dane, POLA_NUMERU)
-    wynik["czasopismo"] = kontekst
-    return wynik
+    """Fetch one issue by ID (``GET /issues/{id}``)."""
+    context = await catalog.resolve(journal)
+    data = await client.get(f"issues/{issue}", journal=context)
+    result = trim(data, ISSUE_FIELDS)
+    result["journal"] = context
+    return result
 
 
-async def lista_sekcji_impl(
+async def list_sections_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
-    fraza: str | None = None,
-    tylko_aktywne: bool | None = None,
+    journal: str | None = None,
+    phrase: str | None = None,
+    active_only: bool | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Znajdź sekcje (działy) czasopisma, np. „Artykuły”, „Recenzje”.
+    """Find a journal's sections, e.g. "Articles", "Reviews".
 
-    ``tylko_aktywne=True`` pomija sekcje wyłączone; pominięcie zwraca
-    wszystkie sekcje.
+    ``active_only=True`` skips disabled sections; omitting it returns
+    all sections.
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {}
-    if fraza:
-        parametry["searchPhrase"] = fraza
-    if tylko_aktywne is True:
-        parametry["isInactive"] = 0
-    elif tylko_aktywne is False:
-        parametry["isInactive"] = 1
+    context = await catalog.resolve(journal)
+    params: dict[str, Any] = {}
+    if phrase:
+        params["searchPhrase"] = phrase
+    if active_only is True:
+        params["isInactive"] = 0
+    elif active_only is False:
+        params["isInactive"] = 1
 
-    pozycje = await client.pobierz_wszystko(
+    items = await client.get_all(
         "sections",
-        parametry=parametry,
-        czasopismo=kontekst,
-        limit_stron=_limit_stron(limit),
+        params=params,
+        journal=context,
+        page_limit=_page_limit(limit),
     )
-    wybrane = pozycje[:limit]
+    selected = items[:limit]
     return {
-        "czasopismo": kontekst,
-        "znaleziono": len(wybrane),
-        "sekcje": [przytnij(p, POLA_SEKCJI) for p in wybrane],
+        "journal": context,
+        "found": len(selected),
+        "sections": [trim(p, SECTION_FIELDS) for p in selected],
     }
 
 
-# --- Użytkownicy i recenzenci -------------------------------------------------
+# --- Users and reviewers -------------------------------------------------
 
 
-async def szukaj_uzytkownikow_impl(
+async def search_users_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
-    fraza: str | None = None,
+    journal: str | None = None,
+    phrase: str | None = None,
     status: str = "active",
-    rola: list[str] | None = None,
+    role: list[str] | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Znajdź użytkowników czasopisma (``GET /users``).
+    """Find a journal's users (``GET /users``).
 
-    ``status``: ``active``, ``disabled``, ``all``. ``rola`` przyjmuje nazwy
-    z ``ROLE_NA_ID``: ``administrator_witryny``, ``menedzer_czasopisma``,
-    ``redaktor_dzialu``, ``recenzent``, ``asystent``, ``autor``,
-    ``czytelnik``, ``menedzer_prenumerat``.
+    ``status``: ``active``, ``disabled``, ``all``. ``role`` accepts
+    names from ``ROLE_IDS``: ``site_admin``, ``manager``, ``sub_editor``,
+    ``reviewer``, ``assistant``, ``author``, ``reader``,
+    ``subscription_manager``.
     """
-    _sprawdz_wartosc(status, _STATUSY_KONTA, "status")
-    kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {"status": status}
-    if fraza:
-        parametry["searchPhrase"] = fraza
-    if rola:
-        parametry["roleIds"] = na_wartosci(rola, ROLE_NA_ID, "rola")
+    _check_value(status, _ACCOUNT_STATUSES, "status")
+    context = await catalog.resolve(journal)
+    params: dict[str, Any] = {"status": status}
+    if phrase:
+        params["searchPhrase"] = phrase
+    if role:
+        params["roleIds"] = to_values(role, ROLE_IDS, "role")
 
-    pozycje = await client.pobierz_wszystko(
+    items = await client.get_all(
         "users",
-        parametry=parametry,
-        czasopismo=kontekst,
-        limit_stron=_limit_stron(limit),
+        params=params,
+        journal=context,
+        page_limit=_page_limit(limit),
     )
-    wybrane = pozycje[:limit]
+    selected = items[:limit]
     return {
-        "czasopismo": kontekst,
-        "znaleziono": len(wybrane),
-        "uzytkownicy": [przytnij(p, POLA_UZYTKOWNIKA) for p in wybrane],
+        "journal": context,
+        "found": len(selected),
+        "users": [trim(p, USER_FIELDS) for p in selected],
     }
 
 
-async def lista_recenzentow_impl(
+async def list_reviewers_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
-    fraza: str | None = None,
+    journal: str | None = None,
+    phrase: str | None = None,
     status: str = "active",
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Znajdź recenzentów czasopisma wraz z ich statystykami recenzji.
+    """Find a journal's reviewers together with their review statistics.
 
-    ``GET /users/reviewers``. ``status``: ``active``, ``disabled``, ``all``.
-    Zwraca m.in. liczbę aktywnych/ukończonych/odrzuconych recenzji, średni
-    czas ukończenia recenzji w dniach (``averageReviewCompletionDays``)
-    i ocenę recenzenta (``reviewerRating``).
+    ``GET /users/reviewers``. ``status``: ``active``, ``disabled``,
+    ``all``. Returns, among others, the count of active/completed/
+    declined reviews, the average review completion time in days
+    (``averageReviewCompletionDays``), and the reviewer's rating
+    (``reviewerRating``).
     """
-    _sprawdz_wartosc(status, _STATUSY_KONTA, "status")
-    kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {"status": status}
-    if fraza:
-        parametry["searchPhrase"] = fraza
+    _check_value(status, _ACCOUNT_STATUSES, "status")
+    context = await catalog.resolve(journal)
+    params: dict[str, Any] = {"status": status}
+    if phrase:
+        params["searchPhrase"] = phrase
 
-    pozycje = await client.pobierz_wszystko(
+    items = await client.get_all(
         "users/reviewers",
-        parametry=parametry,
-        czasopismo=kontekst,
-        limit_stron=_limit_stron(limit),
+        params=params,
+        journal=context,
+        page_limit=_page_limit(limit),
     )
-    wybrane = pozycje[:limit]
+    selected = items[:limit]
     return {
-        "czasopismo": kontekst,
-        "znaleziono": len(wybrane),
-        "recenzenci": [przytnij(p, POLA_RECENZENTA) for p in wybrane],
+        "journal": context,
+        "found": len(selected),
+        "reviewers": [trim(p, REVIEWER_FIELDS) for p in selected],
     }
 
 
-# --- Statystyki i DOI ---------------------------------------------------------
+# --- Stats and DOI ---------------------------------------------------------
 
 
-async def statystyki_publikacji_impl(
+async def publication_stats_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
-    os_czasu: bool = False,
-    interwal: str = "day",
-    data_od: str | None = None,
-    data_do: str | None = None,
+    journal: str | None = None,
+    timeline: bool = False,
+    interval: str = "day",
+    date_from: str | None = None,
+    date_to: str | None = None,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Statystyki wyświetleń publikacji — ranking albo szereg czasowy.
+    """Publication view statistics — a ranking or a time series.
 
-    ``os_czasu=False`` (domyślnie) zwraca ranking publikacji wg liczby
-    wyświetleń (``GET /stats/publications``). ``os_czasu=True`` przełącza
-    na sumę wyświetleń w czasie (``GET /stats/publications/timeline``);
-    ``interwal``: ``day`` albo ``month``. Daty ``data_od``/``data_do``
-    w formacie RRRR-MM-DD.
+    ``timeline=False`` (default) returns a ranking of publications by
+    view count (``GET /stats/publications``). ``timeline=True`` switches
+    to a sum of views over time (``GET /stats/publications/timeline``);
+    ``interval``: ``day`` or ``month``. Dates ``date_from``/``date_to``
+    in YYYY-MM-DD format.
     """
-    _sprawdz_wartosc(interwal, ("day", "month"), "interwal")
-    kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {}
-    if data_od:
-        parametry["dateStart"] = data_od
-    if data_do:
-        parametry["dateEnd"] = data_do
+    _check_value(interval, ("day", "month"), "interval")
+    context = await catalog.resolve(journal)
+    params: dict[str, Any] = {}
+    if date_from:
+        params["dateStart"] = date_from
+    if date_to:
+        params["dateEnd"] = date_to
 
-    if os_czasu:
-        parametry["timelineInterval"] = interwal
-        dane = await client.get(
-            "stats/publications/timeline", parametry=parametry, czasopismo=kontekst
+    if timeline:
+        params["timelineInterval"] = interval
+        data = await client.get(
+            "stats/publications/timeline", params=params, journal=context
         )
-        # Ten endpoint NIE zwraca kolekcji {items, itemsMax} — to płaska
-        # lista {date, value} (PKPStatsServiceTrait::getTimeline).
-        return {"czasopismo": kontekst, "punkty": dane}
+        # This endpoint does NOT return a {items, itemsMax} collection —
+        # it is a flat list of {date, value} (PKPStatsServiceTrait::getTimeline).
+        return {"journal": context, "points": data}
 
-    pozycje = await client.pobierz_wszystko(
+    items = await client.get_all(
         "stats/publications",
-        parametry=parametry,
-        czasopismo=kontekst,
-        limit_stron=_limit_stron(limit),
+        params=params,
+        journal=context,
+        page_limit=_page_limit(limit),
     )
-    wybrane = pozycje[:limit]
-    publikacje = []
-    for p in wybrane:
-        wpis = przytnij(p, POLA_STATYSTYK_PUBLIKACJI)
-        # `publication` to najgrubszy zagnieżdżony obiekt w tej odpowiedzi
-        # (classes/submission/maps/Schema.php::mapToStats) — przycinamy go
-        # tak samo jak `publications` w `pobierz_zgloszenie_impl`.
-        if isinstance(wpis.get("publication"), dict):
-            wpis["publication"] = przytnij(
-                wpis["publication"], POLA_PUBLIKACJI_W_STATYSTYKACH
+    selected = items[:limit]
+    publications = []
+    for p in selected:
+        entry = trim(p, PUBLICATION_STATS_FIELDS)
+        # `publication` is the largest nested object in this response
+        # (classes/submission/maps/Schema.php::mapToStats) — trimmed the
+        # same way as `publications` in `get_submission_impl`.
+        if isinstance(entry.get("publication"), dict):
+            entry["publication"] = trim(
+                entry["publication"], PUBLICATION_IN_STATS_FIELDS
             )
-        publikacje.append(wpis)
+        publications.append(entry)
     return {
-        "czasopismo": kontekst,
-        "znaleziono": len(publikacje),
-        "publikacje": publikacje,
+        "journal": context,
+        "found": len(publications),
+        "publications": publications,
     }
 
 
-async def statystyki_redakcyjne_impl(
+async def editorial_stats_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
-    data_od: str | None = None,
-    data_do: str | None = None,
+    journal: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
 ) -> dict[str, Any]:
-    """Zbiorcze statystyki redakcyjne czasopisma (``GET /stats/editorial``).
+    """Aggregate editorial statistics for a journal
+    (``GET /stats/editorial``).
 
-    Zwraca listę par klucz/nazwa/wartość (np. liczba zgłoszeń przyjętych,
-    odrzuconych, średni czas do pierwszej decyzji). Daty ``data_od``/
-    ``data_do`` w formacie RRRR-MM-DD zawężają okres; bez nich OJS liczy
-    statystyki od początku czasopisma.
+    Returns a list of key/name/value entries (e.g. the count of accepted
+    submissions, declined ones, average time to first decision). Dates
+    ``date_from``/``date_to`` in YYYY-MM-DD format narrow the period;
+    without them OJS computes statistics from the journal's inception.
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {}
-    if data_od:
-        parametry["dateStart"] = data_od
-    if data_do:
-        parametry["dateEnd"] = data_do
+    context = await catalog.resolve(journal)
+    params: dict[str, Any] = {}
+    if date_from:
+        params["dateStart"] = date_from
+    if date_to:
+        params["dateEnd"] = date_to
 
-    dane = await client.get("stats/editorial", parametry=parametry, czasopismo=kontekst)
-    if not isinstance(dane, list):
-        # Spec §3.10: /stats/editorial ma zwracać płaską listę. Inny kształt
-        # to sygnał, że coś się zmieniło (nowa wersja OJS, błąd po drugiej
-        # stronie) — cichy powrót do pustej listy udawałby „brak statystyk”
-        # zamiast prawdziwego problemu.
+    data = await client.get("stats/editorial", params=params, journal=context)
+    if not isinstance(data, list):
+        # Spec §3.10: /stats/editorial is meant to return a flat list. A
+        # different shape signals that something changed (a new OJS
+        # version, an error on the other side) — silently falling back
+        # to an empty list would pretend "no statistics" instead of the
+        # real problem.
         logger.error(
-            "Nieoczekiwany kształt odpowiedzi GET stats/editorial dla %r: "
-            "%s zamiast listy.",
-            kontekst,
-            type(dane).__name__,
+            "Unexpected response shape from GET stats/editorial for %r: "
+            "%s instead of a list.",
+            context,
+            type(data).__name__,
         )
-        raise BladOjs(
-            "OJS zwrócił nieoczekiwany kształt odpowiedzi dla statystyk "
-            f"redakcyjnych (oczekiwano listy, dostano {type(dane).__name__})."
+        raise OjsError(
+            "OJS returned an unexpected response shape for editorial "
+            f"statistics (expected a list, got {type(data).__name__})."
         )
     return {
-        "czasopismo": kontekst,
-        "statystyki": [przytnij(p, POLA_STATYSTYKI_REDAKCYJNEJ) for p in dane],
+        "journal": context,
+        "stats": [trim(p, EDITORIAL_STATS_FIELDS) for p in data],
     }
 
 
-async def lista_doi_impl(
+async def list_dois_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
+    journal: str | None = None,
     status: list[str] | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Znajdź identyfikatory DOI zarejestrowane w czasopiśmie (``GET /dois``).
+    """Find the DOIs registered for a journal (``GET /dois``).
 
-    ``status``: niezarejestrowane, zgloszone, zarejestrowane, blad,
-    nieaktualne.
+    ``status``: unregistered, submitted, registered, error, stale.
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
-    parametry: dict[str, Any] = {}
+    context = await catalog.resolve(journal)
+    params: dict[str, Any] = {}
     if status:
-        parametry["status"] = na_wartosci(status, STATUSY_DOI, "status")
+        params["status"] = to_values(status, DOI_STATUSES, "status")
 
-    pozycje = await client.pobierz_wszystko(
+    items = await client.get_all(
         "dois",
-        parametry=parametry,
-        czasopismo=kontekst,
-        limit_stron=_limit_stron(limit),
+        params=params,
+        journal=context,
+        page_limit=_page_limit(limit),
     )
-    wybrane = pozycje[:limit]
+    selected = items[:limit]
     return {
-        "czasopismo": kontekst,
-        "znaleziono": len(wybrane),
-        "doi": [przytnij(p, POLA_DOI) for p in wybrane],
+        "journal": context,
+        "found": len(selected),
+        "doi": [trim(p, DOI_FIELDS) for p in selected],
     }
 
 
-# --- Czasopisma i tożsamość ----------------------------------------------------
+# --- Journals and identity ----------------------------------------------------
 
 
-async def lista_czasopism_impl(
+async def list_journals_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
 ) -> dict[str, Any]:
-    """Wypisz czasopisma widoczne dla bieżących poświadczeń w tej instalacji.
+    """List the journals visible to the current credentials in this
+    installation.
 
-    Zwrócone ``sciezka`` (``contextPath``) to wartość do podania w parametrze
-    ``czasopismo`` pozostałych narzędzi. To narzędzie celowo nie ma parametru
-    ``czasopismo`` — wylicza wszystkie czasopisma naraz, nie jedno wybrane.
+    The returned ``path`` (``contextPath``) is the value to pass in the
+    ``journal`` parameter of the other tools. This tool deliberately has
+    no ``journal`` parameter — it lists every journal at once, not one
+    chosen journal.
     """
-    return {"czasopisma": await katalog.czasopisma()}
+    return {"journals": await catalog.journals()}
 
 
-async def kim_jestem_impl(
+async def whoami_impl(
     client: OjsClient,
-    katalog: Katalog,
+    catalog: Catalog,
     *,
-    czasopismo: str | None = None,
+    journal: str | None = None,
 ) -> dict[str, Any]:
-    """Sprawdź, czy bieżące poświadczenia działają.
+    """Check whether the current credentials work.
 
-    Ścieżka tokenowa: OJS nie ma endpointu tożsamości dla tokenu API, więc
-    wykonujemy tanią sondę (``GET /submissions?count=1``) i mówimy
-    wyłącznie, czy token w ogóle działa — nie zgadujemy, kim jest jego
-    właściciel.
+    Token path: OJS has no identity endpoint for an API token, so we run
+    a cheap probe (``GET /submissions?count=1``) and report only whether
+    the token works at all — we do not guess who its owner is.
 
-    Ścieżka sesyjna (login+hasło, spec §8.1): ``SessionAuth`` loguje się
-    NAPRAWDĘ i zna tożsamość zalogowanego użytkownika z ``pkp.currentUser``
-    (patrz ``session_login.zaloguj``/``SessionAuth.uzytkownik``,
-    ``OjsClient.tozsamosc_sesji``) — TĘ SAMĄ sondę wykorzystujemy tu, żeby
-    wymusić (leniwe) logowanie, jeśli jeszcze nie nastąpiło, a potem
-    odczytujemy zapamiętaną tożsamość (W7, recenzja: dawniej ta ścieżka
-    zgłaszała "niezaimplementowane", mimo że dane były już pobierane przez
-    ``zaloguj()`` i tylko wyrzucane przez ``SessionAuth``). Zwracana
-    tożsamość jest przycięta przez ``pola.POLA_TOZSAMOSCI`` — SUROWY
-    ``pkp.currentUser`` niesie ``csrfToken``, żywy token CSRF sesji (W7,
-    Runda 2 recenzji: zwracanie go bez przycięcia wypuszczało ten sekret do
-    modelu/logów/transkryptu).
+    Session path (login+password, spec §8.1): ``SessionAuth`` actually
+    logs in and knows the logged-in user's identity from
+    ``pkp.currentUser`` (see ``session_login.login``/
+    ``SessionAuth.user``, ``OjsClient.session_identity``) — we use THE
+    SAME probe here to force a (lazy) login if it has not happened yet,
+    and then read the remembered identity (W7, review: this path used to
+    report "not implemented", even though the data was already fetched
+    by ``login()`` and only discarded by ``SessionAuth``). The returned
+    identity is trimmed by ``fields.IDENTITY_FIELDS`` — the RAW
+    ``pkp.currentUser`` carries ``csrfToken``, a live session CSRF token
+    (W7, Round 2 review: returning it without trimming leaked this
+    secret to the model/logs/transcript).
     """
-    kontekst = await katalog.rozwiaz(czasopismo)
+    context = await catalog.resolve(journal)
     try:
-        await client.get("submissions", parametry={"count": 1}, czasopismo=kontekst)
-    except (BladUwierzytelnienia, BladLogowania) as exc:
-        # D (recenzja): dawniej gubiliśmy `str(exc)` przy `BladUwierzytelnienia`
-        # — to narzędzie ma DIAGNOZOWAĆ, więc treść wyjątku (dlaczego
-        # dokładnie się nie udało) trafia do `uwaga` zamiast statycznego
-        # tekstu.
+        await client.get("submissions", params={"count": 1}, journal=context)
+    except (AuthenticationError, LoginError) as exc:
+        # D (review): previously we lost `str(exc)` for
+        # `AuthenticationError` — this tool is meant to DIAGNOSE, so the
+        # exception's message (exactly why it failed) goes into `note`
+        # instead of a static text.
         return {
-            "czasopismo": kontekst,
-            "uwierzytelniony": False,
-            "tozsamosc": None,
-            "uwaga": str(exc),
+            "journal": context,
+            "authenticated": False,
+            "identity": None,
+            "note": str(exc),
         }
-    if client.sciezka_auth != "token":
-        uzytkownik = client.tozsamosc_sesji
-        tozsamosc = przytnij(uzytkownik, POLA_TOZSAMOSCI) if uzytkownik else None
+    if client.auth_mode != "token":
+        user = client.session_identity
+        identity = trim(user, IDENTITY_FIELDS) if user else None
         return {
-            "czasopismo": kontekst,
-            "uwierzytelniony": True,
-            "tozsamosc": tozsamosc,
-            "uwaga": "Tożsamość pochodzi z sesji logowania (pkp.currentUser).",
+            "journal": context,
+            "authenticated": True,
+            "identity": identity,
+            "note": "The identity comes from the login session (pkp.currentUser).",
         }
     return {
-        "czasopismo": kontekst,
-        "uwierzytelniony": True,
-        "tozsamosc": None,
-        "uwaga": "OJS nie udostępnia endpointu tożsamości dla tokenu API.",
+        "journal": context,
+        "authenticated": True,
+        "identity": None,
+        "note": "OJS does not expose an identity endpoint for an API token.",
     }
 
 
-# --- Rejestracja w serwerze MCP ------------------------------------------------
+# --- Registration on the MCP server ------------------------------------------
 
 
-def zarejestruj_odczyt(mcp, client: OjsClient, katalog: Katalog) -> None:
-    """Zarejestruj narzędzia odczytu w serwerze MCP."""
+def register_read_tools(mcp, client: OjsClient, catalog: Catalog) -> None:
+    """Register the read tools on the MCP server."""
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def lista_czasopism() -> dict:
-        """Wypisz czasopisma widoczne dla bieżących poświadczeń.
+    @with_readable_error
+    async def list_journals() -> dict:
+        """List the journals visible to the current credentials.
 
-        Zwraca listę obiektów `{"sciezka", "nazwa"}`. `sciezka` to wartość
-        do podania jako parametr `czasopismo` w pozostałych narzędziach.
+        Returns a list of `{"path", "name"}` objects. `path` is the
+        value to pass as the `journal` parameter in the other tools.
         """
-        return await lista_czasopism_impl(client, katalog)
+        return await list_journals_impl(client, catalog)
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def kim_jestem(czasopismo: str | None = None) -> dict:
-        """Sprawdź, czy bieżące poświadczenia działają, i kim jesteś.
+    @with_readable_error
+    async def whoami(journal: str | None = None) -> dict:
+        """Check whether the current credentials work, and who you are.
 
-        Token API: OJS nie ma endpointu tożsamości dla tokenu — to
-        narzędzie mówi WYŁĄCZNIE, czy uwierzytelnianie w ogóle działa, nie
-        kim jest użytkownik (`tozsamosc` w odpowiedzi jest wtedy `None`).
+        API token: OJS has no identity endpoint for a token — this tool
+        reports ONLY whether authentication works at all, not who the
+        user is (`identity` in the response is then `None`).
 
-        Login i hasło: `tozsamosc` niesie realne dane zalogowanego
-        użytkownika (`id`, `username`, `fullName`, `roles`, `role_nazwy`).
+        Login and password: `identity` carries the logged-in user's
+        real data (`id`, `username`, `fullName`, `roles`, `role_names`).
         """
-        return await kim_jestem_impl(client, katalog, czasopismo=czasopismo)
+        return await whoami_impl(client, catalog, journal=journal)
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def szukaj_zgloszen(
-        fraza: str | None = None,
+    @with_readable_error
+    async def search_submissions(
+        phrase: str | None = None,
         status: list[str] | None = None,
-        etap: list[str] | None = None,
-        sekcja: list[int] | None = None,
-        bez_aktywnosci_dni: int | None = None,
-        zlozone_od: str | None = None,
-        zlozone_do: str | None = None,
-        sortuj: str = "lastActivity",
-        malejaco: bool = True,
+        stage: list[str] | None = None,
+        section: list[int] | None = None,
+        inactive_days: int | None = None,
+        submitted_from: str | None = None,
+        submitted_to: str | None = None,
+        sort_by: str = "lastActivity",
+        descending: bool = True,
         limit: int = 50,
-        czasopismo: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """Znajdź zgłoszenia (artykuły) w czasopiśmie.
+        """Find submissions (articles) in a journal.
 
-        `status`: w_toku, opublikowane, odrzucone, zaplanowane.
-        `etap`: zgloszenie, recenzja_zewnetrzna, redakcja, produkcja.
-        `sekcja`: lista ID sekcji (z `lista_sekcji`).
-        `bez_aktywnosci_dni`: tylko zgłoszenia bez ruchu przez N dni.
-        `sortuj`: datePublished, dateSubmitted, lastActivity, lastModified,
-        sequence, title. `malejaco=True` sortuje malejąco (domyślnie).
-        Daty w formacie RRRR-MM-DD. Filtr dat działa tylko na już pobranych
-        stronach wyniku — patrz pole `filtrowanie_dat_niepelne` w odpowiedzi.
+        `status`: queued, published, declined, scheduled.
+        `stage`: submission, external_review, editing, production.
+        `section`: a list of section IDs (from `list_sections`).
+        `inactive_days`: only submissions inactive for N days.
+        `sort_by`: datePublished, dateSubmitted, lastActivity,
+        lastModified, sequence, title. `descending=True` sorts
+        descending (default). Dates in YYYY-MM-DD format. The date
+        filter only applies to already-fetched pages of the result —
+        see the `date_filtering_incomplete` field in the response.
         """
-        return await szukaj_zgloszen_impl(
+        return await search_submissions_impl(
             client,
-            katalog,
-            czasopismo=czasopismo,
-            fraza=fraza,
+            catalog,
+            journal=journal,
+            phrase=phrase,
             status=status,
-            etap=etap,
-            sekcja=sekcja,
-            bez_aktywnosci_dni=bez_aktywnosci_dni,
-            zlozone_od=zlozone_od,
-            zlozone_do=zlozone_do,
-            sortuj=sortuj,
-            malejaco=malejaco,
+            stage=stage,
+            section=section,
+            inactive_days=inactive_days,
+            submitted_from=submitted_from,
+            submitted_to=submitted_to,
+            sort_by=sort_by,
+            descending=descending,
             limit=limit,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def pobierz_zgloszenie(
-        zgloszenie: int, czasopismo: str | None = None
-    ) -> dict:
-        """Pobierz szczegóły jednego zgłoszenia (artykułu) po jego ID.
+    @with_readable_error
+    async def get_submission(submission: int, journal: str | None = None) -> dict:
+        """Fetch the details of one submission (article) by its ID.
 
-        Zawiera skróconą listę jego publikacji (wersji). Pełną treść jednej
-        wersji zwraca `pobierz_publikacje`, a rundy recenzji
-        `recenzje_zgloszenia`.
+        Includes a trimmed list of its publications (versions). The full
+        content of one version is returned by `get_publication`, and
+        review rounds by `get_submission_reviews`.
         """
-        return await pobierz_zgloszenie_impl(
-            client, katalog, zgloszenie=zgloszenie, czasopismo=czasopismo
+        return await get_submission_impl(
+            client, catalog, submission=submission, journal=journal
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def pobierz_publikacje(
-        zgloszenie: int, publikacja: int, czasopismo: str | None = None
+    @with_readable_error
+    async def get_publication(
+        submission: int, publication: int, journal: str | None = None
     ) -> dict:
-        """Pobierz jedną wersję (publikację) zgłoszenia — pełne szczegóły.
+        """Fetch one version (publication) of a submission — full details.
 
-        Zgłoszenie może mieć kilka wersji (kolejne poprawki po recenzji) —
-        ID publikacji znajdziesz w wyniku `pobierz_zgloszenie`. W odróżnieniu
-        od skróconej listy, zwraca też abstrakt, pełną listę autorów, słowa
-        kluczowe, DOI, numer strony/artykułu i `galleys` — gotowe pliki tej
-        wersji (PDF, HTML itp.) z linkami publicznymi.
+        A submission may have several versions (successive revisions
+        after review) — find the publication ID in the result of
+        `get_submission`. Unlike the trimmed list, this also returns the
+        abstract, the full author list, keywords, the DOI, the page/
+        article number, and `galleys` — this version's ready-made files
+        (PDF, HTML, etc.) with public links.
         """
-        return await pobierz_publikacje_impl(
+        return await get_publication_impl(
             client,
-            katalog,
-            zgloszenie=zgloszenie,
-            publikacja=publikacja,
-            czasopismo=czasopismo,
+            catalog,
+            submission=submission,
+            publication=publication,
+            journal=journal,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def pliki_zgloszenia(
-        zgloszenie: int, limit: int = 100, czasopismo: str | None = None
+    @with_readable_error
+    async def list_submission_files(
+        submission: int, limit: int = 100, journal: str | None = None
     ) -> dict:
-        """Pobierz listę plików dołączonych do zgłoszenia (wszystkie etapy).
+        """Fetch the list of files attached to a submission (all stages).
 
-        Każdy plik ma `etap_pliku_nazwa` obok liczbowego kodu etapu, np.
-        `plik_recenzji`, `redakcja`, `wersja_finalna`, `tekst_glowny`.
+        Every file has `file_stage_name` alongside the numeric stage
+        code, e.g. `review_file`, `copyedit`, `final`, `body_text`.
         """
-        return await pliki_zgloszenia_impl(
-            client, katalog, zgloszenie=zgloszenie, czasopismo=czasopismo, limit=limit
+        return await list_submission_files_impl(
+            client, catalog, submission=submission, journal=journal, limit=limit
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def recenzje_zgloszenia(
-        zgloszenie: int, czasopismo: str | None = None
+    @with_readable_error
+    async def get_submission_reviews(
+        submission: int, journal: str | None = None
     ) -> dict:
-        """Pobierz rundy recenzji i przypisania recenzentów dla zgłoszenia.
+        """Fetch the review rounds and reviewer assignments for a
+        submission.
 
-        Zwraca `rundy_recenzji` (kolejne rundy tego zgłoszenia) i
-        `przypisania_recenzji` (kto recenzuje, na jakim etapie, z jakim
-        wynikiem).
+        Returns `review_rounds` (this submission's successive rounds)
+        and `review_assignments` (who is reviewing, at which stage, with
+        what result).
         """
-        return await recenzje_zgloszenia_impl(
-            client, katalog, zgloszenie=zgloszenie, czasopismo=czasopismo
+        return await get_submission_reviews_impl(
+            client, catalog, submission=submission, journal=journal
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def lista_numerow(
-        fraza: str | None = None,
-        tylko_opublikowane: bool | None = None,
-        sortuj: str = "datePublished",
+    @with_readable_error
+    async def list_issues(
+        phrase: str | None = None,
+        published_only: bool | None = None,
+        sort_by: str = "datePublished",
         limit: int = 50,
-        czasopismo: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """Znajdź numery (wydania) czasopisma.
+        """Find a journal's issues.
 
-        `tylko_opublikowane=True` ogranicza do numerów już opublikowanych,
-        `False` do przygotowywanych; pominięcie zwraca oba rodzaje.
-        `sortuj`: datePublished, lastModified, seq, publishedIssues,
-        unpublishedIssues, shelf. OJS sam ustala kierunek sortowania dla
-        każdej z tych wartości — nie da się go tu odwrócić.
+        `published_only=True` restricts to already-published issues,
+        `False` to those still being prepared; omitting it returns both
+        kinds. `sort_by`: datePublished, lastModified, seq,
+        publishedIssues, unpublishedIssues, shelf. OJS decides the sort
+        direction itself for each of these values — it cannot be
+        reversed here.
         """
-        return await lista_numerow_impl(
+        return await list_issues_impl(
             client,
-            katalog,
-            czasopismo=czasopismo,
-            fraza=fraza,
-            tylko_opublikowane=tylko_opublikowane,
-            sortuj=sortuj,
+            catalog,
+            journal=journal,
+            phrase=phrase,
+            published_only=published_only,
+            sort_by=sort_by,
             limit=limit,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def biezacy_numer(czasopismo: str | None = None) -> dict:
-        """Pobierz bieżący numer czasopisma (ten wyróżniony na stronie głównej).
+    @with_readable_error
+    async def get_current_issue(journal: str | None = None) -> dict:
+        """Fetch the journal's current issue (the one featured on the
+        home page).
 
-        Zwraca `numer: None`, jeśli czasopismo nie ma jeszcze ustawionego
-        numeru bieżącego.
+        Returns `issue: None` if the journal does not yet have a current
+        issue set.
         """
-        return await biezacy_numer_impl(client, katalog, czasopismo=czasopismo)
+        return await get_current_issue_impl(client, catalog, journal=journal)
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def pobierz_numer(numer: int, czasopismo: str | None = None) -> dict:
-        """Pobierz jeden numer (wydanie) czasopisma po jego ID."""
-        return await pobierz_numer_impl(
-            client, katalog, numer=numer, czasopismo=czasopismo
-        )
+    @with_readable_error
+    async def get_issue(issue: int, journal: str | None = None) -> dict:
+        """Fetch one issue of a journal by its ID."""
+        return await get_issue_impl(client, catalog, issue=issue, journal=journal)
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def lista_sekcji(
-        fraza: str | None = None,
-        tylko_aktywne: bool | None = None,
+    @with_readable_error
+    async def list_sections(
+        phrase: str | None = None,
+        active_only: bool | None = None,
         limit: int = 100,
-        czasopismo: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """Znajdź sekcje (działy) czasopisma, np. „Artykuły”, „Recenzje”.
+        """Find a journal's sections, e.g. "Articles", "Reviews".
 
-        `tylko_aktywne=True` pomija sekcje wyłączone; pominięcie zwraca
-        wszystkie.
+        `active_only=True` skips disabled sections; omitting it returns
+        all of them.
         """
-        return await lista_sekcji_impl(
+        return await list_sections_impl(
             client,
-            katalog,
-            czasopismo=czasopismo,
-            fraza=fraza,
-            tylko_aktywne=tylko_aktywne,
+            catalog,
+            journal=journal,
+            phrase=phrase,
+            active_only=active_only,
             limit=limit,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def szukaj_uzytkownikow(
-        fraza: str | None = None,
+    @with_readable_error
+    async def search_users(
+        phrase: str | None = None,
         status: str = "active",
-        rola: list[str] | None = None,
+        role: list[str] | None = None,
         limit: int = 50,
-        czasopismo: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """Znajdź użytkowników czasopisma po nazwie/e-mailu, statusie i roli.
+        """Find a journal's users by name/email, status, and role.
 
-        `status`: active (domyślnie), disabled, all.
-        `rola`: administrator_witryny, menedzer_czasopisma, redaktor_dzialu,
-        recenzent, asystent, autor, czytelnik, menedzer_prenumerat.
+        `status`: active (default), disabled, all.
+        `role`: site_admin, manager, sub_editor, reviewer, assistant,
+        author, reader, subscription_manager.
         """
-        return await szukaj_uzytkownikow_impl(
+        return await search_users_impl(
             client,
-            katalog,
-            czasopismo=czasopismo,
-            fraza=fraza,
+            catalog,
+            journal=journal,
+            phrase=phrase,
             status=status,
-            rola=rola,
+            role=role,
             limit=limit,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def lista_recenzentow(
-        fraza: str | None = None,
+    @with_readable_error
+    async def list_reviewers(
+        phrase: str | None = None,
         status: str = "active",
         limit: int = 50,
-        czasopismo: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """Znajdź recenzentów czasopisma wraz z ich statystykami recenzji.
+        """Find a journal's reviewers together with their review
+        statistics.
 
-        `status`: active (domyślnie), disabled, all. Zwraca m.in. liczbę
-        aktywnych/ukończonych/odrzuconych recenzji, średni czas ukończenia
-        recenzji w dniach i ocenę recenzenta.
+        `status`: active (default), disabled, all. Returns, among
+        others, the count of active/completed/declined reviews, the
+        average review completion time in days, and the reviewer's
+        rating.
         """
-        return await lista_recenzentow_impl(
+        return await list_reviewers_impl(
             client,
-            katalog,
-            czasopismo=czasopismo,
-            fraza=fraza,
+            catalog,
+            journal=journal,
+            phrase=phrase,
             status=status,
             limit=limit,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def statystyki_publikacji(
-        os_czasu: bool = False,
-        interwal: str = "day",
-        data_od: str | None = None,
-        data_do: str | None = None,
+    @with_readable_error
+    async def publication_stats(
+        timeline: bool = False,
+        interval: str = "day",
+        date_from: str | None = None,
+        date_to: str | None = None,
         limit: int = 50,
-        czasopismo: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """Statystyki wyświetleń publikacji — ranking albo szereg czasowy.
+        """Publication view statistics — a ranking or a time series.
 
-        `os_czasu=False` (domyślnie): ranking publikacji wg liczby wyświetleń.
-        `os_czasu=True`: suma wyświetleń w czasie; `interwal`: day albo month.
-        Daty `data_od`/`data_do` w formacie RRRR-MM-DD.
+        `timeline=False` (default): a ranking of publications by view
+        count. `timeline=True`: the sum of views over time; `interval`:
+        day or month. Dates `date_from`/`date_to` in YYYY-MM-DD format.
         """
-        return await statystyki_publikacji_impl(
+        return await publication_stats_impl(
             client,
-            katalog,
-            czasopismo=czasopismo,
-            os_czasu=os_czasu,
-            interwal=interwal,
-            data_od=data_od,
-            data_do=data_do,
+            catalog,
+            journal=journal,
+            timeline=timeline,
+            interval=interval,
+            date_from=date_from,
+            date_to=date_to,
             limit=limit,
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def statystyki_redakcyjne(
-        data_od: str | None = None,
-        data_do: str | None = None,
-        czasopismo: str | None = None,
+    @with_readable_error
+    async def editorial_stats(
+        date_from: str | None = None,
+        date_to: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """Zbiorcze statystyki redakcyjne czasopisma (liczba zgłoszeń,
-        decyzji, czas do pierwszej decyzji itd.) jako lista par klucz/wartość.
+        """Aggregate editorial statistics for a journal (submission
+        count, decisions, time to first decision, etc.) as a list of
+        key/value pairs.
 
-        Daty `data_od`/`data_do` w formacie RRRR-MM-DD zawężają okres; bez
-        nich OJS liczy statystyki od początku czasopisma.
+        Dates `date_from`/`date_to` in YYYY-MM-DD format narrow the
+        period; without them OJS computes statistics from the journal's
+        inception.
         """
-        return await statystyki_redakcyjne_impl(
-            client, katalog, czasopismo=czasopismo, data_od=data_od, data_do=data_do
+        return await editorial_stats_impl(
+            client, catalog, journal=journal, date_from=date_from, date_to=date_to
         )
 
     @mcp.tool()
-    @z_czytelnym_bledem
-    async def lista_doi(
+    @with_readable_error
+    async def list_dois(
         status: list[str] | None = None,
         limit: int = 100,
-        czasopismo: str | None = None,
+        journal: str | None = None,
     ) -> dict:
-        """Znajdź identyfikatory DOI zarejestrowane w czasopiśmie.
+        """Find the DOIs registered for a journal.
 
-        `status`: niezarejestrowane, zgloszone, zarejestrowane, blad,
-        nieaktualne.
+        `status`: unregistered, submitted, registered, error, stale.
         """
-        return await lista_doi_impl(
-            client, katalog, czasopismo=czasopismo, status=status, limit=limit
+        return await list_dois_impl(
+            client, catalog, journal=journal, status=status, limit=limit
         )

@@ -18,7 +18,12 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError, UnexpectedToolError
 
 from ojs_mcp.config import MissingConfiguration
-from ojs_mcp.exceptions import InputError, OjsError, ValidationError, WritesDisabledError
+from ojs_mcp.exceptions import (
+    InputError,
+    OjsError,
+    ValidationError,
+    WritesDisabledError,
+)
 from ojs_mcp.mcp_errors import is_wrapped, with_readable_error
 
 

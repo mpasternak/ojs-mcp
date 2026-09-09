@@ -1,41 +1,44 @@
-"""Zasoby MCP: indeks endpointów API i katalog czasopism instancji.
+"""MCP resources: the API endpoint index and the instance's journal catalog.
 
-``ojs://endpointy`` czyni furtkę ``ojs_zapytanie`` (``passthrough.py``)
-użyteczną — jej opis odsyła model właśnie tutaj po listę endpointów spoza
-kuratowanej listy narzędzi. ``ojs://czasopisma`` daje modelowi katalog
-czasopism instancji bez wywoływania osobnego narzędzia.
+``ojs://endpoints`` is what makes the ``ojs_request`` gateway
+(``passthrough.py``) useful — its description points the model right
+here for the list of endpoints outside the curated tool list.
+``ojs://journals`` gives the model the instance's journal catalog
+without calling a separate tool.
 
-Dekorator błędów (dygresja, Task 14): ``mcp_errors.z_czytelnym_bledem`` NIE
-jest tu użyty, bo dosłownie ten sam dekorator (opakowujący w
-``mcp.server.mcpserver.exceptions.ToolError``) nic by nie naprawił —
-sprawdzone bezpośrednio w kodzie SDK zainstalowanej wersji ``mcp`` (2.2.0):
+The error decorator (a digression, Task 14): ``mcp_errors.with_readable_error``
+is NOT used here, because that exact decorator (wrapping in
+``mcp.server.mcpserver.exceptions.ToolError``) would fix nothing —
+verified directly in the installed ``mcp`` SDK's code (2.2.0):
 
-* ``MCPServer.read_resource()`` (``server.py``) łapie wyjątki wg TYPU:
-  ``ResourceError`` (i jego podklasy) przechodzi do klienta z WŁASNĄ
-  treścią; każdy inny wyjątek (poza ``MCPError``) trafia do
-  ``except Exception`` i zostaje zamieniony na
-  ``UnexpectedResourceError(f"Error reading resource {uri}")`` — komunikat
-  nazywa TYLKO uri, oryginalna treść ginie (ląduje jedynie w ``__cause__``,
-  zalogowanym po stronie serwera). To dokładnie ten sam problem, który
-  ``z_czytelnym_bledem`` rozwiązuje dla narzędzi — ale z inną klasą
-  ucieczki: ``ResourceError``, nie ``ToolError``. ``ToolError`` podniesiony
-  z wnętrza zasobu NIE jest rozpoznawany specjalnie przez
-  ``read_resource()`` (nie jest ani ``ResourceError``, ani ``MCPError``) —
-  wpadłby do tej samej gałęzi ``except Exception`` i zostałby spłaszczony
-  tak samo, jak nieopakowany wyjątek. Dlatego zasób ``ojs://czasopisma``
-  (jedyny, który faktycznie wykonuje I/O — ``katalog.czasopisma()`` może
-  podnieść ``BladOjs``, np. gdy brak ``OJS_JOURNAL`` i brak roli admina,
-  patrz ``catalog.Katalog.czasopisma``) dostaje WŁASNE, lokalne tłumaczenie
-  na ``ResourceError`` poniżej — żeby taki komunikat nie zginął.
-* ``Prompt.render()`` (``prompts/base.py``) jest jeszcze surowsze: łapie
-  KAŻDY wyjątek poza ``MCPError`` i zamienia go na
-  ``ValueError(f"Error rendering prompt {self.name}")`` — bez żadnej klasy
-  ucieczki analogicznej do ``ToolError``/``ResourceError``. Nawet
-  podniesienie ``ResourceError`` z wnętrza prompta zostałoby tu
-  spłaszczone. Nasze trzy prompty (``prompts.py``) nie robią żadnego I/O —
-  to czysto tekstowe szablony ze zwykłymi argumentami i wartościami
-  domyślnymi — więc nie mają jak podnieść wyjątku domenowego i nic tu nie
-  wymaga opakowania. Decyzja i uzasadnienie opisane też w raporcie Tasku 14.
+* ``MCPServer.read_resource()`` (``server.py``) catches exceptions by
+  TYPE: ``ResourceError`` (and its subclasses) passes to the client with
+  ITS OWN content; every other exception (besides ``MCPError``) falls
+  into ``except Exception`` and is turned into
+  ``UnexpectedResourceError(f"Error reading resource {uri}")`` — the
+  message names ONLY the uri, the original content is lost (it only ends
+  up in ``__cause__``, logged server-side). This is exactly the same
+  problem ``with_readable_error`` solves for tools — but with a different
+  escape class: ``ResourceError``, not ``ToolError``. A ``ToolError``
+  raised from inside a resource is NOT specially recognized by
+  ``read_resource()`` (it is neither a ``ResourceError`` nor an
+  ``MCPError``) — it would fall into the same ``except Exception`` branch
+  and be flattened just like an unwrapped exception. That is why the
+  ``ojs://journals`` resource (the only one that actually does I/O —
+  ``catalog.journals()`` can raise ``OjsError``, e.g. when there is no
+  ``OJS_JOURNAL`` and no admin role, see ``catalog.Catalog.journals``)
+  gets its OWN, local translation to ``ResourceError`` below — so such a
+  message is not lost.
+* ``Prompt.render()`` (``prompts/base.py``) is even more blunt: it
+  catches EVERY exception besides ``MCPError`` and turns it into
+  ``ValueError(f"Error rendering prompt {self.name}")`` — without any
+  escape class analogous to ``ToolError``/``ResourceError``. Even
+  raising ``ResourceError`` from inside a prompt would be flattened
+  here. Our three prompts (``prompts.py``) do no I/O at all — they are
+  purely textual templates with plain arguments and default values — so
+  they have no way to raise a domain exception and nothing here needs
+  wrapping. The decision and its reasoning are also described in the
+  Task 14 report.
 """
 
 from __future__ import annotations
@@ -45,54 +48,54 @@ from typing import Any
 
 from mcp.server.mcpserver.exceptions import ResourceError
 
-from .catalog import Katalog
-from .mcp_errors import BLEDY_DOMENOWE
+from .catalog import Catalog
+from .mcp_errors import DOMAIN_ERRORS
 
 
-def wczytaj_indeks() -> str:
-    """Zwróć kompaktowy indeks endpointów spakowany razem z pakietem."""
-    return (files("ojs_mcp.data") / "endpointy.compact.txt").read_text("utf-8")
+def load_index() -> str:
+    """Return the compact endpoint index packaged with the package."""
+    return (files("ojs_mcp.data") / "endpoints.compact.txt").read_text("utf-8")
 
 
-def zarejestruj_zasoby(mcp: Any, katalog: Katalog) -> None:
-    """Zarejestruj zasoby ``ojs://endpointy`` i ``ojs://czasopisma``.
+def register_resources(mcp: Any, catalog: Catalog) -> None:
+    """Register the ``ojs://endpoints`` and ``ojs://journals`` resources.
 
-    Rejestrowane BEZ WARUNKU ``allow_writes`` — żaden z zasobów niczego
-    nie modyfikuje.
+    Registered WITHOUT the ``allow_writes`` condition — neither resource
+    modifies anything.
     """
 
     @mcp.resource(
-        "ojs://endpointy",
-        name="endpointy",
-        title="Indeks endpointów REST API OJS",
+        "ojs://endpoints",
+        name="endpoints",
+        title="OJS REST API endpoint index",
         description=(
-            "Kompaktowa lista wszystkich endpointów REST API OJS (metoda, "
-            "ścieżka, parametry, krótki opis). Punkt odniesienia dla "
-            "narzędzia `ojs_zapytanie` przy endpointach spoza gotowej "
-            "listy narzędzi — sprawdź tu dokładną ścieżkę i parametry, "
-            "zanim ich użyjesz."
+            "A compact list of all OJS REST API endpoints (method, "
+            "path, parameters, a short description). A reference point "
+            "for the `ojs_request` tool for endpoints outside the "
+            "ready-made tool list — check the exact path and parameters "
+            "here before using them."
         ),
         mime_type="text/plain",
     )
-    def endpointy() -> str:
-        return wczytaj_indeks()
+    def endpoints() -> str:
+        return load_index()
 
     @mcp.resource(
-        "ojs://czasopisma",
-        name="czasopisma",
-        title="Katalog czasopism instancji",
+        "ojs://journals",
+        name="journals",
+        title="Instance journal catalog",
         description=(
-            "Lista czasopism widocznych dla bieżących poświadczeń, jako "
-            'obiekty {"sciezka", "nazwa"} — "sciezka" to wartość parametru '
-            "`czasopismo` w pozostałych narzędziach i promptach."
+            "The list of journals visible to the current credentials, as "
+            '{"path", "name"} objects — "path" is the value of the '
+            "`journal` parameter in the other tools and prompts."
         ),
         mime_type="application/json",
     )
-    async def czasopisma() -> list[dict]:
+    async def journals() -> list[dict]:
         try:
-            return await katalog.czasopisma()
-        except BLEDY_DOMENOWE as exc:
-            # Patrz docstring modułu: `ResourceError`, nie `ToolError` —
-            # to jedyna klasa, którą `read_resource()` przepuszcza do
-            # klienta z ZACHOWANĄ treścią.
+            return await catalog.journals()
+        except DOMAIN_ERRORS as exc:
+            # See the module docstring: `ResourceError`, not `ToolError`
+            # — the only class `read_resource()` passes through to the
+            # client with its content PRESERVED.
             raise ResourceError(str(exc)) from exc

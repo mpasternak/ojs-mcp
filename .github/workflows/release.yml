@@ -63,8 +63,8 @@ jobs:
           if len(kola) != 1:
               sys.exit(f"Oczekiwano dokładnie jednego koła w dist/, jest: {kola}")
           with zipfile.ZipFile(kola[0]) as z:
-              if "ojs_mcp/data/endpointy.compact.txt" not in z.namelist():
-                  sys.exit("W kole brakuje ojs_mcp/data/endpointy.compact.txt")
+              if "ojs_mcp/data/endpoints.compact.txt" not in z.namelist():
+                  sys.exit("W kole brakuje ojs_mcp/data/endpoints.compact.txt")
           print(f"Zasób danych obecny w {kola[0]}.")
           PY
 

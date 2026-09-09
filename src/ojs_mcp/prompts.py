@@ -1,20 +1,20 @@
-"""Prompty redakcyjne.
+"""Editorial prompts.
 
-Prompty to instrukcje DLA MODELU, nie dokumentacja — model ma spory zestaw
-narzędzi (siedemnaście przy samym odczycie, więcej, gdy `OJS_ALLOW_WRITES`
-włączy narzędzia zapisu) i musi wiedzieć, których użyć i w jakiej
-kolejności. Dlatego każdy prompt
-niżej nazywa wprost konkretne narzędzia i ich parametry (nie tylko opisuje
-cel), a tam, gdzie OJS ma gotowy filtr po swojej stronie (np.
-`bez_aktywnosci_dni` w `szukaj_zgloszen`), każe modelowi z niego skorzystać
-zamiast pobierać wszystko i filtrować samodzielnie po stronie modelu.
+Prompts are instructions FOR THE MODEL, not documentation — the model
+has a sizable toolset (seventeen for reads alone, more when
+`OJS_ALLOW_WRITES` turns on the write tools) and needs to know which
+ones to use and in what order. That is why every prompt below names the
+specific tools and their parameters outright (not just describing the
+goal), and wherever OJS already has a ready-made filter on its side
+(e.g. `inactive_days` in `search_submissions`), it tells the model to
+use it instead of fetching everything and filtering client-side.
 
-Żaden z promptów nie robi I/O — to czyste funkcje tekstowe z argumentami o
-sensownych wartościach domyślnych. Nie mają więc jak podnieść wyjątku
-domenowego, więc `zarejestruj_prompty` nie przyjmuje ani `client`, ani
-`katalog` — i nic tu nie wymaga `mcp_errors.z_czytelnym_bledem` (uzasadnienie
-pełne w docstringu modułu `resources.py`, obok analogicznej decyzji dla
-zasobów).
+None of the prompts do any I/O — they are pure text functions with
+sensibly defaulted arguments. So they have no way to raise a domain
+exception, which is why `register_prompts` takes neither `client` nor
+`catalog` — and nothing here needs `mcp_errors.with_readable_error`
+(the full reasoning is in the `resources.py` module docstring, next to
+the analogous decision for resources).
 """
 
 from __future__ import annotations
@@ -22,125 +22,129 @@ from __future__ import annotations
 from typing import Any
 
 
-def _wskazanie(czasopismo: str | None) -> str:
-    """Fragment zdania precyzujący czasopismo, albo pustka dla domyślnego."""
-    return f" (czasopismo `{czasopismo}`)" if czasopismo else ""
+def _mention(journal: str | None) -> str:
+    """A sentence fragment naming the journal, or empty for the default."""
+    return f" (journal `{journal}`)" if journal else ""
 
 
-def _arg_czasopismo(czasopismo: str | None) -> str:
-    """Argument `czasopismo="..."` BEZ wiodącego przecinka, albo pustka.
+def _journal_arg(journal: str | None) -> str:
+    """A `journal="..."` argument WITHOUT a leading comma, or empty.
 
-    Do użycia tam, gdzie to JEDYNY argument wywołania narzędzia w tekście
-    promptu (np. `statystyki_redakcyjne(<tu>)`).
+    For use where it is the ONLY call argument in the prompt text (e.g.
+    `publication_stats(<here>)`).
     """
-    return f'czasopismo="{czasopismo}"' if czasopismo else ""
+    return f'journal="{journal}"' if journal else ""
 
 
-def _param_czasopismo(czasopismo: str | None) -> str:
-    """Fragment wywołania narzędzia z parametrem `czasopismo`, jeśli podano —
-    z wiodącym przecinkiem, do dopisania PO innych argumentach.
+def _journal_param(journal: str | None) -> str:
+    """A tool-call fragment carrying the `journal` parameter, if given —
+    with a leading comma, to append AFTER other arguments.
 
-    Wydzielone z `_arg_czasopismo`, żeby ten sam parametr nie ginął przy
-    kopiowaniu wywołania między krokami promptu — patrz Runda 1 recenzji
-    Tasku 14: krok furtki w `podsumuj_numer` zgubił go, bo był dopisywany
-    ręcznie zamiast przez tę funkcję.
+    Split out of `_journal_arg` so the same parameter does not go missing
+    when a call is copied between prompt steps — see Round 1 of the Task
+    14 review: the gateway step in `summarize_issue` dropped it, because
+    it was added by hand instead of through this function.
     """
-    arg = _arg_czasopismo(czasopismo)
+    arg = _journal_arg(journal)
     return f", {arg}" if arg else ""
 
 
-def zarejestruj_prompty(mcp: Any) -> None:
-    """Zarejestruj prompty `przeglad_redakcyjny`, `utkniete_w_recenzji`,
-    `podsumuj_numer`.
+def register_prompts(mcp: Any) -> None:
+    """Register the `editorial_overview`, `stuck_in_review`,
+    `summarize_issue` prompts.
 
-    Rejestrowane BEZ WARUNKU ``allow_writes`` — żaden prompt niczego nie
-    modyfikuje, wszystkie wskazują wyłącznie narzędzia odczytu.
+    Registered WITHOUT the ``allow_writes`` condition — no prompt
+    modifies anything, they all point exclusively to read tools.
     """
 
     @mcp.prompt()
-    def przeglad_redakcyjny(czasopismo: str | None = None) -> str:
-        """Stan zgłoszeń w toku z podziałem na etapy oraz stan bieżącego numeru."""
-        wsk = _wskazanie(czasopismo)
-        par = _param_czasopismo(czasopismo)
+    def editorial_overview(journal: str | None = None) -> str:
+        """State of in-progress submissions broken down by stage, plus the
+        state of the current issue."""
+        mention = _mention(journal)
+        param = _journal_param(journal)
         return (
-            f"Przygotuj przegląd redakcyjny{wsk}.\n\n"
-            f"1. Wywołaj `statystyki_redakcyjne({_arg_czasopismo(czasopismo)})` po "
-            "zbiorcze liczby: zgłoszenia, decyzje, czas do pierwszej decyzji.\n"
-            f"2. Wywołaj `biezacy_numer({_arg_czasopismo(czasopismo)})`, żeby "
-            "sprawdzić stan bieżącego numeru (czy jest ustawiony, jaki ma "
-            "tytuł/wolumin/rok).\n"
-            "3. Dla KAŻDEGO z czterech etapów z osobna — `zgloszenie`, "
-            "`recenzja_zewnetrzna`, `redakcja`, `produkcja` — wywołaj "
-            f'`szukaj_zgloszen(etap=["<etap>"], status=["w_toku"]{par}, '
-            'sortuj="lastActivity", malejaco=False, limit=20)`, żeby policzyć '
-            "zgłoszenia na etapie i wypisać te NAJDŁUŻEJ bez aktywności. Nie "
-            "pobieraj wszystkich zgłoszeń jednym wywołaniem bez `etap` i nie "
-            "dziel ich sam po stronie modelu — to gotowy filtr po stronie OJS.\n"
-            "4. Zestaw wynik w jedną notatkę redakcyjną: liczba zgłoszeń per "
-            "etap, zgłoszenia wymagające uwagi (najdłuższa bezczynność), i "
-            "stan bieżącego numeru z kroku 2.\n\n"
-            "Jeśli któreś wywołanie zwróci błąd, zgłoś to wprost przy danym "
-            "etapie zamiast pomijać go milcząco."
+            f"Prepare an editorial overview{mention}.\n\n"
+            f"1. Call `editorial_stats({_journal_arg(journal)})` for the "
+            "aggregate numbers: submissions, decisions, time to first "
+            "decision.\n"
+            f"2. Call `get_current_issue({_journal_arg(journal)})` to check "
+            "the state of the current issue (whether it is set, its "
+            "title/volume/year).\n"
+            "3. For EACH of the four stages separately — `submission`, "
+            "`external_review`, `editing`, `production` — call "
+            f'`search_submissions(stage=["<stage>"], status=["queued"]{param}, '
+            'sort_by="lastActivity", descending=False, limit=20)`, to count '
+            "submissions at that stage and list the ones inactive the "
+            "LONGEST. Do not fetch all submissions in one call without "
+            "`stage` and do not split them yourself on the model side — "
+            "this is a ready-made filter on the OJS side.\n"
+            "4. Combine the result into a single editorial note: submission "
+            "counts per stage, submissions needing attention (longest "
+            "inactivity), and the current issue's state from step 2.\n\n"
+            "If any call returns an error, report it explicitly for that "
+            "stage instead of silently skipping it."
         )
 
     @mcp.prompt()
-    def utkniete_w_recenzji(
-        bez_aktywnosci_dni: int = 14, czasopismo: str | None = None
-    ) -> str:
-        """Zgłoszenia utknięte w recenzji zewnętrznej bez ruchu od N dni."""
-        wsk = _wskazanie(czasopismo)
-        par = _param_czasopismo(czasopismo)
+    def stuck_in_review(inactive_days: int = 14, journal: str | None = None) -> str:
+        """Submissions stuck in external review with no movement for N days."""
+        mention = _mention(journal)
+        param = _journal_param(journal)
         return (
-            f"Znajdź zgłoszenia utknięte w recenzji zewnętrznej{wsk}.\n\n"
-            "1. Wywołaj `szukaj_zgloszen` z parametrami "
-            '`etap=["recenzja_zewnetrzna"]` i '
-            f"`bez_aktywnosci_dni={bez_aktywnosci_dni}`"
-            f"{par} — to gotowy filtr po stronie OJS. NIE pobieraj wszystkich "
-            "zgłoszeń i nie licz bezczynności sam po stronie modelu.\n"
-            "2. Dla każdego znalezionego zgłoszenia wywołaj "
-            f"`recenzje_zgloszenia(zgloszenie=<id>{par})`, żeby sprawdzić "
-            "przypisania recenzentów, ich terminy i ewentualne wyniki.\n"
-            "3. Zestaw krótką listę: tytuł, ID zgłoszenia, liczba dni bez "
-            "aktywności, status każdego przypisanego recenzenta (przypisany / "
-            "w trakcie / spóźniony / zakończony) i rekomendację działania "
-            "(przypomnieć recenzentowi, dodać kolejnego recenzenta, albo "
-            "podjąć decyzję redakcyjną bez czekania dalej).\n\n"
-            "Jeśli w odpowiedzi `szukaj_zgloszen` pojawi się pole "
-            "`filtrowanie_dat_niepelne`, zaznacz to w podsumowaniu — wynik "
-            "może nie obejmować wszystkich pasujących zgłoszeń."
+            f"Find submissions stuck in external review{mention}.\n\n"
+            "1. Call `search_submissions` with the parameters "
+            '`stage=["external_review"]` and '
+            f"`inactive_days={inactive_days}`"
+            f"{param} — this is a ready-made filter on the OJS side. Do "
+            "NOT fetch all submissions and count inactivity yourself on "
+            "the model side.\n"
+            "2. For each submission found, call "
+            f"`get_submission_reviews(submission=<id>{param})`, to check "
+            "reviewer assignments, their deadlines, and any results.\n"
+            "3. Assemble a short list: title, submission ID, days without "
+            "activity, each assigned reviewer's status (assigned / in "
+            "progress / overdue / complete), and a recommended action "
+            "(remind the reviewer, add another reviewer, or make an "
+            "editorial decision without waiting longer).\n\n"
+            "If the `search_submissions` response includes a "
+            "`date_filtering_incomplete` field, flag it in the summary — "
+            "the result may not cover every matching submission."
         )
 
     @mcp.prompt()
-    def podsumuj_numer(numer: int | None = None, czasopismo: str | None = None) -> str:
-        """Zawartość numeru (wydania) złożona w notę redakcyjną."""
-        wsk = _wskazanie(czasopismo)
-        par = _param_czasopismo(czasopismo)
-        if numer is None:
-            krok1 = (
-                f"1. Wywołaj `biezacy_numer({_arg_czasopismo(czasopismo)})`, żeby "
-                "pobrać bieżący numer. Jeśli pole `numer` w odpowiedzi jest "
-                "`None`, czasopismo nie ma jeszcze ustawionego numeru bieżącego "
-                "— zgłoś to wprost i zakończ, zamiast zgadywać."
+    def summarize_issue(issue: int | None = None, journal: str | None = None) -> str:
+        """An issue's contents assembled into an editorial note."""
+        mention = _mention(journal)
+        param = _journal_param(journal)
+        if issue is None:
+            step1 = (
+                f"1. Call `get_current_issue({_journal_arg(journal)})` to "
+                "fetch the current issue. If the `issue` field in the "
+                "response is `None`, the journal does not yet have a "
+                "current issue set — report that explicitly and stop, "
+                "instead of guessing."
             )
         else:
-            krok1 = (
-                f"1. Wywołaj `pobierz_numer(numer={numer}{par})`, żeby pobrać "
-                "metadane numeru (wolumin, numer, rok, tytuł)."
+            step1 = (
+                f"1. Call `get_issue(issue={issue}{param})` to fetch the "
+                "issue's metadata (volume, number, year, title)."
             )
         return (
-            f"Przygotuj notę redakcyjną podsumowującą zawartość numeru{wsk}.\n\n"
-            f"{krok1}\n"
-            "2. `pobierz_numer`/`biezacy_numer` zwracają WYŁĄCZNIE metadane "
-            "numeru — bez listy artykułów. Po pełną zawartość (sekcje i "
-            'artykuły) wywołaj furtkę `ojs_zapytanie(sciezka="issues/<id '
-            f'numeru z kroku 1>"{par})`; dokładny kształt odpowiedzi sprawdź w '
-            "zasobie `ojs://endpointy`.\n"
-            "3. Dla każdego artykułu zwróconego przez furtkę wywołaj "
-            f"`pobierz_publikacje(zgloszenie=<id>, publikacja=<id_publikacji>{par})`, "
-            "żeby dostać tytuł, autorów i abstrakt.\n"
-            "4. Złóż notę redakcyjną PO POLSKU: nagłówek numeru "
-            "(wolumin/numer/rok/tytuł), a pod nim lista artykułów w formacie "
-            "„tytuł — autorzy”, pogrupowana wg sekcji, jeśli furtka je zwróciła.\n\n"
-            "To tekst do publikacji, nie surowy zrzut danych — zwięźle, bez "
-            "identyfikatorów wewnętrznych OJS w treści."
+            f"Prepare an editorial note summarizing an issue's contents{mention}.\n\n"
+            f"{step1}\n"
+            "2. `get_issue`/`get_current_issue` return ONLY the issue's "
+            "metadata — no article list. For the full contents (sections "
+            'and articles), call the `ojs_request(path="issues/<issue id '
+            f'from step 1>"{param})` gateway; check the exact response '
+            "shape in the `ojs://endpoints` resource.\n"
+            "3. For each article the gateway returns, call "
+            f"`get_publication(submission=<id>, publication=<publication_id>{param})`, "
+            "to get the title, authors and abstract.\n"
+            "4. Compose the editorial note: the issue's header "
+            "(volume/number/year/title), and below it a list of articles "
+            'formatted as "title — authors", grouped by section if the '
+            "gateway returned it.\n\n"
+            "This is text meant for publication, not a raw data dump — "
+            "keep it concise, without internal OJS identifiers in the body."
         )
