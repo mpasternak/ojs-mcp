@@ -8,6 +8,10 @@
   `config.inc.php` — bez tego patrz [Zanim zaczniesz](index.md#zanim-zaczniesz).
 - Klient MCP (Claude Desktop, Claude Code i inne), który potrafi
   uruchamiać serwery przez `stdio`.
+- Poświadczenia do OJS: token API (`OJS_API_TOKEN`) albo para login/hasło
+  (`OJS_USERNAME`/`OJS_PASSWORD`) — patrz [Uwierzytelnianie](uwierzytelnianie.md).
+  Sam `OJS_BASE_URL` nie wystarczy do uruchomienia; bez żadnej z tych
+  dwóch opcji serwer kończy działanie czytelnym błędem zamiast startu.
 
 ## Wariant 1: `uvx` (zalecany)
 
@@ -20,11 +24,16 @@ uvx ojs-mcp
 ```
 
 Bez zmiennych środowiskowych serwer zaraz się zatrzyma — potrzebuje
-przynajmniej `OJS_BASE_URL`:
+`OJS_BASE_URL` ORAZ poświadczeń (token albo login/hasło):
 
 ```bash
-OJS_BASE_URL=https://czasopisma.twoja-uczelnia.pl uvx ojs-mcp
+OJS_BASE_URL=https://czasopisma.twoja-uczelnia.pl \
+OJS_API_TOKEN=twój-token \
+uvx ojs-mcp
 ```
+
+Samo `OJS_BASE_URL` nie wystarczy — bez poświadczeń serwer zakończy się
+czytelnym błędem („Brak poświadczeń…”) zamiast wystartować.
 
 W praktyce `uvx` uruchamia klient MCP za ciebie, z konfiguracją w formacie
 opisanym w [README](https://github.com/mpasternak/ojs-mcp#readme) — nie

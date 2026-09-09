@@ -172,6 +172,24 @@ def test_main_bez_base_url_konczy_bledem(monkeypatch, capsys):
     assert "OJS_BASE_URL" in capsys.readouterr().err
 
 
+def test_main_bez_poswiadczen_stdio_konczy_czytelnym_bledem(monkeypatch, capsys):
+    """W2 (recenzja): brak poświadczeń w trybie stdio dawał surowy
+    traceback (`BladUwierzytelnienia` z `zbuduj_auth` nie było łapane w
+    `main()`) — druga najczęstsza pomyłka konfiguracyjna po `OJS_BASE_URL`,
+    a w bundlu MCPB pole tokenu jest opcjonalne.
+    """
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_JOURNAL", "rocznik")
+    monkeypatch.delenv("OJS_API_TOKEN", raising=False)
+    monkeypatch.delenv("OJS_USERNAME", raising=False)
+    monkeypatch.delenv("OJS_PASSWORD", raising=False)
+    monkeypatch.delenv("OJS_MCP_TRANSPORT", raising=False)
+    assert main([]) == 2
+    blad = capsys.readouterr().err
+    assert "OJS_API_TOKEN" in blad
+    assert "OJS_USERNAME" in blad
+
+
 def test_wersja(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])

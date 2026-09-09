@@ -47,3 +47,56 @@ def test_origins_lista_po_przecinku(monkeypatch):
     monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
     monkeypatch.setenv("OJS_MCP_ALLOWED_ORIGINS", "https://a.pl, https://b.pl")
     assert Config.from_env().allowed_origins == ("https://a.pl", "https://b.pl")
+
+
+# --- W1 (recenzja): OJS_MCP_HTTP_HOST/OJS_MCP_HTTP_PORT bez konwencji ----
+
+
+def test_http_host_ustawiony_ale_pusty_wraca_do_domyslnego(monkeypatch):
+    """Regresja W1: `OJS_MCP_HTTP_HOST=` USTAWIONE, ale PUSTE (typowy efekt
+    podstawienia nieustawionej zmiennej w skrypcie wdrożeniowym) dawało
+    pusty host — czyli bind na WSZYSTKICH interfejsach zamiast na pętli
+    zwrotnej. Musi spaść na domyślne `127.0.0.1`, tak jak wtedy, gdy
+    zmienna w ogóle nie jest ustawiona.
+    """
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_MCP_HTTP_HOST", "")
+    assert Config.from_env().http_host == "127.0.0.1"
+
+
+def test_http_host_niepusty_jest_uzywany(monkeypatch):
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_MCP_HTTP_HOST", "0.0.0.0")
+    assert Config.from_env().http_host == "0.0.0.0"
+
+
+def test_http_port_ustawiony_ale_pusty_wraca_do_domyslnego(monkeypatch):
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_MCP_HTTP_PORT", "")
+    assert Config.from_env().http_port == 8000
+
+
+def test_http_port_niepoprawny_daje_czytelny_blad(monkeypatch):
+    """Regresja W1: dawniej surowy `ValueError: invalid literal for int()`
+    zamiast czytelnego błędu konfiguracji.
+    """
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_MCP_HTTP_PORT", "osiem tysięcy")
+    with pytest.raises(BrakKonfiguracji) as exc:
+        Config.from_env()
+    assert "OJS_MCP_HTTP_PORT" in str(exc.value)
+
+
+def test_http_port_poprawny_jest_uzywany(monkeypatch):
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_MCP_HTTP_PORT", "9001")
+    assert Config.from_env().http_port == 9001
+
+
+def test_transport_ze_spacja_jest_przycinany(monkeypatch):
+    """Regresja W1: `"http "` (ze spacją) cicho dawało `stdio` zamiast
+    `http`, bo `OJS_MCP_TRANSPORT` nie było przycinane `.strip()`.
+    """
+    monkeypatch.setenv("OJS_BASE_URL", "https://x.edu")
+    monkeypatch.setenv("OJS_MCP_TRANSPORT", "http ")
+    assert Config.from_env().transport == "http"

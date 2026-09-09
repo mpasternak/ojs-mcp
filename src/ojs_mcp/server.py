@@ -11,6 +11,7 @@ from mcp.server.mcpserver import MCPServer
 
 from . import __version__
 from .auth import zbuduj_auth, zbuduj_auth_http
+from .bledy import BladUwierzytelnienia
 from .catalog import Katalog
 from .client import OjsClient
 from .config import BrakKonfiguracji, Config
@@ -34,7 +35,7 @@ def zbuduj_serwer(config: Config) -> tuple[MCPServer, OjsClient]:
     w pozostałych — z otoczenia procesu (``zbuduj_auth``). Patrz docstring
     modułu ``auth`` po uzasadnienie tego rozdzielenia.
     """
-    mcp = MCPServer("ojs-mcp")
+    mcp = MCPServer("ojs-mcp", version=__version__)
     if config.transport == "http":
         auth = zbuduj_auth_http(config)
     else:
@@ -92,7 +93,18 @@ def main(argv: list[str] | None = None) -> int:
 
         return uruchom_http(config)
 
-    mcp, client = zbuduj_serwer(config)
+    try:
+        mcp, client = zbuduj_serwer(config)
+    except BladUwierzytelnienia as exc:
+        # W2 (recenzja): brak poświadczeń w trybie stdio jest DRUGĄ
+        # najczęstszą pomyłką konfiguracyjną (po `OJS_BASE_URL`) — a w
+        # bundlu MCPB pole tokenu jest opcjonalne, więc użytkownik, który
+        # zostawi je puste, dostawał tu surowy traceback w logu klienta
+        # zamiast czytelnego komunikatu. Ten sam kod wyjścia co przy
+        # `BrakKonfiguracji` — obie przyczyny są tej samej natury: serwer
+        # nie ma prawa zgadywać.
+        print(str(exc), file=sys.stderr)
+        return 2
     anyio.run(_uruchom_stdio_i_zamknij, mcp, client)
     return 0
 

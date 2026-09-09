@@ -43,12 +43,35 @@ class Config:
     def from_env(cls) -> Config:
         """Zbuduj konfigurację ze zmiennych środowiskowych.
 
-        :raises BrakKonfiguracji: gdy ``OJS_BASE_URL`` jest pusty lub nieustawiony.
+        :raises BrakKonfiguracji: gdy ``OJS_BASE_URL`` jest pusty lub
+            nieustawiony, albo gdy ``OJS_MCP_HTTP_PORT`` jest ustawiony na
+            wartość, która nie jest liczbą całkowitą.
         """
         base = (os.environ.get("OJS_BASE_URL") or "").strip()
         if not base:
             raise BrakKonfiguracji(_BRAK_HOSTA)
-        transport = (os.environ.get("OJS_MCP_TRANSPORT") or "stdio").lower()
+        # `.strip()` tak samo jak przy pozostałych zmiennych niżej — bez
+        # tego "http " (spacja ze skryptu wdrożeniowego) cicho spada na
+        # `stdio` zamiast `http`.
+        transport_surowy = (os.environ.get("OJS_MCP_TRANSPORT") or "").strip()
+        transport = (transport_surowy or "stdio").lower()
+        # WAŻNE (recenzja): reszta modułu czyta zmienne wzorcem
+        # `(os.environ.get(...) or "").strip() or default` — te dwie tego
+        # nie robiły. `OJS_MCP_HTTP_HOST=` USTAWIONE, ale PUSTE (typowy
+        # efekt podstawienia nieustawionej zmiennej w skrypcie
+        # wdrożeniowym) dawało pusty host, czyli bind na WSZYSTKICH
+        # interfejsach zamiast na pętli zwrotnej — patrz ostrzeżenie w
+        # docs/hosting.md o niewystawianiu portu do internetu.
+        http_host = (os.environ.get("OJS_MCP_HTTP_HOST") or "").strip() or "127.0.0.1"
+        port_surowy = (os.environ.get("OJS_MCP_HTTP_PORT") or "").strip() or "8000"
+        try:
+            http_port = int(port_surowy)
+        except ValueError as exc:
+            raise BrakKonfiguracji(
+                f"OJS_MCP_HTTP_PORT={port_surowy!r} nie jest liczbą całkowitą. "
+                "Ustaw port jako liczbę, np. OJS_MCP_HTTP_PORT=8000, albo "
+                "usuń tę zmienną, żeby użyć domyślnego portu 8000."
+            ) from exc
         origins = tuple(
             czesc.strip()
             for czesc in (os.environ.get("OJS_MCP_ALLOWED_ORIGINS") or "").split(",")
@@ -62,8 +85,8 @@ class Config:
             password=os.environ.get("OJS_PASSWORD") or None,
             allow_writes=(os.environ.get("OJS_ALLOW_WRITES") or "").strip() == "1",
             transport="http" if transport == "http" else "stdio",
-            http_host=os.environ.get("OJS_MCP_HTTP_HOST", "127.0.0.1"),
-            http_port=int(os.environ.get("OJS_MCP_HTTP_PORT", "8000")),
+            http_host=http_host,
+            http_port=http_port,
             allowed_origins=origins,
         )
 
