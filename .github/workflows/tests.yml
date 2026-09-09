@@ -1,0 +1,63 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Wywoływalny z `release.yml` — wydanie przechodzi tę samą matrycę,
+  # zamiast utrzymywać jej kopię.
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Zainstaluj uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Zsynchronizuj zależności
+        run: uv sync --extra dev
+
+      - name: Ruff format --check
+        run: uv run ruff format --check .
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Pytest
+        run: uv run pytest -q
+
+  # `test` idzie po uv.lock, więc widzi wyłącznie wersje zamrożone w repo.
+  # Ten job rozwiązuje zależności od nowa — tak jak resolver u kogoś, kto
+  # instaluje z PyPI. Łapie zerwanie API w `mcp`/`httpx` zanim trafi do wydania.
+  test-newest-deps:
+    runs-on: ubuntu-latest
+    # Informacyjny: czerwony tu znaczy „ktoś z góry wydał niekompatybilną
+    # wersję", a nie „ten PR jest zły". Nie blokuje merge'a.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Zainstaluj uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Rozwiąż zależności od nowa
+        run: uv sync --extra dev --upgrade
+
+      - name: Pytest
+        run: uv run pytest -q

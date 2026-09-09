@@ -1,0 +1,135 @@
+name: mcpb
+
+# Buduje paczkę MCP Bundle (.mcpb) — instalator „jednym kliknięciem” dla
+# klienta MCP z pulpitu — i podpina ją do wydania na GitHubie.
+#
+# Wyzwalane pushem tagu — tak samo jak release.yml, bo tutaj wydanie robi tag,
+# a nie ręcznie utworzony obiekt Release. Gdy release dla tagu jeszcze nie
+# istnieje (np. release.yml jeszcze nie skończył), ten workflow go zakłada.
+#
+# Świadomie osobno od release.yml jako PLIK: tamten trzyma `id-token: write`
+# (OIDC do PyPI) w osobnym, nic nie wykonującym jobie i nie ma dostać
+# `contents: write` tylko po to, żeby wgrać plik do wydania. Ale NIE osobno
+# jako bramka testowa — sam push tagu nie wyzwala `tests.yml` (ten reaguje na
+# push do main, PR i workflow_call), więc bez własnego joba `tests` ten
+# workflow biegłby niezależnie od tego, czy pakiet testów przeszedł dla tego
+# tagu. Job `tests` niżej (workflow_call, tak jak w release.yml) o to dba:
+# tag zablokowany na PyPI czerwonymi testami nie dostanie też bundla.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mcpb-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # Ta sama matryca (3.10–3.13 + ruff) co przy zwykłym pushu, przez
+  # `workflow_call` — bez kopiowania jej tutaj. `bundle` czeka na ten job
+  # (`needs: tests`), więc bundle nie trafi do wydania, jeśli testy nie są
+  # zielone dla tego tagu.
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  bundle:
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # wgranie pliku .mcpb do wydania
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Zainstaluj uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+
+      # manifest.json ma własne pole `version` i nieaktualne wysłałoby paczkę
+      # podającą się za inne wydanie. Źródłem prawdy jest pyproject.toml, więc
+      # uzgadniamy je przed pakowaniem zamiast wymagać od człowieka pilnowania
+      # dwóch plików. Zgodność tagu z wersją sprawdza już release.yml.
+      - name: Uzgodnij wersję w manifest.json z pyproject.toml
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import tomllib
+
+          with open("pyproject.toml", "rb") as fh:
+              wersja = tomllib.load(fh)["project"]["version"]
+
+          sciezka = pathlib.Path("manifest.json")
+          manifest = json.loads(sciezka.read_text())
+
+          if manifest["version"] != wersja:
+              print(f"manifest.json: {manifest['version']} -> {wersja}")
+              manifest["version"] = wersja
+              sciezka.write_text(json.dumps(manifest, indent=2) + "\n")
+          else:
+              print(f"manifest.json już w wersji {wersja}")
+
+          with open("bundle.env", "w") as fh:
+              fh.write(f"BUNDLE={manifest['name']}.mcpb\n")
+          PY
+          cat bundle.env >> "$GITHUB_ENV"
+
+      - name: Spakuj paczkę
+        run: npx -y @anthropic-ai/mcpb@2.1.2 pack . "$BUNDLE"
+
+      # Paczka, która się instaluje, ale nie startuje, jest gorsza niż jej
+      # brak: klient ją przyjmuje, a dopiero każde wywołanie narzędzia pada.
+      # Rozpakowujemy i importujemy moduł wejściowy przez uv dokładnie tak,
+      # jak zrobi to host — to dowodzi, że pyproject.toml z paczki się
+      # rozwiązuje, pakiet się instaluje, a `mcpb/launch.py` sięga do niego
+      # mimo importów relatywnych w `server.py`.
+      #
+      # Import, a nie pełny handshake po stdio, celowo: serwer bez
+      # OJS_BASE_URL kończy pracę z błędem konfiguracji, więc do `initialize`
+      # i tak by nie doszedł. Zachowanie protokołu (initialize, narzędzia,
+      # zasoby, prompty) pokrywa pełny pakiet testów w jobie `tests` powyżej
+      # (workflow_call do tests.yml, wymagany przez `needs: tests`) — ten
+      # krok go nie powtarza. Sprawdza wyłącznie to, czego `tests.yml` NIE
+      # widzi: czy SPAKOWANY artefakt (manifest, launch.py, dołączony
+      # pyproject.toml/uv.lock) faktycznie się rozwiązuje i importuje przez
+      # `uv` tak, jak zrobi to host.
+      - name: Sprawdź, czy paczka się importuje
+        run: |
+          set -euo pipefail
+          unzip -q "$BUNDLE" -d unpacked
+          uv run --directory unpacked python -c "
+          from ojs_mcp.server import main
+          assert callable(main), 'punkt wejścia nie jest wywoływalny'
+          print('paczka importuje się czysto')
+          "
+
+      # Tylko dla tagu. Uruchomienie ręczne (workflow_dispatch) leci z gałęzi,
+      # gdzie `ref_name` to nazwa gałęzi (np. "main") — bez tego warunku krok
+      # założyłby wydanie o takiej nazwie. Ręczny bieg ma tylko zbudować
+      # paczkę i ją sprawdzić.
+      #
+      # TAG idzie przez env, a nie przez wklejenie `${{ }}` w linię powłoki:
+      # nazwa tagu to tekst od autora wydania i inaczej wykonałby ją bash.
+      - name: Podepnij do wydania
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$BUNDLE" --clobber
+          else
+            gh release create "$TAG" "$BUNDLE" --generate-notes --title "$TAG"
+          fi
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcpb-bundle
+          path: ${{ env.BUNDLE }}
+          if-no-files-found: error

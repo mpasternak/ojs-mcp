@@ -1,0 +1,61 @@
+site_name: ojs-mcp
+site_description: Serwer MCP dla uwierzytelnionego REST API Open Journal Systems (OJS 3.5/3.6)
+site_url: https://mpasternak.github.io/ojs-mcp/
+repo_url: https://github.com/mpasternak/ojs-mcp
+repo_name: mpasternak/ojs-mcp
+edit_uri: edit/main/docs/
+
+docs_dir: docs
+
+# Specyfikacja i plan projektu — materiał roboczy dla agentów, nie
+# dokumentacja dla użytkownika. Pliki zostają w repozytorium, ale nie
+# trafiają do zbudowanej strony.
+exclude_docs: |
+  superpowers/
+
+theme:
+  name: material
+  language: pl
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Przełącz na tryb ciemny
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Przełącz na tryb jasny
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.follow
+
+nav:
+  - Start: index.md
+  - Instalacja: instalacja.md
+  - Konfiguracja: konfiguracja.md
+  - Uwierzytelnianie: uwierzytelnianie.md
+  - Narzędzia: narzedzia.md
+  - Hosting: hosting.md
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - tables
+  - toc:
+      permalink: true
+
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+  links:
+    not_found: warn
+    absolute_links: relative_to_docs
+    unrecognized_links: warn

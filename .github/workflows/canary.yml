@@ -1,0 +1,37 @@
+name: canary
+
+# Cotygodniowy test na zależnościach rozwiązanych OD NOWA — nie na tych
+# zamrożonych w uv.lock. `tests.yml` sprawdza wyłącznie to, co leży w repo
+# i wyłącznie przy pushu/PR; `uv.lock` daje wtedy powtarzalność, ale nie mówi
+# nic o tym, co zainstaluje sobie ktoś świeży z PyPI dziś.
+#
+# Ten workflow chodzi PO wydaniu (harmonogram, nie hook na push) — nie jest
+# bramką dla żadnego mergea ani publikacji, tylko ostrzeżeniem, że zależność
+# wydana już po naszym `uv.lock` (np. nowa wersja `mcp` albo `httpx`) zerwała
+# API, na którym stoi serwer.
+on:
+  schedule:
+    # Poniedziałki 06:00 UTC.
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Zainstaluj uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Rozwiąż zależności od nowa
+        run: uv sync --extra dev --upgrade
+
+      - name: Pytest
+        run: uv run pytest -q

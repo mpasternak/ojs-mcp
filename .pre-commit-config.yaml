@@ -1,0 +1,21 @@
+# Instalacja: uv run pre-commit install
+# Ręcznie na całym repo: uv run pre-commit run --all-files
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.6
+    hooks:
+      # Lint bez auto-fixa — lustrzane odbicie `ruff check .` z CI.
+      - id: ruff
+      # Formatowanie — lustrzane odbicie `ruff format --check .` z CI.
+      - id: ruff-format
