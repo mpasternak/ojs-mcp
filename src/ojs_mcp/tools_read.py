@@ -763,10 +763,12 @@ async def kim_jestem_impl(
     """
     kontekst = await katalog.rozwiaz(czasopismo)
     if client.sciezka_auth != "token":
-        # Odczyt tożsamości z sesji (pkp.currentUser) to zakres Task 10 —
-        # SessionAuth dziś tylko podnosi NotImplementedError (session_login.py),
-        # więc nie ma z czego tu czytać. Zamiast zgadywać kształt tej
-        # przyszłej funkcji, zgłaszamy to jawnie.
+        # SessionAuth (session_login.py) od Tasku 11 loguje się naprawdę i
+        # zarządza tokenem CSRF, ale jako strategia `httpx.Auth` nie ma
+        # miejsca, żeby oddać stąd tożsamość zalogowanego użytkownika
+        # (`pkp.currentUser`) do tego narzędzia — to osobna, jeszcze
+        # nienapisana ścieżka integracji. Zamiast zgadywać jej kształt,
+        # zgłaszamy to jawnie.
         raise BladOjs(
             "Odczyt tożsamości dla uwierzytelniania sesyjnego nie jest jeszcze "
             "zaimplementowany w tym serwerze."

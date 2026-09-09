@@ -15,13 +15,15 @@ jest sukcesem logowania.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+from collections.abc import AsyncGenerator
 
 import httpx
 
-from .bledy import BladLogowania
+from .bledy import BladLogowania, BladUwierzytelnienia
 from .config import Config
 from .slowniki import ROLE
 
@@ -43,6 +45,19 @@ PULPITY = (
     "dashboard/reviewAssignments",
     "dashboard/mySubmissions",
 )
+
+# Metody, które w OJS przechodzą przez `ValidateCsrfToken` — tylko one
+# dostają nagłówek `X-Csrf-Token` (spec §6.2, Krok 3). Odczyt (GET/HEAD) nie
+# jest walidowany pod kątem CSRF i nie powinien nieść tego nagłówka.
+_METODY_ZAPISU = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# Wyłuskanie kontekstu czasopisma (`{kontekst}` w `/index.php/{kontekst}/api/v1`)
+# z URL-a żądania produkcyjnego — patrz `Config.api_root`, jedyne miejsce,
+# które buduje ten kształt URL-a. Dzięki temu `SessionAuth` obsługuje też
+# żądania do INNEGO czasopisma niż `OJS_JOURNAL` (parametr `czasopismo`
+# narzędzi, wielo-czasopismowość ze spec §7), bez trzymania własnej kopii
+# kontekstu per żądanie.
+_KONTEKST_Z_URL = re.compile(r"/index\.php/([^/]+)/api/v1")
 
 
 def wyluskaj_csrf_z_formularza(html: str) -> str | None:
@@ -116,21 +131,209 @@ def _opisz_role(id_role: list | None) -> list[str]:
 
 
 class SessionAuth(httpx.Auth):
-    """Uwierzytelnianie ciasteczkiem sesji i tokenem CSRF.
+    """Uwierzytelnianie ciasteczkiem sesji i tokenem CSRF (spec §6.2, §6.3).
 
-    Zaślepka: ten moduł (Task 10) dostarcza samą sekwencję logowania
-    (``zaloguj`` niżej) oraz funkcje pomocnicze do parsowania HTML.
-    Pełna strategia ``httpx.Auth`` — leniwe logowanie przy pierwszym
-    żądaniu, dokładanie ``X-Csrf-Token`` do metod zapisu i ponawianie
-    przy 401/403 — to zakres Task 11.
+    PUŁAPKA — REKURENCJA I NAGŁÓWEK ``Accept`` (decyzja własna, opisana też
+    w raporcie Tasku 11): produkcyjny ``OjsClient`` (``client.py``) tworzy
+    swój ``httpx.AsyncClient`` z ``auth=self`` ORAZ z nagłówkiem
+    ``Accept: application/json`` na całym kliencie. Gdyby sekwencja logowania
+    (``zaloguj`` — GET/POST na strony HTML logowania i pulpitu) poszła przez
+    TEN SAM klient:
+
+    * żądania logowania przechodziłyby przez ``async_auth_flow`` TEJ SAMEJ
+      instancji ``SessionAuth`` — strategia próbowałaby się zalogować w
+      trakcie własnego logowania (rekurencja);
+    * strony logowania/pulpitu dostałyby nagłówek żądający JSON-a zamiast
+      HTML-a, co może zmienić odpowiedź OJS.
+
+    Dlatego ta klasa trzyma WŁASNY, ODDZIELNY ``httpx.AsyncClient``
+    (``self._klient_logowania``) wyłącznie do sekwencji logowania i
+    odświeżania tokenu CSRF — bez ``auth``, bez nagłówka ``Accept``, z
+    własnym magazynem ciasteczek. Ten magazyn ciasteczek (sesja OJS) jest
+    jedynym mostem między dwoma klientami: ``async_auth_flow`` dokleja go
+    do KAŻDEGO żądania produkcyjnego przed wysłaniem.
+
+    Zachowanie:
+
+    * logowanie leniwe — dopiero przy pierwszym żądaniu, nie w konstruktorze;
+    * ``X-Csrf-Token`` dokładany WYŁĄCZNIE do ``POST``/``PUT``/``PATCH``/
+      ``DELETE`` (``_METODY_ZAPISU``), nigdy do odczytu;
+    * 401 → jedno pełne ponowne logowanie (kroki 0–2 z ``zaloguj``) i
+      powtórka żądania; druga porażka przechodzi dalej jako odpowiedź błędna;
+    * 403 na zapisie → odświeżenie SAMEGO tokenu CSRF ze strony pulpitu, BEZ
+      ponownego logowania (403 przy żywej sesji znaczy „token wygasł/
+      zrotował się", nie „sesja martwa" — to byłoby 401);
+    * każda nieudana próba logowania zużywa limit ``RateLimitingService`` —
+      logowanie NIGDY nie jest pętlone.
+
+    Licznik prób ponowienia (``proby_logowania``/``proby_csrf`` w
+    ``async_auth_flow``) żyje jako zmienna LOKALNA wewnątrz tej metody — czyli
+    osobna dla każdego wywołania (każdego żądania). Współdzielony stan
+    (token CSRF, ciasteczka) jest chroniony ``self._blokada``
+    (``asyncio.Lock``) i licznikiem ``self._generacja``: pod blokadą
+    sprawdzamy, czy generacja zmieniła się od chwili decyzji o ponowieniu —
+    jeśli tak, inne równoległe żądanie już zalogowało się / odświeżyło
+    token i nie robimy tego drugi raz. Bez tego wzorca "wyścig" kilku
+    żądań o wygasły token logowałby się tyle razy, ile było żądań naraz.
     """
+
+    #: Decyzja o ponowieniu zależy od kodu statusu odpowiedzi (401/403),
+    #: który jest dostępny natychmiast po nagłówkach — ale flaga jest
+    #: kontraktem klasy bazowej ``httpx.Auth`` i dokumentuje intencję.
+    requires_response_body = True
 
     def __init__(self, config: Config) -> None:
         self.config = config
-        raise NotImplementedError(
-            "Strategia uwierzytelniania sesją (SessionAuth) będzie dostępna "
-            "w kolejnym zadaniu. Na razie użyj OJS_API_TOKEN."
+        self._csrf: str | None = None
+        self._generacja = 0
+        self._blokada = asyncio.Lock()
+        # Własny, oddzielny klient — patrz akapit o rekurencji wyżej. Ten
+        # sam obiekt (i jego magazyn ciasteczek) obsługuje całą sekwencję
+        # logowania oraz odświeżanie tokenu CSRF.
+        self._klient_logowania = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=10.0)
         )
+
+    def _kontekst(self, request: httpx.Request) -> str:
+        """Wyznacz kontekst czasopisma z URL-a żądania (fallback: config)."""
+        dopasowanie = _KONTEKST_Z_URL.search(request.url.path)
+        if dopasowanie:
+            return dopasowanie.group(1)
+        if self.config.journal:
+            return self.config.journal
+        raise BladUwierzytelnienia(
+            "Nie udało się wyznaczyć kontekstu czasopisma z adresu żądania "
+            f"({request.url}) ani z konfiguracji (OJS_JOURNAL). Logowanie "
+            "sesyjne musi wiedzieć, w którym czasopiśmie się zalogować."
+        )
+
+    async def _zaloguj(self, kontekst: str) -> None:
+        """Pełna sekwencja logowania (kroki 0–2 z ``zaloguj``)."""
+        wynik = await zaloguj(self._klient_logowania, self.config, kontekst)
+        self._csrf = wynik["csrf"]
+
+    async def _odswiez_csrf(self, kontekst: str) -> None:
+        """Odśwież sam token CSRF ze strony pulpitu — bez ponownego logowania.
+
+        Używane po 403 na zapisie: sesja wciąż żyje (inaczej OJS zwróciłby
+        401), zawiódł tylko token CSRF. Ponowne logowanie w tej sytuacji
+        byłoby niepotrzebne i zużywałoby limit ``RateLimitingService``.
+        """
+        korzen = f"{self.config.base_url}/index.php/{kontekst}"
+        wynik = await _csrf_z_pulpitu(self._klient_logowania, korzen)
+        if wynik is None:
+            raise BladLogowania(
+                "Nie udało się odświeżyć tokenu CSRF z żadnej strony pulpitu "
+                "— sesja mogła wygasnąć między żądaniami. Spróbuj ponownie; "
+                "jeśli błąd się powtarza, użyj OJS_API_TOKEN."
+            )
+        self._csrf, _ = wynik
+        logger.info("Odświeżono token CSRF sesji (bez ponownego logowania).")
+
+    async def _upewnij_generacje(
+        self, generacja_przed: int, kontekst: str, *, tylko_csrf: bool
+    ) -> None:
+        """Zaloguj się / odśwież token — chyba że zrobiło to już inne żądanie.
+
+        Patrz akapit o ``self._generacja`` w docstringu klasy: pod blokadą
+        sprawdzamy, czy stan współdzielony zmienił się od chwili, gdy
+        wywołujący podjął decyzję o ponowieniu. Jeśli tak — ktoś inny już
+        wykonał tę pracę i korzystamy z jej efektu zamiast logować się
+        drugi raz.
+        """
+        async with self._blokada:
+            if self._generacja != generacja_przed:
+                return
+            if tylko_csrf:
+                await self._odswiez_csrf(kontekst)
+            else:
+                await self._zaloguj(kontekst)
+            self._generacja += 1
+
+    def _przygotuj(self, request: httpx.Request) -> None:
+        """Dołóż ciasteczka sesji i (tylko dla zapisów) ``X-Csrf-Token``."""
+        self._klient_logowania.cookies.set_cookie_header(request)
+        if request.method in _METODY_ZAPISU and self._csrf:
+            request.headers["X-Csrf-Token"] = self._csrf
+
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        """Dołóż uwierzytelnienie sesyjne i obsłuż ponowienia (spec §6.3)."""
+        kontekst = self._kontekst(request)
+
+        if self._csrf is None:
+            await self._upewnij_generacje(self._generacja, kontekst, tylko_csrf=False)
+
+        proby_logowania = 0
+        proby_csrf = 0
+        while True:
+            self._przygotuj(request)
+            generacja_uzyta = self._generacja
+            odpowiedz = yield request
+
+            if odpowiedz.status_code == 401 and proby_logowania == 0:
+                proby_logowania += 1
+                await self._upewnij_generacje(
+                    generacja_uzyta, kontekst, tylko_csrf=False
+                )
+                continue
+
+            if (
+                odpowiedz.status_code == 403
+                and request.method in _METODY_ZAPISU
+                and proby_csrf == 0
+            ):
+                proby_csrf += 1
+                await self._upewnij_generacje(
+                    generacja_uzyta, kontekst, tylko_csrf=True
+                )
+                continue
+
+            return
+
+
+async def _csrf_z_pulpitu(
+    klient: httpx.AsyncClient, korzen: str
+) -> tuple[str, dict | None] | None:
+    """Znajdź token CSRF sesji na pierwszej dostępnej stronie pulpitu.
+
+    Wspólna implementacja Kroku 2 ze spec. §6.2, używana zarówno przez pełne
+    logowanie (``zaloguj`` niżej), jak i przez ``SessionAuth._odswiez_csrf``
+    (§6.3 — odświeżenie samego tokenu bez ponownego logowania, gdy sesja
+    wciąż żyje, ale token CSRF wygasł albo się zrotował). Różne role widzą
+    różne pulpity, stąd próba kolejnych adresów z ``PULPITY``.
+
+    :returns: ``(csrf, uzytkownik)`` albo ``None``, gdy żadna strona pulpitu
+        nie oddała tokenu. Nie podnosi wyjątku — komunikat błędu różni się
+        w zależności od wywołującego (logowanie vs. samo odświeżenie tokenu),
+        więc decyzję o treści i podniesieniu ``BladLogowania`` zostawiamy
+        wywołującemu.
+    """
+    for pulpit in PULPITY:
+        strona = await klient.get(f"{korzen}/{pulpit}", follow_redirects=True)
+        # Sesja bywa martwa mimo udanego logowania (np. wygasła między
+        # żądaniami). OJS przekierowuje wtedy pulpit na `/login`, a httpx
+        # podąża za tym automatycznie (`follow_redirects=True` powyżej jest
+        # zamierzone — różne pulpity to realne przekierowania między sobą).
+        # Strona logowania ma jednak WŁASNE ukryte pole csrfToken — to token
+        # do (kolejnego) logowania, nie token sesji. Odrzucamy tę stronę
+        # PRZED sięgnięciem po zapasowe wyłuskanie, żeby nie zwrócić cichego
+        # fałszywego sukcesu.
+        if strona.status_code != 200 or "/login" in str(strona.url):
+            continue
+        uzytkownik = wyluskaj_current_user(strona.text)
+        if uzytkownik is not None:
+            uzytkownik["role_nazwy"] = _opisz_role(uzytkownik.get("roles"))
+        if uzytkownik and uzytkownik.get("csrfToken"):
+            return uzytkownik["csrfToken"], uzytkownik
+        # Strategia zapasowa: skoro literał pkp.currentUser zawiódł albo nie
+        # niósł tokenu, spróbuj ukrytego pola csrfToken na tej samej stronie,
+        # zanim uznamy tę stronę pulpitu za bezużyteczną.
+        zapasowy = wyluskaj_csrf_z_formularza(strona.text)
+        if zapasowy:
+            return zapasowy, uzytkownik
+    return None
 
 
 async def zaloguj(klient: httpx.AsyncClient, config: Config, kontekst: str) -> dict:
@@ -218,39 +421,21 @@ async def zaloguj(klient: httpx.AsyncClient, config: Config, kontekst: str) -> d
         )
 
     # Krok 2 — token CSRF sesji i tożsamość z pierwszej dostępnej strony
-    # backendowej. Różne role widzą różne pulpity, stąd kolejność prób.
-    for pulpit in PULPITY:
-        strona = await klient.get(f"{korzen}/{pulpit}", follow_redirects=True)
-        # Sesja bywa martwa mimo udanego kroku 1 (np. wygasła między
-        # krokiem 1 a 2). OJS przekierowuje wtedy pulpit na `/login`, a
-        # httpx podąża za tym automatycznie (follow_redirects=True powyżej
-        # jest zamierzone — różne pulpity to realne przekierowania między
-        # sobą). Strona logowania ma jednak WŁASNE ukryte pole csrfToken —
-        # to token do (kolejnego) logowania, nie token sesji. Odrzucamy tę
-        # stronę PRZED sięgnięciem po zapasowe wyłuskanie, żeby nie zwrócić
-        # cichego fałszywego sukcesu.
-        if strona.status_code != 200 or "/login" in str(strona.url):
-            continue
-        uzytkownik = wyluskaj_current_user(strona.text)
-        if uzytkownik is not None:
-            uzytkownik["role_nazwy"] = _opisz_role(uzytkownik.get("roles"))
-        if uzytkownik and uzytkownik.get("csrfToken"):
-            logger.info(
-                "Zalogowano jako %r (role: %s).",
-                uzytkownik.get("username"),
-                ", ".join(uzytkownik["role_nazwy"]) or "brak",
-            )
-            return {"csrf": uzytkownik["csrfToken"], "uzytkownik": uzytkownik}
-        # Strategia zapasowa: skoro literał pkp.currentUser zawiódł albo
-        # nie niósł tokenu, spróbuj ukrytego pola csrfToken na tej samej
-        # stronie, zanim uznamy tę stronę pulpitu za bezużyteczną.
-        zapasowy = wyluskaj_csrf_z_formularza(strona.text)
-        if zapasowy:
-            return {"csrf": zapasowy, "uzytkownik": uzytkownik}
-
-    raise BladLogowania(
-        "Zalogowano, ale nie udało się odczytać tokenu CSRF z żadnej strony "
-        "pulpitu (ani z pkp.currentUser, ani z ukrytego pola). Odczyt danych "
-        "będzie działał na tokenie z tej sesji, zapisy — nie. Użyj "
-        "OJS_API_TOKEN, jeśli potrzebujesz modyfikować dane."
-    )
+    # backendowej (implementacja współdzielona z odświeżaniem tokenu bez
+    # logowania — patrz `_csrf_z_pulpitu`).
+    wynik = await _csrf_z_pulpitu(klient, korzen)
+    if wynik is None:
+        raise BladLogowania(
+            "Zalogowano, ale nie udało się odczytać tokenu CSRF z żadnej "
+            "strony pulpitu (ani z pkp.currentUser, ani z ukrytego pola). "
+            "Odczyt danych będzie działał na tokenie z tej sesji, zapisy — "
+            "nie. Użyj OJS_API_TOKEN, jeśli potrzebujesz modyfikować dane."
+        )
+    csrf, uzytkownik = wynik
+    if uzytkownik and uzytkownik.get("csrfToken"):
+        logger.info(
+            "Zalogowano jako %r (role: %s).",
+            uzytkownik.get("username"),
+            ", ".join(uzytkownik["role_nazwy"]) or "brak",
+        )
+    return {"csrf": csrf, "uzytkownik": uzytkownik}
