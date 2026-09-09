@@ -10,6 +10,7 @@ from ojs_mcp.catalog import Katalog
 from ojs_mcp.client import OjsClient
 from ojs_mcp.config import Config
 from ojs_mcp.pola import przytnij as przytnij_z_pola
+from ojs_mcp.session_login import SessionAuth
 from ojs_mcp.tools_read import (
     biezacy_numer_impl,
     kim_jestem_impl,
@@ -282,16 +283,75 @@ async def test_kim_jestem_zwraca_false_gdy_token_nieprawidlowy():
     wynik = await kim_jestem_impl(klient, katalog)
     assert wynik["uwierzytelniony"] is False
     assert wynik["tozsamosc"] is None
+    # Regresja (grupa E, recenzja): `kim_jestem` gubił `str(exc)` — to
+    # narzędzie ma DIAGNOZOWAĆ, więc treść wyjątku musi trafić do `uwaga`.
+    assert "Brak uprawnień." in wynik["uwaga"]
     await klient.aclose()
 
 
 @respx.mock
-async def test_kim_jestem_dla_sesji_podnosi_jawny_blad():
-    klient, katalog = _zestaw()
+async def test_kim_jestem_dla_sesji_zwraca_tozsamosc_z_pkp_current_user():
+    """W7 (recenzja): `kim_jestem` dawniej zgłaszał "niezaimplementowane"
+    dla ścieżki sesyjnej, mimo że `SessionAuth` już zna tożsamość
+    zalogowanego użytkownika (`pkp.currentUser`, zapamiętana z `zaloguj()`).
+    Sonda (`GET /submissions?count=1`) przechodzi przez PRAWDZIWY
+    `SessionAuth.async_auth_flow` — wstępnie "zalogowany" (csrf ustawiony
+    z góry), więc nie próbuje prawdziwej sekwencji logowania.
+    """
+    trasa = respx.get(f"{BAZA}/submissions").mock(
+        return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
+    )
+    cfg = Config(
+        base_url="https://x.edu", journal="rocznik", username="u", password="p"
+    )
+    auth = SessionAuth(cfg)
+    auth._csrf = "TOKEN-SESJI"
+    auth._uzytkownik = {
+        "id": 42,
+        "username": "redaktor",
+        "role_nazwy": ["menedżer czasopisma"],
+    }
+    klient = OjsClient(cfg, auth)
     klient.sciezka_auth = "sesja"
-    with pytest.raises(BladOjs) as exc:
-        await kim_jestem_impl(klient, katalog)
-    assert "sesyjnego" in str(exc.value)
+    katalog = Katalog(klient, cfg)
+
+    wynik = await kim_jestem_impl(klient, katalog)
+
+    assert trasa.called
+    assert wynik["uwierzytelniony"] is True
+    assert wynik["tozsamosc"] == {
+        "id": 42,
+        "username": "redaktor",
+        "role_nazwy": ["menedżer czasopisma"],
+    }
+    await klient.aclose()
+
+
+@respx.mock
+async def test_kim_jestem_dla_sesji_bez_wczesniejszego_logowania_zwraca_none():
+    """Zanim COKOLWIEK wymusi logowanie (sonda w `kim_jestem_impl` sama to
+    robi), `SessionAuth.uzytkownik` jest `None` — narzędzie ma to zwrócić,
+    nie wywalić się.
+    """
+    trasa = respx.get(f"{BAZA}/submissions").mock(
+        return_value=httpx.Response(200, json={"itemsMax": 0, "items": []})
+    )
+    cfg = Config(
+        base_url="https://x.edu", journal="rocznik", username="u", password="p"
+    )
+    auth = SessionAuth(cfg)
+    # `_csrf` wstępnie ustawiony — jak wyżej, żeby uniknąć realnej sekwencji
+    # logowania, której ten test nie mockuje.
+    auth._csrf = "TOKEN-SESJI"
+    klient = OjsClient(cfg, auth)
+    klient.sciezka_auth = "sesja"
+    katalog = Katalog(klient, cfg)
+
+    wynik = await kim_jestem_impl(klient, katalog)
+
+    assert trasa.called
+    assert wynik["uwierzytelniony"] is True
+    assert wynik["tozsamosc"] is None
     await klient.aclose()
 
 

@@ -13,7 +13,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from .bledy import BladNieZnaleziono, BladOjs, BladUwierzytelnienia, BladWejscia
+from .bledy import (
+    BladLogowania,
+    BladNieZnaleziono,
+    BladOjs,
+    BladUwierzytelnienia,
+    BladWejscia,
+)
 from .catalog import Katalog
 from .client import MAX_COUNT, OjsClient
 from .mcp_errors import z_czytelnym_bledem
@@ -743,38 +749,47 @@ async def kim_jestem_impl(
 ) -> dict[str, Any]:
     """Sprawdź, czy bieżące poświadczenia działają.
 
-    OJS nie ma endpointu tożsamości dla tokenu API. Przy uwierzytelnianiu
-    tokenem wykonujemy tanią sondę (``GET /submissions?count=1``) i mówimy
+    Ścieżka tokenowa: OJS nie ma endpointu tożsamości dla tokenu API, więc
+    wykonujemy tanią sondę (``GET /submissions?count=1``) i mówimy
     wyłącznie, czy token w ogóle działa — nie zgadujemy, kim jest jego
     właściciel.
+
+    Ścieżka sesyjna (login+hasło, spec §8.1): ``SessionAuth`` loguje się
+    NAPRAWDĘ i zna tożsamość zalogowanego użytkownika z ``pkp.currentUser``
+    (patrz ``session_login.zaloguj``/``SessionAuth.uzytkownik``) — TĘ SAMĄ
+    sondę wykorzystujemy tu, żeby wymusić (leniwe) logowanie, jeśli jeszcze
+    nie nastąpiło, a potem odczytujemy zapamiętaną tożsamość (W7, recenzja:
+    dawniej ta ścieżka zgłaszała "niezaimplementowane", mimo że dane były
+    już pobierane przez ``zaloguj()`` i tylko wyrzucane przez
+    ``SessionAuth``).
     """
     kontekst = await katalog.rozwiaz(czasopismo)
-    if client.sciezka_auth != "token":
-        # SessionAuth (session_login.py) od Tasku 11 loguje się naprawdę i
-        # zarządza tokenem CSRF, ale jako strategia `httpx.Auth` nie ma
-        # miejsca, żeby oddać stąd tożsamość zalogowanego użytkownika
-        # (`pkp.currentUser`) do tego narzędzia — to osobna, jeszcze
-        # nienapisana ścieżka integracji. Zamiast zgadywać jej kształt,
-        # zgłaszamy to jawnie.
-        raise BladOjs(
-            "Odczyt tożsamości dla uwierzytelniania sesyjnego nie jest jeszcze "
-            "zaimplementowany w tym serwerze."
-        )
-    uwaga = "OJS nie udostępnia endpointu tożsamości dla tokenu API."
     try:
         await client.get("submissions", parametry={"count": 1}, czasopismo=kontekst)
-    except BladUwierzytelnienia:
+    except (BladUwierzytelnienia, BladLogowania) as exc:
+        # D (recenzja): dawniej gubiliśmy `str(exc)` przy `BladUwierzytelnienia`
+        # — to narzędzie ma DIAGNOZOWAĆ, więc treść wyjątku (dlaczego
+        # dokładnie się nie udało) trafia do `uwaga` zamiast statycznego
+        # tekstu.
         return {
             "czasopismo": kontekst,
             "uwierzytelniony": False,
             "tozsamosc": None,
-            "uwaga": uwaga,
+            "uwaga": str(exc),
+        }
+    if client.sciezka_auth != "token":
+        uzytkownik = getattr(client._auth, "uzytkownik", None)
+        return {
+            "czasopismo": kontekst,
+            "uwierzytelniony": True,
+            "tozsamosc": uzytkownik,
+            "uwaga": "Tożsamość pochodzi z sesji logowania (pkp.currentUser).",
         }
     return {
         "czasopismo": kontekst,
         "uwierzytelniony": True,
         "tozsamosc": None,
-        "uwaga": uwaga,
+        "uwaga": "OJS nie udostępnia endpointu tożsamości dla tokenu API.",
     }
 
 

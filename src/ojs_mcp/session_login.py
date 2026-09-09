@@ -207,6 +207,15 @@ class SessionAuth(httpx.Auth):
     def __init__(self, config: Config) -> None:
         self.config = config
         self._csrf: str | None = None
+        # Tożsamość zalogowanego użytkownika (``pkp.currentUser``, z rolami
+        # przetłumaczonymi przez ``_opisz_role``) — zapamiętana z ostatniego
+        # udanego logowania/odświeżenia tokenu. `None`, dopóki logowanie
+        # (leniwe) jeszcze się nie odbyło. Udostępniona przez property
+        # ``uzytkownik`` niżej — patrz W7 (recenzja): `kim_jestem`
+        # (`tools_read.py`) korzysta z niej na ścieżce sesyjnej, zamiast
+        # zgłaszać "niezaimplementowane" mimo że te dane są już pobierane
+        # w `zaloguj()`.
+        self._uzytkownik: dict | None = None
         self._generacja = 0
         # Błąd ostatniej ZAMKNIĘTEJ (sukcesem lub porażką) próby logowania /
         # odświeżenia tokenu — patrz akapit o `self._generacja` w docstringu
@@ -230,6 +239,17 @@ class SessionAuth(httpx.Auth):
         klienta produkcyjnego.
         """
         await self._klient_logowania.aclose()
+
+    @property
+    def uzytkownik(self) -> dict | None:
+        """Tożsamość zalogowanego użytkownika, jeśli już znana.
+
+        ``None`` dopóki żadne żądanie nie wymusiło (leniwego) logowania —
+        patrz ``async_auth_flow``. Po udanym logowaniu: słownik
+        ``pkp.currentUser`` (m.in. ``id``, ``username``, ``roles``,
+        ``role_nazwy``) — patrz ``zaloguj``/``_opisz_role``.
+        """
+        return self._uzytkownik
 
     def sync_auth_flow(
         self, request: httpx.Request
@@ -278,6 +298,9 @@ class SessionAuth(httpx.Auth):
         """Pełna sekwencja logowania (kroki 0–2 z ``zaloguj``)."""
         wynik = await zaloguj(self._klient_logowania, self.config, kontekst)
         self._csrf = wynik["csrf"]
+        # Zapamiętaj tożsamość (W7) — `zaloguj()` ją już wylicza z
+        # `pkp.currentUser`, dawniej wyrzucana tutaj.
+        self._uzytkownik = wynik["uzytkownik"]
 
     async def _odswiez_csrf(self, kontekst: str) -> None:
         """Odśwież sam token CSRF ze strony pulpitu — bez ponownego logowania.
@@ -294,7 +317,14 @@ class SessionAuth(httpx.Auth):
                 "— sesja mogła wygasnąć między żądaniami. Spróbuj ponownie; "
                 "jeśli błąd się powtarza, użyj OJS_API_TOKEN."
             )
-        self._csrf, _ = wynik
+        self._csrf, uzytkownik = wynik
+        # (W7) Tę stronę pulpitu mogła obsłużyć wyłącznie strategia
+        # zapasowa (`wyluskaj_csrf_z_formularza`), która nie niesie
+        # tożsamości — `uzytkownik` bywa wtedy `None`. Nie nadpisujemy w
+        # takim razie tożsamości znanej z poprzedniego logowania; tylko
+        # wtedy, gdy ta strona faktycznie ją oddała.
+        if uzytkownik is not None:
+            self._uzytkownik = uzytkownik
         logger.info("Odświeżono token CSRF sesji (bez ponownego logowania).")
 
     async def _upewnij_generacje(

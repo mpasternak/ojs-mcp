@@ -54,7 +54,7 @@ class Katalog:
     dokładnie semantyka Rundy 1, tyle że bez przebudowy całego serwera.
 
     Kosztowna była budowa ``MCPServer``/``OjsClient`` (rejestracja
-    szesnastu narzędzi, ~16 ms CPU — patrz raport Task 12, Runda 2), NIE
+    siedemnastu narzędzi, ~16 ms CPU — patrz raport Task 12, Runda 2), NIE
     ``Katalog``: to pusty obiekt bez własnego stanu procesowego poza samym
     cache'em, więc przeniesienie go do ``ContextVar`` nic nie kosztuje.
 
@@ -139,8 +139,25 @@ class Katalog:
         blokada = self._pozyskaj_blokade(klucz)
         try:
             async with blokada:
-                # Podwójne sprawdzenie: ktoś inny mógł wypełnić cache TEGO
-                # SAMEGO kontekstu, czekając na tę samą blokadę.
+                # UWAGA (recenzja, W6): to sprawdzenie NIE MOŻE dziś nic
+                # złapać — zmierzone: 10 równoległych pobrań, zero trafień.
+                # Cache mieszka w `ContextVar` (patrz `__init__`), a każde
+                # zadanie równoległe (`asyncio.gather`/`create_task`)
+                # dostaje WŁASNĄ kopię kontekstu przy STARCIE zadania — nie
+                # widzi zmian, jakie w SWOJEJ kopii `ContextVar` robi inne
+                # zadanie. W obrębie JEDNEGO zadania wykonanie jest z kolei
+                # ściśle sekwencyjne (jeden wątek, współpraca przez await)
+                # — więc "ktoś inny" nigdy nie zdąży wypełnić TEJ SAMEJ
+                # kopii cache'u między pierwszym sprawdzeniem na początku
+                # tej metody a przejęciem tej blokady. Krótko: przy tej
+                # architekturze cache'u nie ma który scenariusz miałby to
+                # sprawdzenie uruchomić — to nie "niedorobiona deduplikacja", tylko
+                # martwa gałąź, strukturalnie niemożliwa do trafienia (patrz
+                # też docs/hosting.md). Zostaje jako tania siatka
+                # bezpieczeństwa na wypadek PRZYSZŁEJ zmiany modelu
+                # współbieżności (np. cache'u współdzielonego między
+                # zadaniami zamiast per-`ContextVar`) — nie dlatego, że coś
+                # łapie dzisiaj.
                 wynik = self._cache.get()
                 if wynik is not None:
                     return wynik

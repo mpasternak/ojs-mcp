@@ -26,3 +26,10 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Poświadczenia lokalne (repozytorium jest publiczne; projekt konfiguruje
+# się wyłącznie zmiennymi środowiskowymi — patrz docs/instalacja.md).
+.env
+
+# Bundle MCPB zbudowany lokalnie (patrz docs/instalacja.md, wariant 2).
+*.mcpb

@@ -96,21 +96,36 @@ tego jednego żądania** — w trybie bezstanowym nie ma między żądaniami
 
 Dwie rzeczy warto znać, planując obciążenie:
 
-- **Równoległe żądania tego samego użytkownika pobierają katalog osobno.**
+- **Równoległe żądania tego samego użytkownika pobierają katalog osobno —
+  i to nie jest niedorobiona optymalizacja, tylko struktura tego cache'u
+  wykluczająca deduplikację.** Cache mieszka w ``ContextVar`` należącej do
+  obiektu ``Katalog``, a ``stateless_http=True`` (patrz wyżej) sprawia, że
+  KAŻDE żądanie ASGI dostaje przy starcie WŁASNĄ, odizolowaną kopię tego
+  kontekstu. Dwa równoległe żądania nie mają między sobą ŻADNEGO
+  współdzielonego miejsca, do którego jedno mogłoby zajrzeć i zobaczyć
+  wynik pobrany przez drugie — nie chodzi o to, że taki mechanizm nie
+  został jeszcze napisany, tylko że przy tej architekturze nie ma go czym
+  zbudować bez zmiany samej architektury cache'u (współdzielony magazyn
+  między żądaniami byłby innym kompromisem — pamięć rosnąca z liczbą
+  tokenów i ryzyko przecieku między użytkownikami, którego ten projekt
+  świadomie unika, patrz historia usterki N2 przy izolacji katalogu).
   Kolejka (zamek) kluczowana tokenem żądania szereguje te pobrania — nie
   pozwala kilku równoległym żądaniom tego samego tokenu tłuc OJS
-  jednocześnie tym samym zapytaniem — ale **nie deduplikuje** wyniku:
-  każde z nich i tak wykona własne zapytanie do OJS, tyle że jedno po
-  drugim, nie równolegle. Przy wielu jednoczesnych wywołaniach narzędzi
-  jednego użytkownika (np. model odpytujący kilka czasopism naraz) to
-  oznacza tyle samo zapytań do katalogu, co bez tej kolejki — różnica jest
-  wyłącznie w tym, że nie depczą sobie nawzajem.
+  jednocześnie tym samym zapytaniem — ale to tylko szeregowanie, nie
+  deduplikacja: każde z nich i tak wykona własne zapytanie do OJS, tyle że
+  jedno po drugim, nie równolegle. Przy wielu jednoczesnych wywołaniach
+  narzędzi jednego użytkownika (np. model odpytujący kilka czasopism
+  naraz) to oznacza tyle samo zapytań do katalogu, co bez tej kolejki —
+  różnica jest wyłącznie w tym, że nie depczą sobie nawzajem.
 - **Przy ustawionym `OJS_JOURNAL` katalog wcale nie jest ruszany**, dopóki
-  wywołanie nie poda jawnie innego `czasopismo`. Rozwiązywanie nazwy
-  czasopisma korzysta wtedy wprost z `OJS_JOURNAL` jako gotowej wartości —
-  nie ma potrzeby pytać OJS o listę, żeby potwierdzić coś, co już jest
-  ustawione. Jeśli instancja obsługuje jedno czasopismo (typowy przypadek),
-  ustawienie `OJS_JOURNAL` całkowicie omija ten koszt.
+  wywołanie w ogóle NIE PODA parametru `czasopismo` — pominięcie go
+  korzysta wtedy wprost z `OJS_JOURNAL` jako gotowej wartości, bez pytania
+  OJS o listę. Podanie parametru `czasopismo` JAWNIE odpala to pobranie
+  ZAWSZE, także wtedy, gdy podana wartość jest dokładnie tym samym
+  czasopismem, które już wynika z `OJS_JOURNAL` — rozwiązywanie nazwy
+  sprawdza tylko, czy parametr w ogóle padł, nie czy różni się od
+  `OJS_JOURNAL`. Jeśli instancja obsługuje jedno czasopismo (typowy
+  przypadek), pomijanie parametru `czasopismo` całkowicie omija ten koszt.
 
 Pobranie samego katalogu (na poziomie witryny, bez `OJS_JOURNAL`) wymaga
 zresztą roli administratora witryny po stronie OJS — patrz
