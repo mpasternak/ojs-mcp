@@ -72,7 +72,7 @@ given journal.
       "args": ["ojs-mcp"],
       "env": {
         "OJS_BASE_URL": "https://journals.your-university.edu",
-        "OJS_JOURNAL": "rocznik",
+        "OJS_JOURNAL": "my-journal",
         "OJS_API_TOKEN": "paste-your-ojs-profile-token-here"
       }
     }

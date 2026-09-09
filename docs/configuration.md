@@ -36,8 +36,7 @@ journal data as if it were its own, instead of stopping with a readable
 error. The server refuses to start until it gets an explicit address:
 
 ```
-OJS_BASE_URL is not set — there is no way to know which OJS instance
-to talk to.
+OJS_BASE_URL is not set — there is no way to know which OJS instance to talk to.
 Give the exact address that works in a browser, e.g.:
     OJS_BASE_URL=https://journals.your-university.edu ojs-mcp
 In your MCP client configuration, set this variable in the `env` section.

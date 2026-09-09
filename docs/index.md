@@ -10,6 +10,18 @@ editorial decisions, publish, and edit metadata.
 This documentation is written for a journal administrator who knows OJS
 but not necessarily MCP.
 
+## Status: Alpha — not yet verified against a live OJS instance
+
+This project has not yet talked to a running OJS instance. All 280 tests
+run against stubbed HTTP responses (via `respx`); the facts about the API
+— endpoint shapes, status codes, field names, workflow-stage and
+decision constants — were read directly from the PKP source (`pkp-lib`,
+`pkp/ojs`) rather than observed against a live server. The behavior
+described in this documentation should be accurate, but it has not been
+exercised end-to-end against real OJS. Treat it accordingly, especially
+before pointing it at production data with `OJS_ALLOW_WRITES=1` — verify
+each tool's effect on a test journal first.
+
 **Version scope: OJS 3.5 and 3.6.** The API shape described in this
 documentation was verified against the `main` development branch of the
 `pkp/pkp-lib` and `pkp/ojs` projects (corresponding to the 3.6 release).

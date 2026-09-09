@@ -1,17 +1,17 @@
 name: canary
 
-# Cotygodniowy test na zależnościach rozwiązanych OD NOWA — nie na tych
-# zamrożonych w uv.lock. `tests.yml` sprawdza wyłącznie to, co leży w repo
-# i wyłącznie przy pushu/PR; `uv.lock` daje wtedy powtarzalność, ale nie mówi
-# nic o tym, co zainstaluje sobie ktoś świeży z PyPI dziś.
+# A weekly test against dependencies resolved FROM SCRATCH — not the ones
+# frozen in uv.lock. `tests.yml` checks only what's in the repo, and only
+# on push/PR; `uv.lock` then gives reproducibility, but says nothing about
+# what someone installing fresh from PyPI today would actually get.
 #
-# Ten workflow chodzi PO wydaniu (harmonogram, nie hook na push) — nie jest
-# bramką dla żadnego mergea ani publikacji, tylko ostrzeżeniem, że zależność
-# wydana już po naszym `uv.lock` (np. nowa wersja `mcp` albo `httpx`) zerwała
-# API, na którym stoi serwer.
+# This workflow runs AFTER release (a schedule, not a push hook) — it is
+# not a gate for any merge or publish, just a warning that a dependency
+# released after our `uv.lock` (e.g. a new `mcp` or `httpx` version) broke
+# the API this server relies on.
 on:
   schedule:
-    # Poniedziałki 06:00 UTC.
+    # Mondays 06:00 UTC.
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
@@ -25,12 +25,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Zainstaluj uv
+      - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.13"
 
-      - name: Rozwiąż zależności od nowa
+      - name: Resolve dependencies from scratch
         run: uv sync --extra dev --upgrade
 
       - name: Pytest

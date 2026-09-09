@@ -20,19 +20,20 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Topic :: Internet :: WWW/HTTP",
 ]
-# Górna granica na `mcp` jest obowiązkowa: wydanie główne SDK potrafi skasować
-# cały moduł serwera, a niezwiązany specyfikator wpuściłby to użytkownikom
-# `uvx` przy zielonym repozytorium. Sufit podnosimy ręcznie, po porcie.
-# Dolna granica `>=2.2` (recenzja, grupa D): testowaliśmy wyłącznie 2.2.0 —
-# deklarowana wcześniej podłoga `>=2` była NIESPRAWDZONA, mogła cicho
-# wpuścić wcześniejsze, nietestowane wydanie 2.x.
-# `starlette` deklarowane jawnie, bo importujemy je wprost (walidacja Origin) —
-# przychodzenie tranzytywne z `mcp` nie jest kontraktem.
-# `uvicorn` deklarowane jawnie, bo późniejsze zadanie importuje je wprost do
-# transportu HTTP — przychodzenie tranzytywne nie jest kontraktem.
-# `anyio` deklarowane jawnie, bo `server.main()` woła `anyio.run()` wprost,
-# żeby serwer stdio i zamknięcie klienta httpx działały w jednej pętli
-# zdarzeń — przychodzenie tranzytywne z `mcp` nie jest kontraktem.
+# The upper bound on `mcp` is mandatory: a major SDK release can delete the
+# entire server module outright, and an unbounded specifier would hand that
+# to `uvx` users on a green repository. We raise the ceiling by hand, after
+# porting.
+# The lower bound `>=2.2` (review, group D): we only ever tested 2.2.0 — the
+# previously declared floor `>=2` was UNVERIFIED, and could have silently
+# let in an earlier, untested 2.x release.
+# `starlette` is declared explicitly because we import it directly (Origin
+# validation) — arriving transitively via `mcp` is not a contract.
+# `uvicorn` is declared explicitly because a later task imports it directly
+# for the HTTP transport — arriving transitively is not a contract.
+# `anyio` is declared explicitly because `server.main()` calls `anyio.run()`
+# directly, so the stdio server and closing the httpx client run in one
+# event loop — arriving transitively via `mcp` is not a contract.
 dependencies = [
     "mcp>=2.2,<3",
     "httpx>=0.27",
@@ -73,11 +74,11 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 88
 target-version = "py310"
-# Dokumenty w docs/ to narracja, nie kod źródłowy. Ruff od 0.16 formatuje
-# bloki Pythona wewnątrz Markdowna, przez co spec i plan implementacji
-# wywalały `ruff format --check .` — czerwone CI dlatego, że dokument
-# projektowy zapisał krotkę w jednej linii, nie niesie żadnej informacji
-# o jakości kodu.
+# Documents under docs/ are narrative, not source code. Since 0.16, ruff
+# formats Python blocks embedded in Markdown, which made the spec and the
+# implementation plan fail `ruff format --check .` — red CI because a
+# design document wrote a tuple on one line, carrying no information about
+# code quality.
 exclude = ["docs"]
 
 [tool.ruff.lint]

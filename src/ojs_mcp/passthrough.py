@@ -70,7 +70,7 @@ def validate_path(path: str) -> str:
         if not segment:
             raise InputError(
                 "The path contains an empty segment (e.g. //, ///, or "
-                "the path ends with /). "
+                "a trailing /). "
                 "Allowed characters: a-z, A-Z, 0-9, ., _, -, /. "
                 "Pass parameter values through the `params` argument."
             )

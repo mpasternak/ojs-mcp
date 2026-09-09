@@ -141,10 +141,15 @@ def register_prompts(mcp: Any) -> None:
             "3. For each article the gateway returns, call "
             f"`get_publication(submission=<id>, publication=<publication_id>{param})`, "
             "to get the title, authors and abstract.\n"
-            "4. Compose the editorial note: the issue's header "
-            "(volume/number/year/title), and below it a list of articles "
-            'formatted as "title — authors", grouped by section if the '
-            "gateway returned it.\n\n"
+            "4. Compose the editorial note in the journal's primary "
+            "language — the multilingual fields returned above (e.g. "
+            "`title`) are keyed by locale; write in whichever locale "
+            "dominates them (or the journal's primary locale, if you can "
+            "determine it), not necessarily English and not necessarily "
+            "the language of this conversation. Include the issue's "
+            "header (volume/number/year/title), and below it a list of "
+            'articles formatted as "title — authors", grouped by section '
+            "if the gateway returned it.\n\n"
             "This is text meant for publication, not a raw data dump — "
             "keep it concise, without internal OJS identifiers in the body."
         )

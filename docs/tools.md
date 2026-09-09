@@ -101,7 +101,7 @@ docstrings all start with `WARNING: modifies production journal data.`
 - **`add_editorial_decision`** — adds an editorial decision to a
   submission; depending on the decision type, it may email a
   notification to authors and/or reviewers. Irreversible in a single
-  call. `decision` is a word-level name (`accept`, `external_review`,
+  call. `decision` is a named value (`accept`, `external_review`,
   `pending_revisions`, `resubmit`, `decline`, `send_to_production`,
   `initial_decline`, `recommend_accept`/`recommend_pending_revisions`/
   `recommend_resubmit`/`recommend_decline`, `new_external_round`,

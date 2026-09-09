@@ -1,4 +1,4 @@
-"""Translation of word-level names to numeric OJS API values.
+"""Translation of named values to numeric OJS API values.
 
 The model should not have to supply magic numbers: tools accept
 ``status="published"``, not ``status=3``. The values come from
@@ -63,7 +63,7 @@ ROLES: dict[int, str] = {
     2097152: "subscription manager",
 }
 
-# Role.php:24-31 — the same constants as ROLES, but as word-level names in
+# Role.php:24-31 — the same constants as ROLES, but as named values in
 # this module's convention (snake_case, no spaces or accents), for use as a
 # filter value (e.g. `roleIds` in GET /users), not just for displaying
 # `pkp.currentUser`.
@@ -119,7 +119,7 @@ def to_values(
     dictionary: dict[str, int],
     label: str,
 ) -> str:
-    """Turn word-level names into a comma-separated list of values for a
+    """Turn names into a comma-separated list of values for a
     query string.
 
     OJS splits array parameters via ``explode(',')``, so the form
@@ -144,7 +144,7 @@ def to_values(
 
 def to_name(value: int, dictionary: dict[str, int]) -> str | None:
     """Reverse of ``to_values``: turn a numeric code from an OJS response
-    back into a word-level name, to attach alongside the raw code (e.g.
+    back into a name, to attach alongside the raw code (e.g.
     ``status_name`` next to ``status``).
 
     Returns ``None`` for a code outside the dictionary instead of raising

@@ -1,9 +1,10 @@
 name: release
 
-# Wydanie wyzwala push tagu `vX.Y.Z`. Numer wersji NIE jest brany z tagu —
-# tag musi się zgadzać z `project.version` w pyproject.toml, inaczej job
-# `build` przerywa. Powód: wersja raz opublikowana na PyPI jest nieodwracalna
-# (`yank` ukrywa wydanie, ale nie zwalnia numeru).
+# A release is triggered by pushing a `vX.Y.Z` tag. The version number is
+# NOT taken from the tag — the tag must match `project.version` in
+# pyproject.toml, otherwise the `build` job aborts. Reason: a version once
+# published to PyPI is irreversible (`yank` hides a release, but does not
+# free up the number).
 on:
   push:
     tags:
@@ -13,8 +14,9 @@ permissions:
   contents: read
 
 jobs:
-  # Ta sama matryca (3.10–3.13 + ruff) co przy zwykłym pushu — nic nie leci na
-  # PyPI, jeśli testy nie są zielone. `workflow_call` zamiast kopiowania kroków.
+  # The same matrix (3.10-3.13 + ruff) as on a regular push — nothing ships
+  # to PyPI if the tests aren't green. `workflow_call` instead of copying
+  # the steps.
   tests:
     uses: ./.github/workflows/tests.yml
 
@@ -27,45 +29,45 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Zainstaluj uv
+      - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.13"
 
-      - name: Sprawdź zgodność tagu z wersją w pyproject.toml
+      - name: Check the tag matches the version in pyproject.toml
         run: |
           set -euo pipefail
           tag="${GITHUB_REF_NAME#v}"
           ver="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
           if [ "$tag" != "$ver" ]; then
-            echo "::error::Tag ${GITHUB_REF_NAME} (wersja ${tag}) nie zgadza się z project.version w pyproject.toml (${ver}). Popraw wersję albo tag — numeru na PyPI nie da się odzyskać."
+            echo "::error::Tag ${GITHUB_REF_NAME} (version ${tag}) does not match project.version in pyproject.toml (${ver}). Fix the version or the tag — a PyPI version number cannot be reclaimed."
             exit 1
           fi
-          echo "Tag zgodny z wersją ${ver}."
+          echo "Tag matches version ${ver}."
 
-      - name: Zbuduj sdist i wheel
+      - name: Build sdist and wheel
         run: uv build
 
-      - name: Twine check (README musi się renderować na PyPI)
+      - name: Twine check (the README must render on PyPI)
         run: uvx twine check --strict dist/*
 
-      # Indeks endpointów to *.txt, nie *.py — dokładnie ta klasa plików,
-      # którą packaging gubi po cichu. Bez niego zasób `ojs://endpointy`
-      # wywala się dopiero w runtime u użytkownika, nie tutaj.
-      - name: Sanity — zasób danych w kole
+      # The endpoint index is a *.txt, not a *.py — exactly the class of
+      # file packaging silently drops. Without it, the `ojs://endpoints`
+      # resource only fails at runtime for the user, not here.
+      - name: Sanity — data resource in the wheel
         run: |
           python3 - <<'PY'
           import glob
           import sys
           import zipfile
 
-          kola = glob.glob("dist/*.whl")
-          if len(kola) != 1:
-              sys.exit(f"Oczekiwano dokładnie jednego koła w dist/, jest: {kola}")
-          with zipfile.ZipFile(kola[0]) as z:
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              sys.exit(f"Expected exactly one wheel in dist/, got: {wheels}")
+          with zipfile.ZipFile(wheels[0]) as z:
               if "ojs_mcp/data/endpoints.compact.txt" not in z.namelist():
-                  sys.exit("W kole brakuje ojs_mcp/data/endpoints.compact.txt")
-          print(f"Zasób danych obecny w {kola[0]}.")
+                  sys.exit("The wheel is missing ojs_mcp/data/endpoints.compact.txt")
+          print(f"Data resource present in {wheels[0]}.")
           PY
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -74,12 +76,13 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # Osobny job: `id-token: write` (token OIDC wymieniany na jednorazowe
-  # uprawnienie do publikacji) ma WYŁĄCZNIE ten krok, który nie wykonuje
-  # żadnego kodu z repozytorium ani z zależności — pobiera gotowy artefakt
-  # i woła jedną przypiętą akcję. Job publikujący, który uruchamia dowolny
-  # kod, to droga do przejęcia pakietu na PyPI — dlatego `build` (który
-  # wykonuje kod projektu i zależności) nie ma tego uprawnienia.
+  # A separate job: `id-token: write` (an OIDC token exchanged for a
+  # one-time publish permission) belongs EXCLUSIVELY to this step, which
+  # runs no code from the repository or its dependencies at all — it
+  # downloads a ready-made artifact and calls one pinned action. A
+  # publishing job that runs arbitrary code is a path to hijacking the
+  # package on PyPI — that is why `build` (which runs the project's code
+  # and its dependencies) does not have this permission.
   publish:
     needs: build
     runs-on: ubuntu-latest
@@ -93,5 +96,5 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Opublikuj na PyPI (trusted publishing, OIDC)
+      - name: Publish to PyPI (trusted publishing, OIDC)
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2

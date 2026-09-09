@@ -500,8 +500,8 @@ async def login(client: httpx.AsyncClient, config: Config, context: str) -> dict
     """
     if not config.username or not config.password:
         raise LoginError(
-            "No login or password (OJS_USERNAME/OJS_PASSWORD) — there is "
-            "nothing to log in with. Set both variables, or use "
+            "No username or password (OJS_USERNAME/OJS_PASSWORD) — there "
+            "is nothing to log in with. Set both variables, or use "
             "OJS_API_TOKEN."
         )
 
@@ -516,8 +516,8 @@ async def login(client: httpx.AsyncClient, config: Config, context: str) -> dict
     if mechanism:
         raise LoginError(
             f"The instance has {mechanism} on the login page, so logging "
-            "in with a login and password is impossible (and would fail "
-            "anyway, while consuming a login-limit attempt). Use "
+            "in with a username and password is impossible (and would "
+            "fail anyway, while consuming a login-limit attempt). Use "
             "OJS_API_TOKEN — generate a token in your OJS profile."
         )
     initial_csrf = extract_csrf_from_form(resp.text)
@@ -563,10 +563,11 @@ async def login(client: httpx.AsyncClient, config: Config, context: str) -> dict
     if not ok:
         raise LoginError(
             "Login rejected. OJS does not distinguish the reason, so "
-            "three are possible: a wrong password, an exhausted login "
-            "attempt limit (RateLimitingService), or a forced password "
-            "change on this account. Check the account in a browser; an "
-            "API token (OJS_API_TOKEN) sidesteps this problem."
+            "there are three possibilities: a wrong password, an "
+            "exhausted login attempt limit (RateLimitingService), or a "
+            "forced password change on this account. Check the account "
+            "in a browser; an API token (OJS_API_TOKEN) sidesteps this "
+            "problem."
         )
 
     # Step 2 — the session's CSRF token and identity from the first

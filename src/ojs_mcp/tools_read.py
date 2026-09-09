@@ -87,7 +87,7 @@ _ACCOUNT_STATUSES = ("active", "disabled", "all")
 def _check_value(value: str, allowed: tuple[str, ...], label: str) -> None:
     """Check that ``value`` belongs to a closed set of allowed values.
 
-    Shared validation for parameters that are already word-level names
+    Shared validation for parameters that are already named values
     (e.g. ``orderBy``, an account ``status``) — unlike ``to_values``, it
     does not translate to numbers, just rejects typos with a readable
     message.
@@ -153,7 +153,7 @@ def _add_submission_names(result: dict) -> dict:
     """Add ``status_name``/``stage_name`` alongside the ``status``/
     ``stageId`` codes.
 
-    The "word-level names, not magic numbers" rule applies to output too,
+    The "named values, not magic numbers" rule applies to output too,
     not just input — without this the model gets ``status: 3`` and has to
     guess.
     """
@@ -183,7 +183,7 @@ async def search_submissions_impl(
     descending: bool = True,
     limit: int = 50,
 ) -> dict[str, Any]:
-    """Find submissions. ``status`` and ``stage`` accept word-level names.
+    """Find submissions. ``status`` and ``stage`` accept named values.
 
     ``sort_by`` is the name of an OJS query PARAMETER (``orderBy``), not a
     response field name — allowed: ``datePublished``, ``dateSubmitted``,

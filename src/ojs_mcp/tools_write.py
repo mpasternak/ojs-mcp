@@ -30,7 +30,7 @@ The logic lives in ``*_impl`` functions (testable without an MCP
 server); ``register_write_tools`` is a thin registration layer —
 exactly the same split as in ``tools_read.py``. Trimming responses (the
 ``*_FIELDS`` tuples and the ``build_publication_view`` function from
-``fields.py``) and translating word-level names
+``fields.py``) and translating named values
 (``dictionaries.to_name``) are also reused from those same modules as in
 the read tools.
 
@@ -402,7 +402,7 @@ def register_write_tools(mcp, client: OjsClient, catalog: Catalog) -> None:
         notification to authors and/or reviewers (depending on the
         decision type and `actions`). Irreversible with a single call.
 
-        `decision` (a word-level name, not a number): accept,
+        `decision` (a named value, not a number): accept,
         external_review, pending_revisions, resubmit, decline,
         send_to_production, initial_decline, recommend_accept,
         recommend_pending_revisions, recommend_resubmit,

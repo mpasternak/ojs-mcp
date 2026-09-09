@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
-  # Wywoływalny z `release.yml` — wydanie przechodzi tę samą matrycę,
-  # zamiast utrzymywać jej kopię.
+  # Callable from `release.yml` — a release goes through the same matrix,
+  # instead of keeping a copy of it.
   workflow_call:
 
 permissions:
@@ -22,12 +22,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Zainstaluj uv
+      - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Zsynchronizuj zależności
+      - name: Sync dependencies
         run: uv sync --extra dev
 
       - name: Ruff format --check
@@ -39,24 +39,25 @@ jobs:
       - name: Pytest
         run: uv run pytest -q
 
-  # `test` idzie po uv.lock, więc widzi wyłącznie wersje zamrożone w repo.
-  # Ten job rozwiązuje zależności od nowa — tak jak resolver u kogoś, kto
-  # instaluje z PyPI. Łapie zerwanie API w `mcp`/`httpx` zanim trafi do wydania.
+  # `test` goes by uv.lock, so it only ever sees the versions frozen in the
+  # repo. This job resolves dependencies from scratch — the way a resolver
+  # would for someone installing from PyPI. It catches an API break in
+  # `mcp`/`httpx` before it reaches a release.
   test-newest-deps:
     runs-on: ubuntu-latest
-    # Informacyjny: czerwony tu znaczy „ktoś z góry wydał niekompatybilną
-    # wersję", a nie „ten PR jest zły". Nie blokuje merge'a.
+    # Informational: red here means "someone upstream released an
+    # incompatible version", not "this PR is broken". Does not block merges.
     continue-on-error: true
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Zainstaluj uv
+      - name: Install uv
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
         with:
           python-version: "3.13"
 
-      - name: Rozwiąż zależności od nowa
+      - name: Resolve dependencies from scratch
         run: uv sync --extra dev --upgrade
 
       - name: Pytest

@@ -197,8 +197,8 @@ class Catalog:
                         "Could not fetch the list of journals, and "
                         "OJS_JOURNAL is not set. Fetching the catalog at "
                         "the site level requires an administrator role — "
-                        "set OJS_JOURNAL to your journal's address. "
-                        f"Cause: {exc}"
+                        "set OJS_JOURNAL to your journal's path segment "
+                        f"(urlPath). Cause: {exc}"
                     ) from exc
 
                 result = [
