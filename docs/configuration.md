@@ -10,7 +10,7 @@ the `env` section (see the example in the
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `OJS_BASE_URL` | **yes** | none | The OJS instance address, exactly as it works in the browser (e.g. `https://journals.your-university.edu`), without `/index.php` and without a journal name at the end. |
-| `OJS_JOURNAL` | no | none | The journal shortcut (`urlPath`) — the path segment from the address, e.g. for `.../index.php/rocznik` that's `rocznik`. Set this when the instance serves a single journal, or when you want a default one; then tools don't need the `czasopismo` parameter on every call. |
+| `OJS_JOURNAL` | no | none | The journal shortcut (`urlPath`) — the path segment from the address, e.g. for `.../index.php/annual` that's `annual`. Set this when the instance serves a single journal, or when you want a default one; then tools don't need the `journal` parameter on every call. |
 | `OJS_API_TOKEN` | no* | none | The API token from a user's OJS profile. Takes precedence over `OJS_USERNAME`/`OJS_PASSWORD`. Requires `api_key_secret` to be set in the instance's `config.inc.php` — see [Authentication](authentication.md). Ignored in `OJS_MCP_TRANSPORT=http` mode. |
 | `OJS_USERNAME` | no* | none | The login for form-based authentication, used only when `OJS_API_TOKEN` is absent. Also requires `OJS_PASSWORD`. Won't work when the instance has reCAPTCHA/ALTCHA on its login page — see [Authentication](authentication.md). Ignored in `http` mode. |
 | `OJS_PASSWORD` | no* | none | The password accompanying `OJS_USERNAME`. Ignored in `http` mode. |
@@ -36,18 +36,15 @@ journal data as if it were its own, instead of stopping with a readable
 error. The server refuses to start until it gets an explicit address:
 
 ```
-Nie ustawiono OJS_BASE_URL — nie wiadomo, z którą instancją OJS rozmawiać.
-Podaj adres dokładnie taki, jaki działa w przeglądarce, np.:
-    OJS_BASE_URL=https://czasopisma.twoja-uczelnia.pl ojs-mcp
+OJS_BASE_URL is not set — there is no way to know which OJS instance
+to talk to.
+Give the exact address that works in a browser, e.g.:
+    OJS_BASE_URL=https://journals.your-university.edu ojs-mcp
+In your MCP client configuration, set this variable in the `env` section.
 ```
 
-This is the exact message the server prints — its user-facing text
-(error messages, tool names, tool descriptions) is in Polish by design
-and is not translated here, so what you actually see on screen matches
-what's shown above. In English, it reads: "`OJS_BASE_URL` is not set —
-it's not known which OJS instance to talk to. Provide the address
-exactly as it works in your browser, e.g.:
-`OJS_BASE_URL=https://journals.your-university.edu ojs-mcp`."
+This is the exact message the server prints — it is reproduced here
+verbatim, so what you see on screen matches what's shown above.
 
 ## The address and `restful_urls`
 
@@ -69,10 +66,10 @@ described above, check its OJS version against the
 
 ## Multiple journals on one instance
 
-When `OJS_JOURNAL` is not set, tools require the `czasopismo` parameter
-on every call (except `lista_czasopism`, which doesn't need it). The
-`lista_czasopism` tool or the `ojs://czasopisma` resource returns the
-list of available journals (the values to put in `czasopismo`) — but
+When `OJS_JOURNAL` is not set, tools require the `journal` parameter
+on every call (except `list_journals`, which doesn't need it). The
+`list_journals` tool or the `ojs://journals` resource returns the
+list of available journals (the values to put in `journal`) — but
 fetching that list itself requires either the site administrator role
 **or** a previously set `OJS_JOURNAL` to anchor the request (see
 [Hosting](hosting.md#journal-catalog) for the cost of this call in

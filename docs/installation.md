@@ -35,8 +35,7 @@ uvx ojs-mcp
 ```
 
 `OJS_BASE_URL` alone is not enough — without credentials the server exits
-with a readable error (`„Brak poświadczeń…”`, "No credentials...")
-instead of starting.
+with a readable error ("No credentials...") instead of starting.
 
 In practice your MCP client runs this command for you, using the
 configuration format described in the
@@ -93,5 +92,5 @@ uvx ojs-mcp --version
 
 should print the version number and exit with code 0 — this does not
 check the connection to OJS, only that the package runs at all. The
-first real connectivity check is calling the `kim_jestem` tool from your
+first real connectivity check is calling the `whoami` tool from your
 MCP client (see [Tools](tools.md)).

@@ -11,6 +11,18 @@ others), it gives the model access to a journal's submissions, reviews,
 issues, and editorial statistics — and, with writes explicitly enabled,
 also to making editorial decisions, publishing, and editing metadata.
 
+## Status: Alpha — not yet verified against a live OJS instance
+
+This project has not yet talked to a running OJS instance. All 280 tests
+run against stubbed HTTP responses (via `respx`); the facts about the API
+— endpoint shapes, status codes, field names, workflow-stage and
+decision constants — were read directly from the PKP source (`pkp-lib`,
+`pkp/ojs`) rather than observed against a live server. The behavior
+described in this documentation should be accurate, but it has not been
+exercised end-to-end against real OJS. Treat it accordingly, especially
+before pointing it at production data with `OJS_ALLOW_WRITES=1` — verify
+each tool's effect on a test journal first.
+
 ## Quick start
 
 ```bash
@@ -69,8 +81,8 @@ given journal.
 ```
 
 `OJS_JOURNAL` is optional — leave it out if the instance serves several
-journals and you'd rather pick one with the `czasopismo` ("journal")
-parameter on each call.
+journals and you'd rather pick one with the `journal` parameter on each
+call.
 
 ### Where to actually paste this configuration
 
@@ -99,7 +111,7 @@ editing a configuration file by hand isn't your thing.
 | Variable | Required | Description |
 |---|---|---|
 | `OJS_BASE_URL` | yes | The OJS instance address, exactly as it works in the browser. |
-| `OJS_JOURNAL` | no | The journal shortcut — skips the `czasopismo` parameter on every call. |
+| `OJS_JOURNAL` | no | The journal shortcut — skips the `journal` parameter on every call. |
 | `OJS_API_TOKEN` | no* | The token from a user's profile. Takes precedence over login/password. |
 | `OJS_USERNAME` / `OJS_PASSWORD` | no* | Form-based login — won't work with reCAPTCHA/ALTCHA. |
 | `OJS_ALLOW_WRITES` | no | `1` exposes the tools that modify journal data (hidden by default). |
@@ -123,17 +135,6 @@ bundle pulls its own dependencies on first run.
 
 Full documentation (installation, configuration, authentication, tool
 list, multi-tenant hosting): **https://mpasternak.github.io/ojs-mcp/**
-
-## A note on language
-
-The tools, parameters, docstrings, and error messages that this server
-actually exposes are in Polish — that's a deliberate choice carried over
-from the author's earlier project for a Polish bibliographic system, and
-it hasn't been changed here. This README and the rest of the
-documentation are in English, but where they quote a real message or
-tool name you'll actually see, that quote stays in Polish, with an
-English explanation next to it — so what's on the page always matches
-what's on your screen.
 
 ## License
 

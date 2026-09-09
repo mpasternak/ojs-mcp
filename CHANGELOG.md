@@ -12,11 +12,11 @@ First release.
 - An MCP server for the authenticated Open Journal Systems REST API
   (OJS 3.5/3.6) — sixteen read tools (submissions, publications, issues,
   sections, users, reviewers, statistics, DOI, identity, and journal
-  catalog) plus the `ojs_zapytanie` escape hatch below (seventeen always
+  catalog) plus the `ojs_request` escape hatch below (seventeen always
   registered in total), and five write tools (editorial decisions,
   publication metadata editing, publish/unpublish, announcements)
   registered only when `OJS_ALLOW_WRITES=1` is explicitly set.
-- The `ojs_zapytanie` escape hatch for calling any OJS REST API endpoint
+- The `ojs_request` escape hatch for calling any OJS REST API endpoint
   outside the curated tool list, with path validation and (without
   writes enabled) restriction to read requests.
 - Two authentication strategies: an API token (`OJS_API_TOKEN`) and
@@ -25,7 +25,7 @@ First release.
   token management, and automatic retry after session expiry.
 - Multi-instance support: a single binary serves any OJS deployment via
   `OJS_BASE_URL`, with support for multiple journals on one instance
-  (the `czasopismo` parameter, the `lista_czasopism` tool).
+  (the `journal` parameter, the `list_journals` tool).
 - Network mode `OJS_MCP_TRANSPORT=http` (streamable HTTP) to host a
   single process for many users at once, each with their own OJS token
   passed in the request header — the server stores no client

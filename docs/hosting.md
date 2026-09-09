@@ -90,9 +90,9 @@ available.
 
 ## Journal catalog
 
-The instance's journal catalog (the `{sciezka, nazwa}` — "path", "name"
-— list returned by the `lista_czasopism` tool and the `ojs://czasopisma`
-resource) is fetched from OJS the first time it's needed within a given
+The instance's journal catalog (the `{path, name}` list returned by the
+`list_journals` tool and the `ojs://journals` resource) is fetched from
+OJS the first time it's needed within a given
 request and cached **only for the duration of that one request** — in
 stateless mode there is no longer-lived store between requests that
 could hold it for the same user's next request.
@@ -103,7 +103,7 @@ Two things are worth knowing when planning for load:
   separately — and this isn't an unfinished optimization, it's a
   structural consequence of the cache design that rules out
   deduplication.** The cache lives in a `ContextVar` owned by the
-  `Katalog` ("Catalog") object, and `stateless_http=True` (see above)
+  `Catalog` object, and `stateless_http=True` (see above)
   means EVERY ASGI request gets its own, isolated copy of that context
   at startup. Two concurrent requests share NO location where one could
   look up a result the other already fetched — it's not that this
@@ -123,14 +123,14 @@ Two things are worth knowing when planning for load:
   queue — the only difference is that they no longer trample each
   other.
 - **With `OJS_JOURNAL` set, the catalog isn't touched at all** as long
-  as a call doesn't supply the `czasopismo` parameter — omitting it then
+  as a call doesn't supply the `journal` parameter — omitting it then
   uses `OJS_JOURNAL` directly as a ready-made value, without asking OJS
-  for the list. Passing `czasopismo` explicitly triggers this fetch
+  for the list. Passing `journal` explicitly triggers this fetch
   EVERY time, even when the value given is exactly the same journal that
   `OJS_JOURNAL` already resolves to — name resolution only checks
   whether the parameter was passed at all, not whether it differs from
   `OJS_JOURNAL`. If the instance serves a single journal (the typical
-  case), omitting the `czasopismo` parameter avoids this cost entirely.
+  case), omitting the `journal` parameter avoids this cost entirely.
 
 Fetching the catalog itself (at the site level, without `OJS_JOURNAL`)
 requires the site administrator role on the OJS side — see
