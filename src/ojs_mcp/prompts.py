@@ -1,7 +1,9 @@
 """Prompty redakcyjne.
 
-Prompty to instrukcje DLA MODELU, nie dokumentacja — model ma 22 narzędzia
-i musi wiedzieć, których użyć i w jakiej kolejności. Dlatego każdy prompt
+Prompty to instrukcje DLA MODELU, nie dokumentacja — model ma spory zestaw
+narzędzi (siedemnaście przy samym odczycie, więcej, gdy `OJS_ALLOW_WRITES`
+włączy narzędzia zapisu) i musi wiedzieć, których użyć i w jakiej
+kolejności. Dlatego każdy prompt
 niżej nazywa wprost konkretne narzędzia i ich parametry (nie tylko opisuje
 cel), a tam, gdzie OJS ma gotowy filtr po swojej stronie (np.
 `bez_aktywnosci_dni` w `szukaj_zgloszen`), każe modelowi z niego skorzystać
@@ -25,9 +27,26 @@ def _wskazanie(czasopismo: str | None) -> str:
     return f" (czasopismo `{czasopismo}`)" if czasopismo else ""
 
 
+def _arg_czasopismo(czasopismo: str | None) -> str:
+    """Argument `czasopismo="..."` BEZ wiodącego przecinka, albo pustka.
+
+    Do użycia tam, gdzie to JEDYNY argument wywołania narzędzia w tekście
+    promptu (np. `statystyki_redakcyjne(<tu>)`).
+    """
+    return f'czasopismo="{czasopismo}"' if czasopismo else ""
+
+
 def _param_czasopismo(czasopismo: str | None) -> str:
-    """Fragment wywołania narzędzia z parametrem `czasopismo`, jeśli podano."""
-    return f', czasopismo="{czasopismo}"' if czasopismo else ""
+    """Fragment wywołania narzędzia z parametrem `czasopismo`, jeśli podano —
+    z wiodącym przecinkiem, do dopisania PO innych argumentach.
+
+    Wydzielone z `_arg_czasopismo`, żeby ten sam parametr nie ginął przy
+    kopiowaniu wywołania między krokami promptu — patrz Runda 1 recenzji
+    Tasku 14: krok furtki w `podsumuj_numer` zgubił go, bo był dopisywany
+    ręcznie zamiast przez tę funkcję.
+    """
+    arg = _arg_czasopismo(czasopismo)
+    return f", {arg}" if arg else ""
 
 
 def zarejestruj_prompty(mcp: Any) -> None:
@@ -45,10 +64,11 @@ def zarejestruj_prompty(mcp: Any) -> None:
         par = _param_czasopismo(czasopismo)
         return (
             f"Przygotuj przegląd redakcyjny{wsk}.\n\n"
-            f"1. Wywołaj `statystyki_redakcyjne({par.lstrip(', ')})` po zbiorcze "
-            "liczby: zgłoszenia, decyzje, czas do pierwszej decyzji.\n"
-            f"2. Wywołaj `biezacy_numer({par.lstrip(', ')})`, żeby sprawdzić stan "
-            "bieżącego numeru (czy jest ustawiony, jaki ma tytuł/wolumin/rok).\n"
+            f"1. Wywołaj `statystyki_redakcyjne({_arg_czasopismo(czasopismo)})` po "
+            "zbiorcze liczby: zgłoszenia, decyzje, czas do pierwszej decyzji.\n"
+            f"2. Wywołaj `biezacy_numer({_arg_czasopismo(czasopismo)})`, żeby "
+            "sprawdzić stan bieżącego numeru (czy jest ustawiony, jaki ma "
+            "tytuł/wolumin/rok).\n"
             "3. Dla KAŻDEGO z czterech etapów z osobna — `zgloszenie`, "
             "`recenzja_zewnetrzna`, `redakcja`, `produkcja` — wywołaj "
             f'`szukaj_zgloszen(etap=["<etap>"], status=["w_toku"]{par}, '
@@ -97,10 +117,10 @@ def zarejestruj_prompty(mcp: Any) -> None:
         par = _param_czasopismo(czasopismo)
         if numer is None:
             krok1 = (
-                f"1. Wywołaj `biezacy_numer({par.lstrip(', ')})`, żeby pobrać bieżący "
-                "numer. Jeśli pole `numer` w odpowiedzi jest `None`, czasopismo nie "
-                "ma jeszcze ustawionego numeru bieżącego — zgłoś to wprost i "
-                "zakończ, zamiast zgadywać."
+                f"1. Wywołaj `biezacy_numer({_arg_czasopismo(czasopismo)})`, żeby "
+                "pobrać bieżący numer. Jeśli pole `numer` w odpowiedzi jest "
+                "`None`, czasopismo nie ma jeszcze ustawionego numeru bieżącego "
+                "— zgłoś to wprost i zakończ, zamiast zgadywać."
             )
         else:
             krok1 = (
@@ -113,7 +133,7 @@ def zarejestruj_prompty(mcp: Any) -> None:
             "2. `pobierz_numer`/`biezacy_numer` zwracają WYŁĄCZNIE metadane "
             "numeru — bez listy artykułów. Po pełną zawartość (sekcje i "
             'artykuły) wywołaj furtkę `ojs_zapytanie(sciezka="issues/<id '
-            'numeru z kroku 1>")`; dokładny kształt odpowiedzi sprawdź w '
+            f'numeru z kroku 1>"{par})`; dokładny kształt odpowiedzi sprawdź w '
             "zasobie `ojs://endpointy`.\n"
             "3. Dla każdego artykułu zwróconego przez furtkę wywołaj "
             f"`pobierz_publikacje(zgloszenie=<id>, publikacja=<id_publikacji>{par})`, "
