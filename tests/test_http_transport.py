@@ -255,24 +255,35 @@ async def test_token_middleware_przenosi_token_i_czysci_po_sobie():
 
 
 async def test_odrzucenie_po_origin_nastepuje_bez_siegania_po_token():
-    """Odrzucenie po ``Origin`` ma zapadać ZANIM ktokolwiek dotknie tokenu —
-    nawet jeśli żądanie niesie poprawnie wyglądający token.
+    """Odrzucenie po ``Origin`` ma zapadać ZANIM ktokolwiek dotknie tokenu.
+
+    Regresja W4 (recenzja): wersja tego testu, która sama składała stos
+    (``OriginMiddleware(TokenMiddleware(spy), ...)``), sprawdzała dokładnie
+    to, co sama zbudowała — odwrócenie kolejności w PRAWDZIWYM `_zloz_stos`
+    nie wywalało jej. Wersja pełnostosowa z nagłówkiem `Authorization`
+    (``test_pelny_stos_origin_spoza_listy_dostaje_403`` niżej) też by nie
+    złapała odwrócenia: token o dowolnej wartości jest w `TokenMiddleware`
+    tylko OBECNY, nigdy nie jest weryfikowany wobec OJS, więc żądanie
+    przeszłoby przez warstwę tokenu niezależnie od kolejności i i tak
+    dostałoby 403 na Origin. Jedyny sposób złapać odwrócenie: żądanie z
+    niedozwolonym ``Origin`` I BEZ ``Authorization`` — poprawna kolejność
+    (Origin pierwszy) daje 403, odwrócona dałaby 401 (Token pierwszy).
+    Budujemy więc PRAWDZIWY stos przez ``zbuduj_aplikacje``, nie atrapę.
     """
-    spy = _Spy()
-    # Kolejność zgodna z `zbuduj_aplikacje`: Origin na zewnątrz, Token w środku.
-    aplikacja = OriginMiddleware(TokenMiddleware(spy), dozwolone=())
-    ustaw_token_zadania(None)
-    odpowiedz = await _wyslij(
-        aplikacja,
-        headers={
-            "Origin": "https://zly.pl",
-            "Authorization": "Bearer wygladajacy-na-prawdziwy",
-        },
+    cfg = Config(
+        base_url="https://x.edu",
+        journal="r",
+        transport="http",
+        allowed_origins=("https://redakcja.example",),
     )
+    ustaw_token_zadania(None)
+    aplikacja = zbuduj_aplikacje(cfg)
+
+    odpowiedz = await _wyslij(aplikacja, headers={"Origin": "https://zly.pl"})
+
     # 403 (Origin), NIE 401 (Token) — czyli Origin zadziałał pierwszy.
     assert odpowiedz.status_code == 403
-    assert not spy.wywolane
-    # TokenMiddleware nigdy nie wykonał się, więc kontekst pozostał pusty.
+    # Kontekst pozostał pusty — TokenMiddleware nigdy nie zdążył go ustawić.
     assert token_zadania() is None
 
 

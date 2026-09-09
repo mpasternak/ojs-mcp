@@ -60,6 +60,14 @@ _METODY_ZAPISU = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # kontekstu per żądanie.
 _KONTEKST_Z_URL = re.compile(r"/index\.php/([^/]+)/api/v1")
 
+# Wykrycie powrotu na stronę logowania w `Location` po kroku 1 (patrz
+# `zaloguj` niżej) — MUSI dopasowywać `/login` jako WŁASNY segment
+# ścieżki, nie jako dowolny podciąg. `"/login" in lokalizacja` (wersja
+# sprzed tej poprawki — recenzja, W5) łapała też adresy, w których "login"
+# jest częścią innego słowa (np. `/user/loginHistory`) i błędnie odrzucała
+# udane logowanie kończące się takim przekierowaniem.
+_SEGMENT_LOGIN = re.compile(r"/login(?:$|[/?#])")
+
 
 def wyluskaj_csrf_z_formularza(html: str) -> str | None:
     """Znajdź wartość ``csrfToken`` w ukrytym polu formularza.
@@ -494,13 +502,17 @@ async def zaloguj(klient: httpx.AsyncClient, config: Config, kontekst: str) -> d
     # podręcznej, zapora aplikacyjna, nietypowe proxy) to nie jest sukces
     # logowania, tylko brak informacji — nie wolno tego domyślnie przepuścić.
     # Zmianę hasła sprawdzamy jawnie osobnym warunkiem — dziś łapie ją też
-    # podciąg "/login" (adres to `/login/changePassword/{user}`), ale to
-    # przypadek, nie zamierzone zabezpieczenie wymagane w spec. §6.2.
+    # dopasowanie segmentu "/login" (adres to `/login/changePassword/{user}`),
+    # ale to przypadek, nie zamierzone zabezpieczenie wymagane w spec. §6.2.
+    # `_SEGMENT_LOGIN` (nie goły podciąg — patrz W5, recenzja) dopasowuje
+    # "/login" WYŁĄCZNIE jako własny segment ścieżki, więc poprawny adres
+    # docelowy zawierający "login" jako część innego słowa (np.
+    # `/user/loginHistory`) nie jest tu błędnie odrzucany.
     lokalizacja = odp.headers.get("location", "")
     udane = (
         300 <= odp.status_code < 400
         and bool(lokalizacja)
-        and "/login" not in lokalizacja
+        and not _SEGMENT_LOGIN.search(lokalizacja)
         and "changepassword" not in lokalizacja.lower()
     )
     if not udane:

@@ -109,12 +109,18 @@ async def test_200_z_formularzem_to_porazka():
 
 @respx.mock
 async def test_przekierowanie_na_changepassword_to_porazka():
+    """Regresja W5 (recenzja): adres CELOWO bez `/login` — dawna atrapa
+    (`/login/changePassword/u`) zawierała już podciąg `/login`, więc
+    usunięcie warunku `and "changepassword" not in lokalizacja.lower()`
+    nie wywalało tego testu (zawiodłoby i tak przez sam `/login`). Ten
+    adres izoluje sprawdzenie zmiany hasła od sprawdzenia `/login`.
+    """
     respx.get(f"{BAZA}/login").mock(
         return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
     )
     respx.post(f"{BAZA}/login/signIn").mock(
         return_value=httpx.Response(
-            302, headers={"Location": f"{BAZA}/login/changePassword/u"}
+            302, headers={"Location": f"{BAZA}/user/changePassword"}
         )
     )
     async with httpx.AsyncClient(follow_redirects=False) as klient:
@@ -124,15 +130,52 @@ async def test_przekierowanie_na_changepassword_to_porazka():
 
 
 @respx.mock
-async def test_captcha_przerywa_bez_wyslania_hasla():
+async def test_lokalizacja_z_login_jako_czescia_slowa_nie_jest_odrzucana():
+    """Regresja W5 (recenzja, druga część): dopasowanie `"/login" in
+    lokalizacja` było podciągiem — poprawny adres docelowy zawierający
+    "login" jako CZĘŚĆ innego słowa (np. `/loginHistory`) byłby błędnie
+    odrzucony jako powrót na stronę logowania. Musi być odrzucany tylko
+    `/login` jako WŁASNY segment ścieżki.
+    """
     respx.get(f"{BAZA}/login").mock(
-        return_value=httpx.Response(200, html='<div class="g-recaptcha"></div>')
+        return_value=httpx.Response(200, html=STRONA_LOGOWANIA)
+    )
+    respx.post(f"{BAZA}/login/signIn").mock(
+        return_value=httpx.Response(
+            302, headers={"Location": f"{BAZA}/user/loginHistory"}
+        )
+    )
+    respx.get(f"{BAZA}/dashboard/editorial").mock(
+        return_value=httpx.Response(200, html=STRONA_PULPITU)
+    )
+    async with httpx.AsyncClient(follow_redirects=False) as klient:
+        wynik = await zaloguj(klient, CFG, "rocznik")
+    assert wynik["csrf"] == "TOKEN-SESJI"
+
+
+@respx.mock
+async def test_captcha_przerywa_bez_wyslania_hasla():
+    """Regresja W3 (recenzja): atrapa BEZ `csrfToken` sprawiała, że nawet
+    całkowita likwidacja wykrywania CAPTCHA (`mechanizm = None`) nie
+    wywalała tego testu — bez gałęzi CAPTCHA sekwencja i tak padała w
+    NASTĘPNYM kroku (brak `csrfToken` na stronie logowania), a TAMTEN
+    komunikat też zawiera "OJS_API_TOKEN". Strona atrapy musi mieć
+    poprawne pole `csrfToken`, żeby JEDYNĄ możliwą przyczyną przerwania
+    była CAPTCHA — i asertujemy nazwę mechanizmu, nie tylko wzmiankę
+    o tokenie.
+    """
+    respx.get(f"{BAZA}/login").mock(
+        return_value=httpx.Response(
+            200, html='<div class="g-recaptcha"></div>' + STRONA_LOGOWANIA
+        )
     )
     signin = respx.post(f"{BAZA}/login/signIn")
     async with httpx.AsyncClient(follow_redirects=False) as klient:
         with pytest.raises(BladLogowania) as exc:
             await zaloguj(klient, CFG, "rocznik")
-    assert "OJS_API_TOKEN" in str(exc.value)
+    tresc = str(exc.value)
+    assert "reCAPTCHA" in tresc
+    assert "OJS_API_TOKEN" in tresc
     # Hasło NIE zostało wysłane.
     assert not signin.called
 

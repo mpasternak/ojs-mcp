@@ -585,6 +585,41 @@ async def test_szukaj_uzytkownikow_odrzuca_nieznany_status():
     await klient.aclose()
 
 
+@respx.mock
+async def test_szukaj_uzytkownikow_pomija_sekrety_orcid():
+    """D8 (recenzja): `pola.py` gwarantuje w docstringu, że sekrety OAuth
+    ORCID (`orcidAccessToken` i pokrewne) nie trafiają do ŻADNEJ krotki pól
+    — ale dla `POLA_UZYTKOWNIKA` (użytej tu przez `szukaj_uzytkownikow`)
+    nic tego nie sprawdzało: dopisanie `orcidAccessToken` do tej krotki nie
+    wywalało żadnego testu (w przeciwieństwie do `POLA_AUTORA_PUBLIKACJI`,
+    chronionej asercją przez pełną równość w
+    `test_pobierz_publikacje_zwraca_szczegoly_pominiete_na_liscie`).
+    """
+    respx.get(f"{BAZA}/users").mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "itemsMax": 1,
+                "items": [
+                    {
+                        "id": 7,
+                        "userName": "jnowak",
+                        "email": "j@example.edu",
+                        "orcidAccessToken": "sekret-oauth",
+                        "orcidRefreshToken": "tez-sekret",
+                    }
+                ],
+            },
+        )
+    )
+    klient, katalog = _zestaw()
+    wynik = await szukaj_uzytkownikow_impl(klient, katalog)
+    assert wynik["uzytkownicy"] == [
+        {"id": 7, "userName": "jnowak", "email": "j@example.edu"}
+    ]
+    await klient.aclose()
+
+
 # --- lista_recenzentow --------------------------------------------------------
 
 
@@ -601,6 +636,10 @@ async def test_lista_recenzentow_woła_wlasciwy_endpoint():
                         "userName": "jkowalski",
                         "reviewsCompleted": 5,
                         "reviewerRating": 4,
+                        # D8 (recenzja): sekret OAuth ORCID w danych źródłowych
+                        # — musi zostać przycięty przez POLA_RECENZENTA, tak
+                        # jak wszędzie indziej (patrz pola.py, docstring modułu).
+                        "orcidAccessToken": "sekret-oauth",
                     }
                 ],
             },
