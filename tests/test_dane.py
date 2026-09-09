@@ -4,7 +4,7 @@ from importlib.resources import files
 
 
 def test_indeks_endpointow_jest_w_pakiecie():
-    """Indeks endpointów musi istnieć i zawierać esperowalne ścieżki."""
+    """Indeks endpointów musi istnieć i zawierać oczekiwane ścieżki."""
     tresc = (files("ojs_mcp.data") / "endpointy.compact.txt").read_text("utf-8")
     assert tresc.strip()
     # Kilka ścieżek, które muszą tam być — inaczej indeks jest pusty

@@ -72,7 +72,7 @@ GET /navigationMenus/items | - | Get all navigation menu items for new menu crea
 PUT /navigationMenus/{navigationMenuId} | - | Update a navigation menu.
 GET /navigationMenus/{navigationMenuId}/items | - | Get items for a navigation menu.
 POST /orcid/deleteForAuthor/{authorId} | - | Allows Journal Manager and Editors to revoke an author's ORCID and access tokens associated with a submission.
-POST /orcid/requestAuthorVerification/{authorId} | - | Allows Journal Manager and Editors to send email request to an author to link their ORCID to a submission in O
+POST /orcid/requestAuthorVerification/{authorId} | - | Allows Journal Manager and Editors to send email request to an author to link their ORCID to a submission in…
 GET /reviews/history/{submissionId}/{reviewRoundId} | - | Get the review history for a review round.
 GET /reviews/{submissionId}/exports/{fileId} | - | Download an exported review file.
 PUT /reviews/{submissionId}/{reviewAssignmentId}/confirmReview | - | Confirm a review assignment.

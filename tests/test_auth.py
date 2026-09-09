@@ -100,6 +100,12 @@ def test_token_zadania_auth_czyta_token_dopiero_przy_kazdym_auth_flow():
         ("Basic abc, Bearer xyz", "xyz"),
         ("Basic abc", None),
         ("", None),
+        # Regresja (grupa E, recenzja): `split(" ")` (goły spacja-separator)
+        # dawało dla podwójnej spacji trzy elementy (`["Bearer", "", "xyz"]`)
+        # zamiast dwóch, więc w pełni poprawny token cicho ginął jako
+        # `None`. `split(None, 1)` dzieli po DOWOLNYM ciągu białych znaków.
+        ("Bearer  xyz", "xyz"),
+        ("Bearer\txyz", "xyz"),
     ],
 )
 def test_token_z_naglowka(naglowek, oczekiwany):

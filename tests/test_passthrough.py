@@ -96,8 +96,8 @@ async def test_listy_w_parametrach_kodowane_przecinkiem():
         # Ścieżki sieciowe
         "//evil.com",
         "///evil.com",
-        "//​evil.com",  # ZERO WIDTH SPACE (U+200B) przed //
-        "﻿evil.com",  # BOM (U+FEFF) na początek
+        "​//evil.com",  # ZERO WIDTH SPACE (U+200B) przed //
+        "﻿//evil.com",  # BOM (U+FEFF) przed //
         # Wychodzenie w górę
         "..",
         "../etc",

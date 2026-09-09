@@ -4,9 +4,10 @@ Uruchamiany ręcznie przy podbiciu wersji OJS:
 
     uv run python tools/build_index.py
 
-Pełny `swagger-source.json` ma 353 KB i nie ma czego szukać w kole.
-Indeks zawiera to, czego model potrzebuje, żeby trafnie użyć furtki
-`ojs_zapytanie`: ścieżkę, metody, jedno zdanie opisu i nazwy parametrów.
+Pełny `swagger-source.json` ma 353 KB — za dużo, żeby wciskać go w całości
+do kontekstu modelu przy każdym wywołaniu furtki `ojs_zapytanie`. Indeks
+zawiera tylko to, czego model naprawdę potrzebuje, żeby trafnie jej użyć:
+ścieżkę, metody, jedno zdanie opisu i nazwy parametrów.
 
 Uwaga: `definitions` w swaggerze to placeholdery (`"Submission": "submission"`),
 rozwijane dopiero przez `lib/pkp/tools/buildSwagger.php` ze `schemas/*.json`.
@@ -33,6 +34,11 @@ NAGLOWEK = """\
 # parametrami count (max 100) oraz offset.
 """
 
+# Maksymalna długość opisu w jednej linii indeksu — dłuższe są przycinane
+# z wielokropkiem (grupa E, recenzja: dawniej twardo, mid-word — dwa wpisy
+# na 141 kończyły się w połowie wyrazu).
+LIMIT_OPISU = 110
+
 
 def main() -> int:
     """Pobierz spec z GitHub i wygeneruj indeks."""
@@ -51,7 +57,9 @@ def main() -> int:
             continue
         pierwsza = operacje[metody[0].lower()]
         opis = (pierwsza.get("summary") or pierwsza.get("description") or "").strip()
-        opis = " ".join(opis.split())[:110]
+        opis = " ".join(opis.split())
+        if len(opis) > LIMIT_OPISU:
+            opis = opis[: LIMIT_OPISU - 1].rstrip() + "…"
         nazwy = []
         for parametr in pierwsza.get("parameters", []):
             nazwa = parametr.get("name")

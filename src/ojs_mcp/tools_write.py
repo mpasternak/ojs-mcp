@@ -56,7 +56,7 @@ from .slowniki import DECYZJE, ETAPY, STATUSY, na_nazwe, na_wartosci
 # `pages`) — patrz też uwaga w docstringu `pola.POLA_PUBLIKACJI_PELNE`
 # o tej samej pułapce.
 #
-# Reguła doboru z brief Tasku 13: pole bez `readOnly` i bez
+# Reguła doboru z briefu Tasku 13: pole bez `readOnly` i bez
 # `writeDisabledInApi` w `schemas/publication.json` (obu plikach).
 # `writeDisabledInApi` NIE występuje w żadnym z dwóch plików
 # `publication.json` — to realna flaga schematu OJS
@@ -64,7 +64,7 @@ from .slowniki import DECYZJE, ETAPY, STATUSY, na_nazwe, na_wartosci
 # dla `schemas/submission.json` (`PKPSubmissionController::add`/`edit`), nie
 # dla publikacji.
 #
-# TA LISTA JEST PRZECIĘCIEM reguły z brief i listy z brief, NIE dosłownym
+# TA LISTA JEST PRZECIĘCIEM reguły z briefu i listy z briefu, NIE dosłownym
 # przepisaniem żadnej z nich osobno (recenzja Rundy 1 Tasku 13, potwierdzone
 # niezależnie): reguła sama w sobie, wzięta dosłownie, wpuściłaby też pola
 # `readOnly`/operacyjne, których brief NIE wymieniał — m.in. `status`,
@@ -90,7 +90,7 @@ from .slowniki import DECYZJE, ETAPY, STATUSY, na_nazwe, na_wartosci
 # (`PKPSchemaService::sanitize()`, które faktycznie filtruje `readOnly`,
 # nie jest wołane na tej ścieżce — `Repo::publication()->edit()` scala
 # `$params` bez filtrowania), więc nasza WŁASNA lista jest jedynym
-# rzeczywistym zabezpieczeniem — stąd trzymanie się reguły z brief
+# rzeczywistym zabezpieczeniem — stąd trzymanie się reguły z briefu
 # ("pole bez readOnly/writeDisabledInApi"), a nie dosłownej listy, gdy obie
 # się rozjeżdżają. Patrz raport Tasku 13 (Runda 1) po pełne uzasadnienie.
 POLA_EDYTOWALNE: tuple[str, ...] = (

@@ -98,8 +98,9 @@ def _sprawdz_wartosc(wartosc: str, dozwolone: tuple[str, ...], etykieta: str) ->
 
 
 def _limit_stron(limit: int) -> int:
-    """Ile stron po 100 pozycji trzeba pobrać, żeby uzbierać ``limit`` wpisów."""
-    return max(1, (limit + 99) // 100)
+    """Ile stron po ``MAX_COUNT`` pozycji trzeba pobrać, żeby uzbierać
+    ``limit`` wpisów."""
+    return max(1, (limit + MAX_COUNT - 1) // MAX_COUNT)
 
 
 def _lokalny_tekst(wartosc: Any) -> str | None:

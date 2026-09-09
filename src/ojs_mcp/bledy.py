@@ -34,7 +34,13 @@ class BladUprawnien(BladOjs):
 
 
 class BladWalidacji(BladOjs):
-    """400 z obiektem pól — błędy walidacji danych wejściowych."""
+    """400 albo 422 z obiektem pól — błędy walidacji danych wejściowych.
+
+    OJS zwraca 422 zamiennie z 400, gdy po drodze podniesie
+    ``ValidationException`` zamiast zwykłego błędu 400 — patrz
+    ``OjsClient._na_blad`` (``client.py``), które oba statusy mapuje na
+    ten sam wyjątek.
+    """
 
 
 class BladNieZnaleziono(BladOjs):

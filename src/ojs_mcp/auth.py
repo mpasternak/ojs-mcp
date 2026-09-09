@@ -47,7 +47,12 @@ def token_z_naglowka(request) -> str | None:
     if not naglowek:
         return None
     for czlon in naglowek.split(","):
-        czesci = czlon.strip().split(" ")
+        # `split(None, 1)` (nie `split(" ")`, grupa E — recenzja): dzieli po
+        # DOWOLNYM ciągu białych znaków, więc `Bearer<spacja><spacja>abc`
+        # dalej daje dwa elementy — gołe `split(" ")` dawało wtedy trzy
+        # (`["Bearer", "", "abc"]`), warunek `len == 2` zawodził, a token
+        # wyglądający na w pełni poprawny cicho ginął jako `None`.
+        czesci = czlon.strip().split(None, 1)
         if len(czesci) == 2 and czesci[0].lower() == "bearer":
             return czesci[1].strip()
     return None
