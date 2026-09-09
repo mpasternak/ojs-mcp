@@ -1,37 +1,39 @@
-# Konfiguracja
+# Configuration
 
-Serwer konfiguruje się wyłącznie przez zmienne środowiskowe — nie ma
-pliku konfiguracyjnego. W konfiguracji klienta MCP trafiają one do sekcji
-`env` (patrz przykład w [README](https://github.com/mpasternak/ojs-mcp#readme)).
+The server is configured entirely through environment variables — there
+is no configuration file. In an MCP client configuration, they go into
+the `env` section (see the example in the
+[README](https://github.com/mpasternak/ojs-mcp#readme)).
 
-## Zmienne środowiskowe
+## Environment variables
 
-| Zmienna | Wymagana | Domyślnie | Opis |
+| Variable | Required | Default | Description |
 |---|---|---|---|
-| `OJS_BASE_URL` | **tak** | brak | Adres instancji OJS, dokładnie taki, jaki działa w przeglądarce (np. `https://czasopisma.twoja-uczelnia.pl`), bez `/index.php` i bez nazwy czasopisma na końcu. |
-| `OJS_JOURNAL` | nie | brak | Skrót czasopisma (`urlPath`) — segment ścieżki z adresu, np. dla `.../index.php/rocznik` to `rocznik`. Ustaw, gdy instancja obsługuje jedno czasopismo albo chcesz mieć jedno domyślne; wtedy narzędzia nie muszą podawać parametru `czasopismo` przy każdym wywołaniu. |
-| `OJS_API_TOKEN` | nie* | brak | Token API z profilu użytkownika w OJS. Ma pierwszeństwo przed `OJS_USERNAME`/`OJS_PASSWORD`. Wymaga `api_key_secret` ustawionego w `config.inc.php` instancji — patrz [Uwierzytelnianie](uwierzytelnianie.md). Ignorowany w trybie `OJS_MCP_TRANSPORT=http`. |
-| `OJS_USERNAME` | nie* | brak | Login do logowania formularzem, używany tylko gdy brak `OJS_API_TOKEN`. Wymaga też `OJS_PASSWORD`. Nie zadziała, gdy instancja ma reCAPTCHA/ALTCHA na logowaniu — patrz [Uwierzytelnianie](uwierzytelnianie.md). Ignorowany w trybie `http`. |
-| `OJS_PASSWORD` | nie* | brak | Hasło towarzyszące `OJS_USERNAME`. Ignorowane w trybie `http`. |
-| `OJS_ALLOW_WRITES` | nie | `0` (wyłączone) | Ustaw na `1`, żeby zarejestrować narzędzia modyfikujące dane czasopisma (decyzje redakcyjne, publikacja, edycja metadanych, ogłoszenia) — patrz [Narzędzia](narzedzia.md). Bez tego model ich w ogóle nie widzi. |
-| `OJS_MCP_TRANSPORT` | nie | `stdio` | `stdio` (domyślny, jeden proces = jeden użytkownik) albo `http` (streamable HTTP, wielu użytkowników naraz) — patrz [Hosting](hosting.md). Każda inna wartość jest traktowana jak `stdio`. |
-| `OJS_MCP_HTTP_HOST` | nie | `127.0.0.1` | Adres nasłuchu w trybie `http`. Do zmiany tylko razem z reverse proxy terminującym TLS — patrz [Hosting](hosting.md). |
-| `OJS_MCP_HTTP_PORT` | nie | `8000` | Port nasłuchu w trybie `http`. |
-| `OJS_MCP_ALLOWED_ORIGINS` | nie | puste (brak dozwolonych) | Lista dozwolonych nagłówków `Origin` po przecinku, dla klientów przeglądarkowych w trybie `http`. Puste nie znaczy „zezwól na wszystko” — znaczy „odrzuć każdy `Origin` z przeglądarki”. Klienci bez nagłówka `Origin` (typowy klient MCP z pulpitu) nie są tym objęci. |
+| `OJS_BASE_URL` | **yes** | none | The OJS instance address, exactly as it works in the browser (e.g. `https://journals.your-university.edu`), without `/index.php` and without a journal name at the end. |
+| `OJS_JOURNAL` | no | none | The journal shortcut (`urlPath`) — the path segment from the address, e.g. for `.../index.php/rocznik` that's `rocznik`. Set this when the instance serves a single journal, or when you want a default one; then tools don't need the `czasopismo` parameter on every call. |
+| `OJS_API_TOKEN` | no* | none | The API token from a user's OJS profile. Takes precedence over `OJS_USERNAME`/`OJS_PASSWORD`. Requires `api_key_secret` to be set in the instance's `config.inc.php` — see [Authentication](authentication.md). Ignored in `OJS_MCP_TRANSPORT=http` mode. |
+| `OJS_USERNAME` | no* | none | The login for form-based authentication, used only when `OJS_API_TOKEN` is absent. Also requires `OJS_PASSWORD`. Won't work when the instance has reCAPTCHA/ALTCHA on its login page — see [Authentication](authentication.md). Ignored in `http` mode. |
+| `OJS_PASSWORD` | no* | none | The password accompanying `OJS_USERNAME`. Ignored in `http` mode. |
+| `OJS_ALLOW_WRITES` | no | `0` (disabled) | Set to `1` to register the tools that modify journal data (editorial decisions, publishing, metadata editing, announcements) — see [Tools](tools.md). Without it, the model doesn't see them at all. |
+| `OJS_MCP_TRANSPORT` | no | `stdio` | `stdio` (default, one process per user) or `http` (streamable HTTP, many users at once) — see [Hosting](hosting.md). Any other value is treated as `stdio`. |
+| `OJS_MCP_HTTP_HOST` | no | `127.0.0.1` | The listen address in `http` mode. Only change this together with a reverse proxy that terminates TLS — see [Hosting](hosting.md). |
+| `OJS_MCP_HTTP_PORT` | no | `8000` | The listen port in `http` mode. |
+| `OJS_MCP_ALLOWED_ORIGINS` | no | empty (none allowed) | A comma-separated list of allowed `Origin` headers, for browser-based clients in `http` mode. Empty (the default) does **not** mean "allow everything" — it means "reject every browser `Origin`". Clients without an `Origin` header (a typical desktop MCP client) are not affected by this setting either way. |
 
-`*` — w trybie `stdio` wymagany jest **albo** `OJS_API_TOKEN`, **albo**
-para `OJS_USERNAME`/`OJS_PASSWORD`; brak obu to błąd startowy. W trybie
-`http` żadna z tych trzech zmiennych nie jest wymagana (i tak są
-ignorowane — token przychodzi z każdego żądania osobno).
+`*` — in `stdio` mode, either `OJS_API_TOKEN` **or** the
+`OJS_USERNAME`/`OJS_PASSWORD` pair is required; having neither is a
+startup error. In `http` mode, none of these three variables is required
+(and they are ignored regardless — the token arrives with each request
+separately).
 
-## Dlaczego `OJS_BASE_URL` nie ma wartości domyślnej
+## Why `OJS_BASE_URL` has no default value
 
-Ta sama binarka `ojs-mcp` obsługuje dowolne wdrożenie OJS — różnicuje je
-wyłącznie ta zmienna. Zaszyty adres domyślny (np. jakiejś demo-instancji)
-byłby gorszy niż brak działania: przy pomyłce w konfiguracji klient
-MCP po cichu pokazywałby modelowi dane **cudzego** czasopisma jako
-rzekomo własne, zamiast zatrzymać się z czytelnym błędem. Serwer
-odmawia startu, dopóki nie dostanie jawnego adresu:
+The same `ojs-mcp` binary serves any OJS deployment — this variable alone
+is what tells them apart. A hard-coded default address (say, some demo
+instance) would be worse than not working at all: on a configuration
+mistake, the MCP client would silently show the model **someone else's**
+journal data as if it were its own, instead of stopping with a readable
+error. The server refuses to start until it gets an explicit address:
 
 ```
 Nie ustawiono OJS_BASE_URL — nie wiadomo, z którą instancją OJS rozmawiać.
@@ -39,29 +41,39 @@ Podaj adres dokładnie taki, jaki działa w przeglądarce, np.:
     OJS_BASE_URL=https://czasopisma.twoja-uczelnia.pl ojs-mcp
 ```
 
-## Adres z `restful_urls`
+This is the exact message the server prints — its user-facing text
+(error messages, tool names, tool descriptions) is in Polish by design
+and is not translated here, so what you actually see on screen matches
+what's shown above. In English, it reads: "`OJS_BASE_URL` is not set —
+it's not known which OJS instance to talk to. Provide the address
+exactly as it works in your browser, e.g.:
+`OJS_BASE_URL=https://journals.your-university.edu ojs-mcp`."
 
-Serwer **zawsze** dobudowuje do `OJS_BASE_URL` segment
-`/index.php/{czasopismo}/api/v1/...` — to jedna, bezwarunkowa ścieżka w
-kodzie (`Config.api_root`), bez żadnej gałęzi zależnej od ustawień
-instancji. Dotyczy to również instancji z włączonymi ładnymi adresami URL
-(`restful_urls` w OJS), które w przeglądarce pokazują strony HTML **bez**
-`/index.php/` — to ustawienie zmienia wyłącznie routing stron HTML, REST
-API OJS mieszka pod `/index.php/` niezależnie od niego.
+## The address and `restful_urls`
 
-Podaj więc `OJS_BASE_URL` dokładnie tak, jak wygląda w przeglądarce (przy
-`restful_urls` — bez `/index.php/` i bez nazwy czasopisma na końcu); resztę
-adresu serwer dobuduje sam, zawsze tak samo. Jeśli na konkretnej instancji
-zobaczysz inny wynik niż opisany wyżej, zweryfikuj wersję OJS wobec
-[zakresu wersji tej dokumentacji](index.md).
+The server **always** appends the segment
+`/index.php/{journal}/api/v1/...` to `OJS_BASE_URL` — this is one,
+unconditional path in the code (`Config.api_root`), with no branch
+depending on instance settings. This holds even for instances with
+pretty URLs enabled (`restful_urls` in OJS), which show HTML pages in
+the browser **without** `/index.php/` — that setting changes only the
+routing of HTML pages; the OJS REST API lives under `/index.php/`
+regardless of it.
 
-## Wiele czasopism na jednej instancji
+So give `OJS_BASE_URL` exactly as it appears in the browser (with
+`restful_urls` — without `/index.php/` and without a journal name at the
+end); the server builds the rest of the address itself, the same way
+every time. If a specific instance gives you a different result than
+described above, check its OJS version against the
+[version scope of this documentation](index.md).
 
-Gdy `OJS_JOURNAL` nie jest ustawione, narzędzia wymagają parametru
-`czasopismo` przy każdym wywołaniu (poza `lista_czasopism`, który go nie
-potrzebuje). Listę dostępnych czasopism (wartości do wpisania w
-`czasopismo`) zwraca narzędzie `lista_czasopism` albo zasób
-`ojs://czasopisma` — ale samo ich pobranie wymaga roli administratora
-witryny **albo** wcześniej ustawionego `OJS_JOURNAL` jako punktu zaczepienia
-(patrz [Hosting](hosting.md#katalog-czasopism) po szczegóły kosztu tego
-zapytania w trybie sieciowym).
+## Multiple journals on one instance
+
+When `OJS_JOURNAL` is not set, tools require the `czasopismo` parameter
+on every call (except `lista_czasopism`, which doesn't need it). The
+`lista_czasopism` tool or the `ojs://czasopisma` resource returns the
+list of available journals (the values to put in `czasopismo`) — but
+fetching that list itself requires either the site administrator role
+**or** a previously set `OJS_JOURNAL` to anchor the request (see
+[Hosting](hosting.md#journal-catalog) for the cost of this call in
+network mode).

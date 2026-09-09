@@ -1,53 +1,56 @@
 # ojs-mcp
 
-[![testy](https://github.com/mpasternak/ojs-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/mpasternak/ojs-mcp/actions/workflows/tests.yml)
+[![tests](https://github.com/mpasternak/ojs-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/mpasternak/ojs-mcp/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/ojs-mcp.svg)](https://pypi.org/project/ojs-mcp/)
-[![Licencja: MIT](https://img.shields.io/badge/licencja-MIT-blue.svg)](https://github.com/mpasternak/ojs-mcp/blob/main/LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/mpasternak/ojs-mcp/blob/main/LICENSE)
 
-Serwer [MCP](https://modelcontextprotocol.io/) dla uwierzytelnionego REST API
-[Open Journal Systems](https://pkp.sfu.ca/ojs/) (OJS 3.5/3.6). Podłączony do
-klienta MCP (Claude Desktop, Claude Code i inne) daje modelowi dostęp do
-zgłoszeń, recenzji, numerów i statystyk redakcyjnych czasopisma — a przy
-jawnie włączonym zapisie także do podejmowania decyzji redakcyjnych,
-publikacji i edycji metadanych.
+An [MCP](https://modelcontextprotocol.io/) server for the authenticated
+REST API of [Open Journal Systems](https://pkp.sfu.ca/ojs/) (OJS
+3.5/3.6). Connected to an MCP client (Claude Desktop, Claude Code, and
+others), it gives the model access to a journal's submissions, reviews,
+issues, and editorial statistics — and, with writes explicitly enabled,
+also to making editorial decisions, publishing, and editing metadata.
 
-## Szybki start
+## Quick start
 
 ```bash
-OJS_BASE_URL=https://czasopisma.twoja-uczelnia.pl OJS_API_TOKEN=twój-token uvx ojs-mcp
+OJS_BASE_URL=https://journals.your-university.edu OJS_API_TOKEN=your-token uvx ojs-mcp
 ```
 
-Nie wymaga osobnej instalacji — [`uv`](https://docs.astral.sh/uv/) pobiera i
-uruchamia pakiet przy pierwszym starcie. W praktyce tę komendę wywołuje za
-ciebie klient MCP, z konfiguracją w formacie z sekcji niżej.
+No separate install step needed — [`uv`](https://docs.astral.sh/uv/)
+downloads and runs the package on first launch. In practice your MCP
+client calls this command for you, using the configuration format from
+the section below.
 
-## Zanim zaczniesz — to nie zadziała bez dwóch rzeczy
+## Before you start — this won't work without two things
 
-REST API OJS **nie ma anonimowego odczytu**. Żeby serwer w ogóle mógł się
-połączyć, po stronie instancji OJS muszą być spełnione oba warunki:
+The OJS REST API has **no anonymous read access**. For the server to be
+able to connect at all, both of these must be true on the OJS instance
+side:
 
-1. **`api_key_secret` ustawiony w `config.inc.php`** — bez niego token API w
-   ogóle nie działa (OJS odpowiada błędem 500 na każde żądanie z tokenem).
-   Musi to zrobić administrator serwera OJS; nie da się tego obejść z
-   zewnątrz.
-2. **Konto z rolą w konkretnym czasopiśmie** — samo istnienie konta w OJS nie
-   wystarczy. Prawie każdy endpoint API wymaga jakiejś roli (menedżera,
-   redaktora, recenzenta...); konto bez roli w danym czasopiśmie dostaje
-   odmowę (401) przy niemal każdym wywołaniu.
+1. **`api_key_secret` set in `config.inc.php`** — without it, API tokens
+   don't work at all (OJS responds with a 500 error to every request
+   that carries a token). This must be done by the OJS server
+   administrator; it can't be worked around from the outside.
+2. **An account with a role in the specific journal** — merely having an
+   OJS account is not enough. Almost every API endpoint requires some
+   role (manager, editor, reviewer...); an account with no role in the
+   given journal gets denied (401) on almost every call.
 
-Bez tych dwóch warunków serwer wystartuje, ale każde narzędzie sięgające do
-OJS zwróci błąd uwierzytelnienia. Szczegóły, w tym alternatywa logowania
-loginem i hasłem oraz jej ograniczenia, są w
-[docs/uwierzytelnianie.md](https://mpasternak.github.io/ojs-mcp/uwierzytelnianie/).
+Without these two conditions the server will start, but every tool that
+reaches into OJS will return an authentication error. Details, including
+the login/password alternative and its limitations, are in
+[docs/authentication.md](https://mpasternak.github.io/ojs-mcp/authentication/).
 
-## Skąd wziąć token
+## Getting a token
 
-Zalogowany użytkownik generuje token API we własnym profilu w OJS: **Profil
-użytkownika → API Key** (dostępne tylko wtedy, gdy administrator instancji
-ustawił `api_key_secret` — patrz wyżej). Token działa z uprawnieniami tego
-konta, więc jego zakres to role, jakie to konto ma w danym czasopiśmie.
+A logged-in user generates an API token in their own OJS profile: **User
+Profile → API Key** (only available once the instance administrator has
+set `api_key_secret` — see above). The token acts with that account's
+permissions, so its scope is whatever roles that account holds in the
+given journal.
 
-## Przykład konfiguracji klienta MCP
+## Example MCP client configuration
 
 ```json
 {
@@ -56,69 +59,82 @@ konta, więc jego zakres to role, jakie to konto ma w danym czasopiśmie.
       "command": "uvx",
       "args": ["ojs-mcp"],
       "env": {
-        "OJS_BASE_URL": "https://czasopisma.twoja-uczelnia.pl",
+        "OJS_BASE_URL": "https://journals.your-university.edu",
         "OJS_JOURNAL": "rocznik",
-        "OJS_API_TOKEN": "wklej-token-z-profilu-ojs"
+        "OJS_API_TOKEN": "paste-your-ojs-profile-token-here"
       }
     }
   }
 }
 ```
 
-`OJS_JOURNAL` jest opcjonalne — pomiń je, jeśli instancja obsługuje kilka
-czasopism i chcesz wybierać je parametrem `czasopismo` przy każdym wywołaniu.
+`OJS_JOURNAL` is optional — leave it out if the instance serves several
+journals and you'd rather pick one with the `czasopismo` ("journal")
+parameter on each call.
 
-### Gdzie fizycznie wkleić tę konfigurację
+### Where to actually paste this configuration
 
-W Claude Desktop: **Ustawienia → Developer → Edit Config** otwiera (a przy
-pierwszym razie tworzy) plik `claude_desktop_config.json`:
+In Claude Desktop: **Settings → Developer → Edit Config** opens (and, on
+first use, creates) the `claude_desktop_config.json` file:
 
 - macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - Windows: `%APPDATA%\Claude\claude_desktop_config.json`
 
-Wklej powyższy fragment pod kluczem `mcpServers` — jeśli plik ma już inne
-serwery, dopisz obok nich klucz `"ojs"`, nie nadpisuj całego pliku — zapisz
-i uruchom Claude Desktop ponownie. Inne klienty MCP z pulpitu mają własne
-miejsce na tę konfigurację (np. Claude Code czyta ją poleceniem `claude mcp
-add` albo z pliku `.mcp.json`) — sprawdź ich dokumentację; kształt sekcji
-`env` powyżej jest wspólny dla wszystkich.
+Paste the snippet above under the `mcpServers` key — if the file already
+has other servers configured, add the `"ojs"` key alongside them, don't
+overwrite the whole file — save and restart Claude Desktop. Other
+desktop MCP clients have their own place for this configuration (e.g.
+Claude Code reads it via `claude mcp add` or from an `.mcp.json` file) —
+check their documentation; the shape of the `env` section above is the
+same across all of them.
 
-Ten krok **znika w całości** przy instalacji z bundla MCPB (patrz niżej) —
-tam adres instancji, czasopismo i token wypełnia się przez formularz w
-interfejsie klienta, bez ręcznej edycji żadnego pliku JSON. To dobry powód,
-żeby sięgnąć po bundle zamiast po `uvx`, jeśli edycja pliku konfiguracyjnego
-ręcznie budzi opór.
+This step **disappears entirely** when installing from the MCPB bundle
+(see below) — there, the instance address, journal, and token are filled
+in through a form in the client's UI, with no manual JSON editing at
+all. That's a good reason to reach for the bundle instead of `uvx` if
+editing a configuration file by hand isn't your thing.
 
-## Zmienne środowiskowe (skrót)
+## Environment variables (summary)
 
-| Zmienna | Wymagana | Opis |
+| Variable | Required | Description |
 |---|---|---|
-| `OJS_BASE_URL` | tak | Adres instancji OJS, dokładnie taki jak w przeglądarce. |
-| `OJS_JOURNAL` | nie | Skrót czasopisma — pomija parametr `czasopismo` przy każdym wywołaniu. |
-| `OJS_API_TOKEN` | nie* | Token z profilu użytkownika. Ma pierwszeństwo przed loginem i hasłem. |
-| `OJS_USERNAME` / `OJS_PASSWORD` | nie* | Logowanie formularzem — nie zadziała przy reCAPTCHA/ALTCHA. |
-| `OJS_ALLOW_WRITES` | nie | `1` odsłania narzędzia modyfikujące dane czasopisma (domyślnie ukryte). |
+| `OJS_BASE_URL` | yes | The OJS instance address, exactly as it works in the browser. |
+| `OJS_JOURNAL` | no | The journal shortcut — skips the `czasopismo` parameter on every call. |
+| `OJS_API_TOKEN` | no* | The token from a user's profile. Takes precedence over login/password. |
+| `OJS_USERNAME` / `OJS_PASSWORD` | no* | Form-based login — won't work with reCAPTCHA/ALTCHA. |
+| `OJS_ALLOW_WRITES` | no | `1` exposes the tools that modify journal data (hidden by default). |
 
-`*` — wymagany jest **albo** `OJS_API_TOKEN`, **albo** para
-`OJS_USERNAME`/`OJS_PASSWORD` (w trybie `stdio`). Pełna lista, w tym
-zmienne trybu sieciowego (`OJS_MCP_TRANSPORT` i inne), jest w
-[docs/konfiguracja.md](https://mpasternak.github.io/ojs-mcp/konfiguracja/).
+`*` — either `OJS_API_TOKEN` **or** the `OJS_USERNAME`/`OJS_PASSWORD`
+pair is required (in `stdio` mode). The full list, including the
+network-mode variables (`OJS_MCP_TRANSPORT` and others), is in
+[docs/configuration.md](https://mpasternak.github.io/ojs-mcp/configuration/).
 
-## Alternatywa dla `uvx`: bundle MCPB
+## Alternative to `uvx`: the MCPB bundle
 
-Dla klientów MCP z pulpitu obsługujących format
-[MCP Bundle (`.mcpb`)](https://github.com/modelcontextprotocol/mcpb) — plik
-instalacyjny jest dołączony do każdego wydania w zakładce
-[Releases](https://github.com/mpasternak/ojs-mcp/releases). Instalacja przez
-interfejs klienta, konfiguracja przez formularz zamiast ręcznej edycji
-JSON‑a; nie trzeba mieć zainstalowanego Pythona ani `uv` — bundle sam
-ściąga zależności przy pierwszym uruchomieniu.
+For desktop MCP clients that support the
+[MCP Bundle (`.mcpb`)](https://github.com/modelcontextprotocol/mcpb)
+format — the installer file is attached to every release under
+[Releases](https://github.com/mpasternak/ojs-mcp/releases). Installation
+happens through the client's UI, configuration through a form instead of
+manual JSON editing; no Python or `uv` installation required — the
+bundle pulls its own dependencies on first run.
 
-## Dokumentacja
+## Documentation
 
-Pełna dokumentacja (instalacja, konfiguracja, uwierzytelnianie, lista
-narzędzi, hosting wielodostępowy): **https://mpasternak.github.io/ojs-mcp/**
+Full documentation (installation, configuration, authentication, tool
+list, multi-tenant hosting): **https://mpasternak.github.io/ojs-mcp/**
 
-## Licencja
+## A note on language
 
-MIT. Zobacz [LICENSE](https://github.com/mpasternak/ojs-mcp/blob/main/LICENSE).
+The tools, parameters, docstrings, and error messages that this server
+actually exposes are in Polish — that's a deliberate choice carried over
+from the author's earlier project for a Polish bibliographic system, and
+it hasn't been changed here. This README and the rest of the
+documentation are in English, but where they quote a real message or
+tool name you'll actually see, that quote stays in Polish, with an
+English explanation next to it — so what's on the page always matches
+what's on your screen.
+
+## License
+
+MIT. See [LICENSE](https://github.com/mpasternak/ojs-mcp/blob/main/LICENSE).

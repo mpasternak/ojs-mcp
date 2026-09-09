@@ -1,73 +1,78 @@
-# Instalacja
+# Installation
 
-## Wymagania
+## Requirements
 
-- Python 3.10 lub nowszy (potrzebny tylko do wariantów instalujących
-  pakiet lokalnie — `uvx` sam sobie poradzi z odpowiednim interpreterem).
-- Działająca instancja OJS 3.5 lub 3.6 z ustawionym `api_key_secret` w
-  `config.inc.php` — bez tego patrz [Zanim zaczniesz](index.md#zanim-zaczniesz).
-- Klient MCP (Claude Desktop, Claude Code i inne), który potrafi
-  uruchamiać serwery przez `stdio`.
-- Poświadczenia do OJS: token API (`OJS_API_TOKEN`) albo para login/hasło
-  (`OJS_USERNAME`/`OJS_PASSWORD`) — patrz [Uwierzytelnianie](uwierzytelnianie.md).
-  Sam `OJS_BASE_URL` nie wystarczy do uruchomienia; bez żadnej z tych
-  dwóch opcji serwer kończy działanie czytelnym błędem zamiast startu.
+- Python 3.10 or newer (only needed for the variants that install the
+  package locally — `uvx` handles picking the right interpreter itself).
+- A working OJS 3.5 or 3.6 instance with `api_key_secret` set in
+  `config.inc.php` — without this, see
+  [Before you start](index.md#before-you-start).
+- An MCP client (Claude Desktop, Claude Code, and others) that can launch
+  servers over `stdio`.
+- OJS credentials: an API token (`OJS_API_TOKEN`) or a login/password
+  pair (`OJS_USERNAME`/`OJS_PASSWORD`) — see
+  [Authentication](authentication.md). `OJS_BASE_URL` alone is not enough
+  to start the server; without either of these two options the server
+  exits with a readable error instead of starting.
 
-## Wariant 1: `uvx` (zalecany)
+## Option 1: `uvx` (recommended)
 
-Nie wymaga osobnego kroku instalacji — [`uv`](https://docs.astral.sh/uv/)
-pobierze i uruchomi pakiet w izolowanym środowisku przy pierwszym
-starcie:
+Requires no separate install step —
+[`uv`](https://docs.astral.sh/uv/) downloads and runs the package in an
+isolated environment on first launch:
 
 ```bash
 uvx ojs-mcp
 ```
 
-Bez zmiennych środowiskowych serwer zaraz się zatrzyma — potrzebuje
-`OJS_BASE_URL` ORAZ poświadczeń (token albo login/hasło):
+Without environment variables the server stops right away — it needs
+`OJS_BASE_URL` AND credentials (a token or login/password):
 
 ```bash
-OJS_BASE_URL=https://czasopisma.twoja-uczelnia.pl \
-OJS_API_TOKEN=twój-token \
+OJS_BASE_URL=https://journals.your-university.edu \
+OJS_API_TOKEN=your-token \
 uvx ojs-mcp
 ```
 
-Samo `OJS_BASE_URL` nie wystarczy — bez poświadczeń serwer zakończy się
-czytelnym błędem („Brak poświadczeń…”) zamiast wystartować.
+`OJS_BASE_URL` alone is not enough — without credentials the server exits
+with a readable error (`„Brak poświadczeń…”`, "No credentials...")
+instead of starting.
 
-W praktyce `uvx` uruchamia klient MCP za ciebie, z konfiguracją w formacie
-opisanym w [README](https://github.com/mpasternak/ojs-mcp#readme) — nie
-trzeba wołać tej komendy ręcznie.
+In practice your MCP client runs this command for you, using the
+configuration format described in the
+[README](https://github.com/mpasternak/ojs-mcp#readme) — you won't need
+to call it by hand.
 
-Wymaga zainstalowanego `uv`
-(`curl -LsSf https://astral.sh/uv/install.sh | sh` albo
+Requires `uv` to be installed
+(`curl -LsSf https://astral.sh/uv/install.sh | sh` or
 `pipx install uv`).
 
-## Wariant 2: bundle MCPB (jednym kliknięciem)
+## Option 2: the MCPB bundle (one-click)
 
-Dla klientów MCP z pulpitu, które obsługują format
-[MCP Bundle (`.mcpb`)](https://github.com/modelcontextprotocol/mcpb) — plik
-instalacyjny dostępny przy każdym wydaniu w zakładce
-[Releases](https://github.com/mpasternak/ojs-mcp/releases). Instalacja
-przez interfejs klienta, konfiguracja (adres instancji, czasopismo, token)
-przez formularz zamiast ręcznej edycji JSON-a. Bundle sam ściąga zależności
-przez `uv` przy pierwszym uruchomieniu — nie trzeba mieć zainstalowanego
-Pythona.
+For desktop MCP clients that support the
+[MCP Bundle (`.mcpb`)](https://github.com/modelcontextprotocol/mcpb)
+format — the installer file is attached to every release under
+[Releases](https://github.com/mpasternak/ojs-mcp/releases). Installation
+happens through the client's UI, and configuration (instance address,
+journal, token) goes through a form instead of manual JSON editing. The
+bundle pulls its own dependencies through `uv` on first run — no Python
+installation required.
 
-## Wariant 3: instalacja z PyPI
+## Option 3: install from PyPI
 
-Gdy `uvx` nie jest dostępne albo wolisz mieć pakiet zainstalowany na stałe:
+When `uvx` isn't available, or you prefer a permanently installed
+package:
 
 ```bash
 pip install ojs-mcp
-# albo
+# or
 uv tool install ojs-mcp
 ```
 
-Uruchomienie: `ojs-mcp` (z odpowiednio ustawionymi zmiennymi środowiskowymi
-— patrz [Konfiguracja](konfiguracja.md)).
+Run it with: `ojs-mcp` (with the appropriate environment variables set —
+see [Configuration](configuration.md)).
 
-## Wariant 4: ze źródeł (praca nad samym serwerem)
+## Option 4: from source (working on the server itself)
 
 ```bash
 git clone https://github.com/mpasternak/ojs-mcp.git
@@ -76,17 +81,17 @@ uv sync --extra dev
 uv run ojs-mcp --version
 ```
 
-`uv sync --extra dev` instaluje też zależności testowe (`pytest`, `respx`,
-`ruff`). Zależności do budowania tej dokumentacji są w osobnej grupie:
-`uv sync --extra docs`.
+`uv sync --extra dev` also installs the test dependencies (`pytest`,
+`respx`, `ruff`). The dependencies for building this documentation are in
+a separate group: `uv sync --extra docs`.
 
-## Weryfikacja
+## Verification
 
 ```bash
 uvx ojs-mcp --version
 ```
 
-powinno wypisać numer wersji i zakończyć się kodem 0 — to nie sprawdza
-połączenia z OJS, tylko że pakiet w ogóle się uruchamia. Pierwsze
-prawdziwe sprawdzenie połączenia to wywołanie narzędzia `kim_jestem` z
-poziomu klienta MCP (patrz [Narzędzia](narzedzia.md)).
+should print the version number and exit with code 0 — this does not
+check the connection to OJS, only that the package runs at all. The
+first real connectivity check is calling the `kim_jestem` tool from your
+MCP client (see [Tools](tools.md)).

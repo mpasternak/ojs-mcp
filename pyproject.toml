@@ -1,7 +1,7 @@
 [project]
 name = "ojs-mcp"
 version = "0.1.0"
-description = "Serwer MCP dla uwierzytelnionego REST API Open Journal Systems (OJS 3.5/3.6)"
+description = "MCP server for the authenticated Open Journal Systems REST API (OJS 3.5/3.6)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

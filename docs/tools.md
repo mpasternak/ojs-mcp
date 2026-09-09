@@ -1,174 +1,220 @@
-# Narzędzia
+# Tools
 
-Wszystkie narzędzia (poza `lista_czasopism`) przyjmują opcjonalny parametr
-`czasopismo` — nazwę czasopisma (`urlPath`) na instancji z kilkoma
-czasopismami. Pominięcie go używa `OJS_JOURNAL`; brak obu to błąd. Listę
-dostępnych wartości zwraca `lista_czasopism` albo zasób `ojs://czasopisma`
-(patrz [Wiele czasopism na jednej instancji](konfiguracja.md#wiele-czasopism-na-jednej-instancji)).
+All tools (except `lista_czasopism`, "list journals") accept an optional
+`czasopismo` ("journal") parameter — the journal name (`urlPath`) on an
+instance that hosts several journals. Omitting it falls back to
+`OJS_JOURNAL`; having neither is an error. The list of available values
+is returned by the `lista_czasopism` tool or the `ojs://czasopisma`
+resource (see
+[Multiple journals on one instance](configuration.md#multiple-journals-on-one-instance)).
 
-## Narzędzia odczytu (17)
+Tool names, parameter names, and the literal string values passed as
+parameters are kept in their original Polish — that's the actual shape
+of this server's API, and translating them here would show you words
+you won't actually see or type. Each one gets a short English gloss
+below on first mention.
 
-Rejestrowane zawsze, niezależnie od `OJS_ALLOW_WRITES`.
+## Read tools (17)
 
-### Tożsamość i czasopisma
+Always registered, regardless of `OJS_ALLOW_WRITES`.
 
-- **`lista_czasopism`** — wypisz czasopisma widoczne dla bieżących
-  poświadczeń. Jedyne narzędzie bez parametru `czasopismo`.
-- **`kim_jestem`** — sprawdź, czy bieżące poświadczenia działają. Przy
-  tokenie API: OJS nie ma endpointu tożsamości dla tokenu, więc narzędzie
-  mówi wyłącznie, czy uwierzytelnianie działa (`tozsamosc: null`). Przy
-  logowaniu login/hasłem: `tozsamosc` niesie realne dane zalogowanego
-  użytkownika (`id`, `username`, `fullName`, `roles`, `role_nazwy`).
-  Pierwsze wywołanie warte zrobienia po skonfigurowaniu serwera.
+### Identity and journals
 
-### Zgłoszenia i publikacje
+- **`lista_czasopism`** ("list journals") — list the journals visible to
+  the current credentials. The only tool with no `czasopismo` parameter.
+- **`kim_jestem`** ("who am I") — check whether the current credentials
+  work. With an API token: OJS has no identity endpoint for tokens, so
+  the tool can only report whether authentication succeeded
+  (`tozsamosc: null`, "identity: null"). With login/password
+  authentication: `tozsamosc` ("identity") carries the real data of the
+  logged-in user (`id`, `username`, `fullName`, `roles`, `role_nazwy`
+  — "role names"). Worth calling first, right after setting up the
+  server.
 
-- **`szukaj_zgloszen`** — znajdź zgłoszenia (artykuły) w czasopiśmie.
-  Filtry: `fraza`, `status` (w_toku, opublikowane, odrzucone, zaplanowane),
-  `etap` (zgloszenie, recenzja_zewnetrzna, redakcja, produkcja), `sekcja`
-  (ID-y z `lista_sekcji`), `bez_aktywnosci_dni` (filtr po stronie OJS —
-  zgłoszenia bez ruchu przez N dni), `zlozone_od`/`zlozone_do`
-  (`RRRR-MM-DD`). Filtr dat działa tylko na już pobranych stronach wyniku —
-  odpowiedź niesie wtedy pole `filtrowanie_dat_niepelne`.
-- **`pobierz_zgloszenie`** — szczegóły jednego zgłoszenia po ID, ze
-  skróconą listą jego publikacji (wersji).
-- **`pobierz_publikacje`** — pełne szczegóły jednej wersji zgłoszenia:
-  abstrakt, pełna lista autorów, słowa kluczowe, DOI, numer strony/artykułu
-  i `galleys` (gotowe pliki tej wersji z linkami publicznymi).
-- **`pliki_zgloszenia`** — lista plików dołączonych do zgłoszenia, ze
-  wszystkich etapów (`etap_pliku_nazwa`: plik_recenzji, redakcja,
-  wersja_finalna, tekst_glowny...).
-- **`recenzje_zgloszenia`** — rundy recenzji i przypisania recenzentów:
-  kto recenzuje, na jakim etapie, z jakim wynikiem.
+### Submissions and publications
 
-### Numery i sekcje
+- **`szukaj_zgloszen`** ("search submissions") — find submissions
+  (articles) in a journal. Filters: `fraza` ("phrase"), `status`
+  (`w_toku` "in progress", `opublikowane` "published", `odrzucone`
+  "declined", `zaplanowane` "scheduled"), `etap` ("stage": `zgloszenie`
+  "submission", `recenzja_zewnetrzna` "external review", `redakcja`
+  "copyediting", `produkcja` "production"), `sekcja` ("section", IDs from
+  `lista_sekcji`), `bez_aktywnosci_dni` ("days without activity" — an
+  OJS-side filter for submissions with no movement for N days),
+  `zlozone_od`/`zlozone_do` ("submitted from"/"submitted to",
+  `YYYY-MM-DD`). The date filter only applies to result pages already
+  fetched — the response then carries a `filtrowanie_dat_niepelne`
+  ("date filtering incomplete") field.
+- **`pobierz_zgloszenie`** ("get submission") — details of a single
+  submission by ID, with an abbreviated list of its publications
+  (versions).
+- **`pobierz_publikacje`** ("get publication") — full details of one
+  submission version: abstract, full author list, keywords, DOI,
+  page/article number, and `galleys` (that version's ready-made files
+  with public links).
+- **`pliki_zgloszenia`** ("submission files") — the list of files
+  attached to a submission, across all stages (`etap_pliku_nazwa`
+  "file-stage name": `plik_recenzji` "review file", `redakcja`
+  "copyediting", `wersja_finalna` "final version", `tekst_glowny` "main
+  text"...).
+- **`recenzje_zgloszenia`** ("submission reviews") — review rounds and
+  reviewer assignments: who is reviewing, at what stage, with what
+  outcome.
 
-- **`lista_numerow`** — znajdź numery (wydania) czasopisma.
-  `tylko_opublikowane=True/False` filtruje, pominięcie zwraca oba rodzaje.
-- **`biezacy_numer`** — numer wyróżniony na stronie głównej czasopisma.
-  Zwraca `numer: None`, jeśli czasopismo go nie ma ustawionego.
-- **`pobierz_numer`** — jeden numer po ID.
-- **`lista_sekcji`** — sekcje (działy) czasopisma, np. „Artykuły”,
-  „Recenzje”. `tylko_aktywne=True` pomija sekcje wyłączone.
+### Issues and sections
 
-### Użytkownicy i recenzenci
+- **`lista_numerow`** ("list issues") — find the journal's issues.
+  `tylko_opublikowane=True/False` ("published only") filters; omitting
+  it returns both kinds.
+- **`biezacy_numer`** ("current issue") — the issue featured on the
+  journal's home page. Returns `numer: None` ("issue: None") if the
+  journal has none set.
+- **`pobierz_numer`** ("get issue") — a single issue by ID.
+- **`lista_sekcji`** ("list sections") — the journal's sections, e.g.
+  "Articles", "Reviews". `tylko_aktywne=True` ("active only") skips
+  disabled sections.
 
-- **`szukaj_uzytkownikow`** — użytkownicy czasopisma po nazwie/e-mailu,
-  statusie (`active`/`disabled`/`all`) i roli (administrator_witryny,
-  menedzer_czasopisma, redaktor_dzialu, recenzent, asystent, autor,
-  czytelnik, menedzer_prenumerat).
-- **`lista_recenzentow`** — recenzenci wraz z ich statystykami: liczba
-  aktywnych/ukończonych/odrzuconych recenzji, średni czas ukończenia w
-  dniach, ocena recenzenta.
+### Users and reviewers
 
-### Statystyki i DOI
+- **`szukaj_uzytkownikow`** ("search users") — journal users by
+  name/email, status (`active`/`disabled`/`all`), and role
+  (`administrator_witryny` "site administrator", `menedzer_czasopisma`
+  "journal manager", `redaktor_dzialu` "section editor", `recenzent`
+  "reviewer", `asystent` "assistant", `autor` "author", `czytelnik`
+  "reader", `menedzer_prenumerat` "subscription manager").
+- **`lista_recenzentow`** ("list reviewers") — reviewers with their
+  statistics: number of active/completed/declined reviews, average
+  completion time in days, reviewer rating.
 
-- **`statystyki_publikacji`** — statystyki wyświetleń publikacji.
-  `os_czasu=False` (domyślnie): ranking wg liczby wyświetleń.
-  `os_czasu=True`: suma wyświetleń w czasie, `interwal`: `day`/`month`.
-- **`statystyki_redakcyjne`** — zbiorcze statystyki redakcyjne czasopisma
-  (liczba zgłoszeń, decyzji, czas do pierwszej decyzji itd.). Bez
-  `data_od`/`data_do` OJS liczy statystyki od początku czasopisma.
-- **`lista_doi`** — identyfikatory DOI zarejestrowane w czasopiśmie, po
-  statusie (niezarejestrowane, zgloszone, zarejestrowane, blad,
-  nieaktualne).
+### Statistics and DOI
 
-### Furtka
+- **`statystyki_publikacji`** ("publication statistics") — publication
+  view statistics. `os_czasu=False` ("time series: false", the
+  default): ranking by view count. `os_czasu=True`: total views over
+  time, `interwal` ("interval"): `day`/`month`.
+- **`statystyki_redakcyjne`** ("editorial statistics") — aggregate
+  editorial statistics for the journal (submission count, decisions,
+  time to first decision, etc.). Without `data_od`/`data_do` ("date
+  from"/"date to"), OJS counts statistics from the journal's beginning.
+- **`lista_doi`** ("list DOIs") — DOIs registered in the journal, by
+  status (`niezarejestrowane` "unregistered", `zgloszone` "submitted",
+  `zarejestrowane` "registered", `blad` "error", `nieaktualne` "stale").
 
-- **`ojs_zapytanie`** — wywołaj dowolny endpoint REST API OJS spoza
-  gotowej listy narzędzi. `sciezka` względna wobec `api/v1` (np.
-  `submissions/12/files`); dokładny kształt każdego endpointu sprawdź w
-  zasobie `ojs://endpointy`. Bez `OJS_ALLOW_WRITES` dozwolone są wyłącznie
-  żądania odczytu (`GET`/`HEAD`). Zobacz też ostrzeżenie w sekcji
-  [Narzędzia zapisu](#narzedzia-zapisu-5) o zasięgu tej furtki, gdy zapisy
-  są włączone.
+### Escape hatch
 
-## Narzędzia zapisu (5)
+- **`ojs_zapytanie`** ("OJS query") — call any OJS REST API endpoint
+  outside the curated tool list. `sciezka` ("path") is relative to
+  `api/v1` (e.g. `submissions/12/files`); check the exact shape of each
+  endpoint in the `ojs://endpointy` resource. Without
+  `OJS_ALLOW_WRITES`, only read requests (`GET`/`HEAD`) are allowed. See
+  also the warning in the [Write tools](#write-tools-5) section about
+  the reach of this escape hatch once writes are enabled.
 
-**Rejestrowane wyłącznie, gdy `OJS_ALLOW_WRITES=1`.** Bez tej flagi model
-**w ogóle ich nie widzi** — nie są to narzędzia obecne, ale zablokowane;
-serwer nie zgłasza ich klientowi MCP jako dostępnych, więc nie pojawiają
-się w liście narzędzi, którą model dostaje. Z flagą włączoną model widzi
-łącznie 22 narzędzia (17 odczytu + 5 zapisu).
+## Write tools (5)
 
-Każde z nich modyfikuje dane **produkcyjne** czasopisma — ich docstringi
-zaczynają się od `UWAGA: modyfikuje dane produkcyjne czasopisma.`
+**Registered only when `OJS_ALLOW_WRITES=1`.** Without this flag, the
+model doesn't see them **at all** — these aren't tools that exist but
+are blocked; the server doesn't report them to the MCP client as
+available, so they never appear in the tool list the model receives.
+With the flag on, the model sees 22 tools in total (17 read + 5 write).
 
-- **`dodaj_decyzje_redakcyjna`** — dodaje decyzję redakcyjną do zgłoszenia;
-  może wysłać powiadomienie e-mail do autorów i/lub recenzentów, zależnie
-  od typu decyzji. Nieodwracalne jednym poleceniem. `decyzja` to nazwa
-  słowna (akceptuj, do_recenzji_zewnetrznej, wymagane_poprawki,
-  do_ponownego_zgloszenia, odrzuc, do_produkcji, odrzuc_wstepnie,
-  rekomenduj_akceptacje/poprawki/ponowne_zgloszenie/odrzucenie,
-  nowa_runda_recenzji, cofnij_odrzucenie, pomin_recenzje_zewnetrzna,
-  cofnij_z_produkcji, cofnij_z_redakcji); `runda_recenzji` wymagane przez
-  OJS dla decyzji na etapie recenzji zewnętrznej.
-- **`edytuj_metadane_publikacji`** — nadpisuje metadane wskazanej wersji
-  zgłoszenia. `pola`: słownik `{nazwa_pola: wartość}`, niepusty, wyłącznie
-  spośród listy dozwolonej (`title`, `subtitle`, `abstract`, `prefix`,
-  `keywords`, `subjects`, `disciplines`, `supportingAgencies`, `coverage`,
-  `rights`, `source`, `type`, `datePublished`, `licenseUrl`,
-  `copyrightHolder`, `copyrightYear`, `sectionId`, `issueId`, `pages`).
-  Każde inne pole (np. `id`, `authors`, `galleys`, `categoryIds`, `locale`)
-  jest odrzucane błędem — to ochrona przed pomyłką, **nie granica
-  bezpieczeństwa nie do przejścia** (patrz ostrzeżenie o `ojs_zapytanie`
-  niżej). Pola wielojęzyczne jako słownik kodów języków, np.
+Each of these modifies the journal's **production** data — their
+docstrings all start with `UWAGA: modyfikuje dane produkcyjne
+czasopisma.` ("WARNING: modifies production journal data.").
+
+- **`dodaj_decyzje_redakcyjna`** ("add editorial decision") — adds an
+  editorial decision to a submission; depending on the decision type, it
+  may email a notification to authors and/or reviewers. Irreversible in
+  a single call. `decyzja` ("decision") is a literal name (`akceptuj`
+  "accept", `do_recenzji_zewnetrznej` "to external review",
+  `wymagane_poprawki` "revisions required",
+  `do_ponownego_zgloszenia` "resubmit", `odrzuc` "decline",
+  `do_produkcji` "to production", `odrzuc_wstepnie` "decline initially",
+  `rekomenduj_akceptacje`/`poprawki`/`ponowne_zgloszenie`/`odrzucenie`
+  "recommend accept/revisions/resubmission/decline", `nowa_runda_recenzji`
+  "new review round", `cofnij_odrzucenie` "undo decline",
+  `pomin_recenzje_zewnetrzna` "skip external review",
+  `cofnij_z_produkcji` "send back from production",
+  `cofnij_z_redakcji` "send back from copyediting"); `runda_recenzji`
+  ("review round") is required by OJS for decisions made at the external
+  review stage.
+- **`edytuj_metadane_publikacji`** ("edit publication metadata") —
+  overwrites the metadata of the given submission version. `pola`
+  ("fields") is a dict of `{field_name: value}`, must be non-empty, and
+  is restricted to an allow-list (`title`, `subtitle`, `abstract`,
+  `prefix`, `keywords`, `subjects`, `disciplines`,
+  `supportingAgencies`, `coverage`, `rights`, `source`, `type`,
+  `datePublished`, `licenseUrl`, `copyrightHolder`, `copyrightYear`,
+  `sectionId`, `issueId`, `pages`). Any other field (e.g. `id`,
+  `authors`, `galleys`, `categoryIds`, `locale`) is rejected with an
+  error — this guards against mistakes, it is **not an uncrossable
+  security boundary** (see the warning about `ojs_zapytanie` below).
+  Multilingual fields take a dict of language codes, e.g.
   `{"pl": "…", "en": "…"}`.
-- **`opublikuj_publikacje`** — publikuje wskazaną wersję zgłoszenia. Od
-  tego momentu treść jest **widoczna publicznie** na stronie czasopisma.
-- **`cofnij_publikacje`** — cofa publikację wskazanej wersji; znika z
-  publicznej strony czasopisma.
-- **`utworz_ogloszenie`** — tworzy nowe ogłoszenie czasopisma, **widoczne
-  publicznie**, bez wysyłki e-mail do subskrybentów (to narzędzie tego nie
-  robi — parametr sterujący mailem do wszystkich subskrybentów nie jest
-  częścią jego zakresu). `tytul` wymagany, `tytul`/`tresc`/`streszczenie`
-  są wielojęzyczne (słownik kodów języków).
+- **`opublikuj_publikacje`** ("publish publication") — publishes the
+  given submission version. From that point on, the content is
+  **publicly visible** on the journal's site.
+- **`cofnij_publikacje`** ("unpublish publication") — unpublishes the
+  given version; it disappears from the journal's public site.
+- **`utworz_ogloszenie`** ("create announcement") — creates a new
+  journal announcement, **publicly visible**, without emailing
+  subscribers (this tool does not do that — a parameter controlling a
+  mass email to subscribers is not part of its scope). `tytul`
+  ("title") is required; `tytul`/`tresc`/`streszczenie`
+  ("title"/"body"/"summary") are multilingual (a dict of language
+  codes).
 
-### Furtka `ojs_zapytanie` a lista pól dozwolonych
+### The `ojs_zapytanie` escape hatch versus the field allow-list
 
-Przy `OJS_ALLOW_WRITES=1` narzędzie `ojs_zapytanie` pozwala wysłać dowolne
-żądanie zapisu, w tym `PUT` na `.../publications/{id}` z **dowolnym**
-ciałem — czyli **ominąć listę pól dozwolonych** z
-`edytuj_metadane_publikacji`. To zamierzone: furtka z definicji ma dawać
-dostęp do rzeczy spoza kuratowanej listy narzędzi, a jedynym bezpiecznikiem
-zapisu jest tu sama flaga `OJS_ALLOW_WRITES`, nie lista pól. Lista pól w
-`edytuj_metadane_publikacji` chroni przed przypadkową pomyłką w typowym
-użyciu (np. nadpisaniem `id` albo `authors`) — nie jest granicą, której nie
-da się przekroczyć celowo.
+With `OJS_ALLOW_WRITES=1`, the `ojs_zapytanie` tool can send any write
+request, including a `PUT` to `.../publications/{id}` with **any** body
+— i.e. it can **bypass the field allow-list** from
+`edytuj_metadane_publikacji`. This is intentional: by definition, the
+escape hatch exists to reach things outside the curated tool list, and
+here the only safeguard on writes is the `OJS_ALLOW_WRITES` flag itself,
+not the field list. The field list in `edytuj_metadane_publikacji`
+protects against an accidental mistake in typical use (e.g.
+overwriting `id` or `authors`) — it is not a boundary that can't be
+crossed on purpose.
 
-## Zasoby (2)
+## Resources (2)
 
-Rejestrowane zawsze — żaden zasób niczego nie modyfikuje.
+Always registered — no resource ever modifies anything.
 
-- **`ojs://endpointy`** (`text/plain`) — kompaktowa lista wszystkich
-  endpointów REST API OJS (metoda, ścieżka, parametry, krótki opis). Punkt
-  odniesienia dla `ojs_zapytanie` przy endpointach spoza gotowej listy
-  narzędzi — sprawdź tu dokładną ścieżkę i parametry, zanim ich użyjesz.
-- **`ojs://czasopisma`** (`application/json`) — lista czasopism widocznych
-  dla bieżących poświadczeń, jako obiekty `{"sciezka", "nazwa"}` —
-  `"sciezka"` to wartość parametru `czasopismo` w pozostałych narzędziach i
-  promptach. Ten sam wynik co narzędzie `lista_czasopism`, dostępny jako
-  zasób zamiast wywołania narzędzia.
+- **`ojs://endpointy`** ("endpoints", `text/plain`) — a compact list of
+  every OJS REST API endpoint (method, path, parameters, short
+  description). The reference point for `ojs_zapytanie` when calling
+  endpoints outside the curated tool list — check the exact path and
+  parameters here before using them.
+- **`ojs://czasopisma`** ("journals", `application/json`) — the list of
+  journals visible to the current credentials, as `{"sciezka",
+  "nazwa"}` ("path", "name") objects — `"sciezka"` is the value to pass
+  as the `czasopismo` parameter in the other tools and prompts. The same
+  result as the `lista_czasopism` tool, available as a resource instead
+  of a tool call.
 
-## Prompty (3)
+## Prompts (3)
 
-Gotowe instrukcje dla modelu — nazywają wprost konkretne narzędzia i
-kolejność ich wywołania, zamiast tylko opisywać cel. Wszystkie wskazują
-wyłącznie narzędzia odczytu i są dostępne niezależnie od `OJS_ALLOW_WRITES`.
+Ready-made instructions for the model — they name concrete tools and the
+order to call them in, rather than just describing a goal. All of them
+point only at read tools and are available regardless of
+`OJS_ALLOW_WRITES`.
 
-- **`przeglad_redakcyjny(czasopismo=None)`** — stan zgłoszeń w toku z
-  podziałem na cztery etapy (zgłoszenie, recenzja zewnętrzna, redakcja,
-  produkcja) oraz stan bieżącego numeru. Prowadzi model przez
-  `statystyki_redakcyjne`, `biezacy_numer` i `szukaj_zgloszen` osobno dla
-  każdego etapu.
-- **`utkniete_w_recenzji(bez_aktywnosci_dni=14, czasopismo=None)`** —
-  zgłoszenia utknięte w recenzji zewnętrznej bez ruchu od N dni, wraz ze
-  statusem przypisanych recenzentów i rekomendacją działania. Każe
-  modelowi użyć filtra `bez_aktywnosci_dni` po stronie OJS zamiast liczyć
-  bezczynność samodzielnie.
-- **`podsumuj_numer(numer=None, czasopismo=None)`** — nota redakcyjna
-  podsumowująca zawartość numeru (bieżącego, jeśli `numer` pominięto).
-  Ponieważ `pobierz_numer`/`biezacy_numer` zwracają wyłącznie metadane
-  numeru bez listy artykułów, prompt każe sięgnąć po pełną zawartość przez
-  furtkę `ojs_zapytanie` (`issues/<id>`) — przykład jej użycia razem z
-  zasobem `ojs://endpointy`.
+- **`przeglad_redakcyjny(czasopismo=None)`** ("editorial overview") —
+  the state of submissions in progress, broken down by the four stages
+  (submission, external review, copyediting, production), plus the
+  state of the current issue. Walks the model through
+  `statystyki_redakcyjne`, `biezacy_numer`, and `szukaj_zgloszen`
+  separately for each stage.
+- **`utkniete_w_recenzji(bez_aktywnosci_dni=14, czasopismo=None)`**
+  ("stuck in review") — submissions stuck in external review with no
+  movement for N days, along with the status of their assigned
+  reviewers and a recommended action. Instructs the model to use OJS's
+  own `bez_aktywnosci_dni` filter instead of computing idle time itself.
+- **`podsumuj_numer(numer=None, czasopismo=None)`** ("summarize issue")
+  — an editorial note summarizing an issue's contents (the current one,
+  if `numer` is omitted). Since `pobierz_numer`/`biezacy_numer` return
+  only issue metadata without an article list, the prompt directs the
+  model to fetch the full contents through the `ojs_zapytanie` escape
+  hatch (`issues/<id>`) — an example of using it together with the
+  `ojs://endpointy` resource.

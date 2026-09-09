@@ -1,95 +1,101 @@
-# Uwierzytelnianie
+# Authentication
 
-REST API OJS nie ma trybu anonimowego — każde żądanie musi nieść jakąś
-tożsamość. Serwer obsługuje dwie ścieżki: token API i logowanie loginem oraz
-hasłem. Mają różne wymagania i różne, realne ograniczenia — ta strona opisuje
-oba, żeby wybór (albo diagnoza, dlaczego jeden z nich nie działa) nie
-wymagał czytania kodu.
+The OJS REST API has no anonymous mode — every request must carry some
+identity. The server supports two paths: an API token, and login with a
+username and password. They have different requirements and different,
+real limitations — this page describes both, so choosing between them
+(or diagnosing why one of them isn't working) doesn't require reading
+the code.
 
-W trybie sieciowym (`OJS_MCP_TRANSPORT=http`) żadna z poniższych zmiennych
-środowiskowych serwera nie jest brana pod uwagę — patrz sekcja
-[Tryb sieciowy: poświadczenia z otoczenia są ignorowane](#tryb-sieciowy-poswiadczenia-z-otoczenia-sa-ignorowane)
-niżej.
+In network mode (`OJS_MCP_TRANSPORT=http`), none of the server's
+environment variables below are taken into account — see
+[Network mode: environment credentials are ignored](#network-mode-environment-credentials-are-ignored)
+below.
 
-## Token API (`OJS_API_TOKEN`)
+## API token (`OJS_API_TOKEN`)
 
-Zalecana ścieżka — nie zależy od limitu prób logowania, nie dotyka
-formularza logowania, działa też przy CAPTCHA na stronie logowania (patrz
-niżej).
+The recommended path — it doesn't depend on the login-attempt limit,
+doesn't touch the login form, and works even when the login page has a
+CAPTCHA (see below).
 
-### Warunek: `api_key_secret` w `config.inc.php`
+### Requirement: `api_key_secret` in `config.inc.php`
 
-Token API w OJS jest podpisywany kluczem `api_key_secret` z sekcji
-`[security]` pliku `config.inc.php` instancji. Jeśli ta wartość nie jest
-ustawiona, OJS **nie odrzuca tokenu odmową** — odpowiada błędem serwera
-(500) na każde żądanie z tokenem, niezależnie jak poprawny jest sam token.
-Z punktu widzenia tego serwera wygląda to jak awaria API, nie jak zły
-token — dlatego warto sprawdzić to ustawienie jako pierwsze, zanim zacznie
-się podejrzewać token czy uprawnienia konta.
+OJS API tokens are signed with the `api_key_secret` key from the
+`[security]` section of the instance's `config.inc.php`. If that value
+is not set, OJS does **not** reject the token with a denial — it
+responds with a server error (500) to every request carrying a token,
+no matter how valid the token itself is. From this server's point of
+view that looks like an API outage, not a bad token — which is why it's
+worth checking this setting first, before suspecting the token or the
+account's permissions.
 
-To ustawienie wprowadza administrator **serwera** OJS (dostęp do plików
-instancji), nie da się go włączyć z poziomu przeglądarki ani z tego
-serwera MCP.
+This setting is made by the OJS **server** administrator (someone with
+access to the instance's files); it cannot be turned on from the
+browser, nor from this MCP server.
 
-### Jak wygenerować token
+### How to generate a token
 
-Zalogowany użytkownik generuje go we własnym profilu:
-**Profil użytkownika → API Key** (zakładka widoczna niezależnie od tego, czy
-`api_key_secret` jest ustawione — jej widoczność nie jest tym samym, co jej
-działanie). Token działa z uprawnieniami tego konta — jego zakres to role,
-jakie to konto ma w danym czasopiśmie, dokładnie tak, jak przy logowaniu
-przez przeglądarkę.
+A logged-in user generates one in their own profile: **User Profile →
+API Key** (this tab is visible regardless of whether `api_key_secret` is
+set — its visibility is not the same thing as it working). The token
+acts with that account's permissions — its scope is whatever roles that
+account holds in the given journal, exactly as when logging in through
+the browser.
 
-### Pierwszeństwo przed loginem i hasłem
+### Takes precedence over login and password
 
-Gdy `OJS_API_TOKEN` jest ustawiony, serwer używa wyłącznie jego —
-`OJS_USERNAME`/`OJS_PASSWORD` są wtedy ignorowane (patrz
-[Konfiguracja](konfiguracja.md)).
+When `OJS_API_TOKEN` is set, the server uses it exclusively —
+`OJS_USERNAME`/`OJS_PASSWORD` are then ignored (see
+[Configuration](configuration.md)).
 
-## Login i hasło (`OJS_USERNAME` / `OJS_PASSWORD`)
+## Login and password (`OJS_USERNAME` / `OJS_PASSWORD`)
 
-Zapasowa ścieżka na wypadek, gdy nie da się ustawić `api_key_secret` (np.
-instancja współdzielona, bez dostępu do plików serwera). Serwer odtwarza
-sekwencję logowania formularzem: pobiera token CSRF ze strony logowania,
-wysyła login i hasło, a z pulpitu wyłuskuje token sesji potrzebny do
-kolejnych żądań. Ma to dwa poważne, praktyczne ograniczenia.
+A fallback path for when `api_key_secret` can't be set (e.g. a shared
+instance, with no access to the server's files). The server replays the
+form-login sequence: it fetches a CSRF token from the login page, sends
+the username and password, and extracts the session token needed for
+subsequent requests from the resulting dashboard. This has two serious,
+practical limitations.
 
-### Nie zadziała przy reCAPTCHA lub ALTCHA na logowaniu
+### Won't work with reCAPTCHA or ALTCHA on the login page
 
-Jeśli instancja ma włączoną reCAPTCHA albo ALTCHA na stronie logowania,
-serwer **wykrywa to i przerywa sekwencję, zanim wyśle hasło**. Nie próbuje
-logowania „na ślepo” — wysłanie hasła bez rozwiązania CAPTCHA i tak
-zawiodłoby po stronie OJS, a przy okazji zużyłoby próbę z limitu logowań
-(patrz niżej) bez żadnej korzyści. Jedyne wyjście w tej sytuacji: token API.
+If the instance has reCAPTCHA or ALTCHA enabled on its login page, the
+server **detects this and aborts the sequence before sending the
+password**. It doesn't attempt a "blind" login — sending the password
+without solving the CAPTCHA would fail on the OJS side anyway, while
+also consuming an attempt from the login-attempt limit (see below) for
+no benefit. The only way out in this situation is an API token.
 
-### Limit prób logowania — nie da się „próbować, aż wejdzie”
+### Login-attempt limit — you can't just "keep trying"
 
-OJS liczy nieudane próby logowania (`RateLimitingService`) niezależnie od
-tego, kto je wykonuje. Serwer **nigdy nie zapętla logowania** — każde 401
-wywołuje dokładnie jedną ponowną próbę, nie więcej — ale każda faktycznie
-wysłana próba (także ta pierwsza) zużywa pulę OJS tak samo, jak ręczne
-logowanie w przeglądarce. Kilka nieudanych startów serwera z błędnym hasłem
-potrafi wyczerpać limit na koncie, zanim ktokolwiek zdąży poprawić
-konfigurację.
+OJS counts failed login attempts (`RateLimitingService`) regardless of
+who makes them. The server **never loops on login** — every 401 triggers
+exactly one retry, no more — but every attempt actually sent (including
+the first one) consumes the OJS quota the same way a manual browser
+login would. A few failed server startups with a wrong password can
+exhaust the limit on that account before anyone gets a chance to fix the
+configuration.
 
-### Jeden komunikat na trzy różne przyczyny
+### One message, three different causes
 
-OJS nie rozróżnia w odpowiedzi, **dlaczego** logowanie się nie powiodło —
-złe hasło, wyczerpany limit prób i wymuszona zmiana hasła na koncie
-(`mustChangePassword`) wyglądają z zewnątrz identycznie: brak przekierowania
-sukcesu. Serwer nie zgaduje, który to przypadek — komunikat błędu wymienia
-wszystkie trzy możliwe przyczyny naraz, a sprawdzenie, która zachodzi,
-wymaga zalogowania się tym samym kontem w przeglądarce.
+OJS's response doesn't distinguish **why** a login failed — a wrong
+password, an exhausted attempt limit, and a forced password change
+(`mustChangePassword`) on the account all look identical from the
+outside: no success redirect. The server doesn't guess which case it is
+— the error message lists all three possible causes at once, and
+figuring out which one actually applies requires logging into that same
+account through the browser.
 
-## Tryb sieciowy: poświadczenia z otoczenia są ignorowane
+## Network mode: environment credentials are ignored
 
-W `OJS_MCP_TRANSPORT=http` serwer nie ma i nie może mieć własnej tożsamości
-— każdy klient przysyła **własny** token API w nagłówku żądania. Zmienne
-`OJS_API_TOKEN`, `OJS_USERNAME` i `OJS_PASSWORD` ustawione w otoczeniu
-procesu serwera są w tym trybie całkowicie ignorowane (serwer loguje o tym
-ostrzeżenie przy starcie, jeśli są ustawione — to zwykle znak, że plik
-`.env` skopiowano z wdrożenia `stdio` bez wyczyszczenia). Logowanie loginem
-i hasłem **nie jest dostępne** w trybie sieciowym w ogóle — ta ścieżka
-istnieje wyłącznie dla trybu `stdio`, gdzie serwer i tak obsługuje jednego
-użytkownika naraz. Szczegóły modelu bezpieczeństwa trybu sieciowego są w
-[Hostingu](hosting.md).
+In `OJS_MCP_TRANSPORT=http`, the server has no identity of its own and
+can't have one — each client sends **its own** API token in the request
+header. The `OJS_API_TOKEN`, `OJS_USERNAME`, and `OJS_PASSWORD`
+variables set in the server process's environment are completely
+ignored in this mode (the server logs a warning about it at startup if
+they happen to be set — this is usually a sign that an `.env` file was
+copied from a `stdio` deployment without being cleaned up). Login with a
+username and password **is not available at all** in network mode —
+that path exists only for `stdio` mode, where the server handles one
+user at a time anyway. Details of the network mode security model are in
+[Hosting](hosting.md).

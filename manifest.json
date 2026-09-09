@@ -3,8 +3,8 @@
   "name": "ojs-mcp",
   "display_name": "OJS — Open Journal Systems",
   "version": "0.1.0",
-  "description": "Serwer MCP dla uwierzytelnionego REST API Open Journal Systems (OJS 3.5/3.6)",
-  "long_description": "Odpytuje REST API dowolnej instancji OJS: numery, artykuły, zgłoszenia, wydawnictwa i słowniki, ze stronicowaniem i podążaniem za hiperłączami. Zapis danych jest domyślnie wyłączony.\n\nAdres instancji trzeba podać niżej — nie ma wartości domyślnej celowo. Każde wdrożenie OJS to inne czasopismo, więc zaszyty host oznaczałby ciche pokazywanie cudzych danych jako własnych.",
+  "description": "MCP server for the authenticated Open Journal Systems REST API (OJS 3.5/3.6)",
+  "long_description": "Queries the REST API of any OJS instance: issues, articles, submissions, publications, and controlled vocabularies, with pagination and hyperlink following. Writing data is disabled by default.\n\nThe instance address must be provided below — it has no default value on purpose. Every OJS deployment is a different journal, so a hard-coded host would mean silently showing someone else's data as your own.",
   "author": {
     "name": "Michał Pasternak",
     "email": "michal.dtz@gmail.com"
@@ -34,21 +34,21 @@
   "user_config": {
     "base_url": {
       "type": "string",
-      "title": "Adres instancji OJS",
-      "description": "Bazowy adres czasopisma — dokładnie taki, jaki działa w przeglądarce, np. https://czasopisma.twoja-uczelnia.pl (bez /index.php i bez nazwy czasopisma na końcu). Bez tego serwer nie wystartuje.",
+      "title": "OJS instance address",
+      "description": "The journal's base address — exactly as it works in the browser, e.g. https://journals.your-university.edu (without /index.php and without a journal name at the end). The server won't start without this.",
       "required": true
     },
     "journal": {
       "type": "string",
-      "title": "Skrót czasopisma (opcjonalnie)",
-      "description": "Segment ścieżki z adresu czasopisma w OJS — dla .../index.php/moj-magazyn to \"moj-magazyn\". Potrzebne tylko wtedy, gdy ta instancja OJS obsługuje więcej niż jedno czasopismo; przy jednym czasopiśmie zostaw puste.",
+      "title": "Journal shortcut (optional)",
+      "description": "The path segment from the journal's OJS address — for .../index.php/my-magazine that's \"my-magazine\". Needed only when this OJS instance serves more than one journal; leave empty for a single-journal instance.",
       "required": false,
       "default": ""
     },
     "api_token": {
       "type": "string",
-      "title": "Token API OJS",
-      "description": "Token z Twojego profilu w OJS: zalogowany użytkownik → zakładka „API Key” w profilu → włącz dostęp aplikacji zewnętrznych → skopiuj wygenerowany klucz. Potrzebny do operacji wykraczających poza dane publicznie dostępne.",
+      "title": "OJS API token",
+      "description": "The token from your OJS profile: logged-in user → \"API Key\" tab in your profile → enable third-party application access → copy the generated key. Needed for operations beyond publicly available data.",
       "required": false,
       "default": "",
       "sensitive": true
