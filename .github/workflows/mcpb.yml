@@ -7,9 +7,14 @@ name: mcpb
 # a nie ręcznie utworzony obiekt Release. Gdy release dla tagu jeszcze nie
 # istnieje (np. release.yml jeszcze nie skończył), ten workflow go zakłada.
 #
-# Świadomie osobno od release.yml: tamten trzyma `id-token: write` (OIDC do
-# PyPI) w osobnym, nic nie wykonującym jobie i nie ma dostać `contents: write`
-# tylko po to, żeby wgrać plik do wydania.
+# Świadomie osobno od release.yml jako PLIK: tamten trzyma `id-token: write`
+# (OIDC do PyPI) w osobnym, nic nie wykonującym jobie i nie ma dostać
+# `contents: write` tylko po to, żeby wgrać plik do wydania. Ale NIE osobno
+# jako bramka testowa — sam push tagu nie wyzwala `tests.yml` (ten reaguje na
+# push do main, PR i workflow_call), więc bez własnego joba `tests` ten
+# workflow biegłby niezależnie od tego, czy pakiet testów przeszedł dla tego
+# tagu. Job `tests` niżej (workflow_call, tak jak w release.yml) o to dba:
+# tag zablokowany na PyPI czerwonymi testami nie dostanie też bundla.
 on:
   push:
     tags:
@@ -24,7 +29,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Ta sama matryca (3.10–3.13 + ruff) co przy zwykłym pushu, przez
+  # `workflow_call` — bez kopiowania jej tutaj. `bundle` czeka na ten job
+  # (`needs: tests`), więc bundle nie trafi do wydania, jeśli testy nie są
+  # zielone dla tego tagu.
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   bundle:
+    needs: tests
     runs-on: ubuntu-latest
     permissions:
       contents: write # wgranie pliku .mcpb do wydania
@@ -78,8 +91,13 @@ jobs:
       #
       # Import, a nie pełny handshake po stdio, celowo: serwer bez
       # OJS_BASE_URL kończy pracę z błędem konfiguracji, więc do `initialize`
-      # i tak by nie doszedł. Zachowanie protokołu pokrywa tests.yml, tu
-      # chodzi o samo pakowanie.
+      # i tak by nie doszedł. Zachowanie protokołu (initialize, narzędzia,
+      # zasoby, prompty) pokrywa pełny pakiet testów w jobie `tests` powyżej
+      # (workflow_call do tests.yml, wymagany przez `needs: tests`) — ten
+      # krok go nie powtarza. Sprawdza wyłącznie to, czego `tests.yml` NIE
+      # widzi: czy SPAKOWANY artefakt (manifest, launch.py, dołączony
+      # pyproject.toml/uv.lock) faktycznie się rozwiązuje i importuje przez
+      # `uv` tak, jak zrobi to host.
       - name: Sprawdź, czy paczka się importuje
         run: |
           set -euo pipefail
