@@ -2,7 +2,7 @@
 
 [![testy](https://github.com/mpasternak/ojs-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/mpasternak/ojs-mcp/actions/workflows/tests.yml)
 [![PyPI](https://img.shields.io/pypi/v/ojs-mcp.svg)](https://pypi.org/project/ojs-mcp/)
-[![Licencja: MIT](https://img.shields.io/badge/licencja-MIT-blue.svg)](LICENSE)
+[![Licencja: MIT](https://img.shields.io/badge/licencja-MIT-blue.svg)](https://github.com/mpasternak/ojs-mcp/blob/main/LICENSE)
 
 Serwer [MCP](https://modelcontextprotocol.io/) dla uwierzytelnionego REST API
 [Open Journal Systems](https://pkp.sfu.ca/ojs/) (OJS 3.5/3.6). Podłączony do
@@ -121,4 +121,4 @@ narzędzi, hosting wielodostępowy): **https://mpasternak.github.io/ojs-mcp/**
 
 ## Licencja
 
-MIT. Zobacz [LICENSE](LICENSE).
+MIT. Zobacz [LICENSE](https://github.com/mpasternak/ojs-mcp/blob/main/LICENSE).

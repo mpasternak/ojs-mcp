@@ -11,15 +11,21 @@ classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Topic :: Text Processing :: Markup",
 ]
 # Górna granica na `mcp` jest obowiązkowa: wydanie główne SDK potrafi skasować
 # cały moduł serwera, a niezwiązany specyfikator wpuściłby to użytkownikom
 # `uvx` przy zielonym repozytorium. Sufit podnosimy ręcznie, po porcie.
+# Dolna granica `>=2.2` (recenzja, grupa D): testowaliśmy wyłącznie 2.2.0 —
+# deklarowana wcześniej podłoga `>=2` była NIESPRAWDZONA, mogła cicho
+# wpuścić wcześniejsze, nietestowane wydanie 2.x.
 # `starlette` deklarowane jawnie, bo importujemy je wprost (walidacja Origin) —
 # przychodzenie tranzytywne z `mcp` nie jest kontraktem.
 # `uvicorn` deklarowane jawnie, bo późniejsze zadanie importuje je wprost do
@@ -28,7 +34,7 @@ classifiers = [
 # żeby serwer stdio i zamknięcie klienta httpx działały w jednej pętli
 # zdarzeń — przychodzenie tranzytywne z `mcp` nie jest kontraktem.
 dependencies = [
-    "mcp>=2,<3",
+    "mcp>=2.2,<3",
     "httpx>=0.27",
     "starlette>=0.27",
     "uvicorn>=0.30",
@@ -38,6 +44,9 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/mpasternak/ojs-mcp"
 Repository = "https://github.com/mpasternak/ojs-mcp"
+Documentation = "https://mpasternak.github.io/ojs-mcp/"
+Issues = "https://github.com/mpasternak/ojs-mcp/issues"
+Changelog = "https://github.com/mpasternak/ojs-mcp/blob/main/CHANGELOG.md"
 
 [project.scripts]
 ojs-mcp = "ojs_mcp.server:main"
