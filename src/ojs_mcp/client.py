@@ -40,6 +40,7 @@ class OjsClient:
     ) -> None:
         self.config = config
         self.sciezka_auth = "token"
+        self._auth = auth
         self._wlasny_klient = klient is None
         self._klient = klient or httpx.AsyncClient(
             auth=auth,
@@ -51,9 +52,24 @@ class OjsClient:
             self._klient.auth = auth
 
     async def aclose(self) -> None:
-        """Zamknij klienta, jeśli to my go stworzyliśmy."""
+        """Zamknij klienta produkcyjny oraz ewentualne zasoby strategii auth.
+
+        Klienta produkcyjnego zamykamy tylko, jeśli to my go stworzyliśmy
+        (``self._wlasny_klient``) — patrz docstring parametru ``klient``.
+        Strategię uwierzytelniania zamykamy ZAWSZE, niezależnie od tego: to
+        jej WŁASNY zasób (np. ``SessionAuth`` trzyma osobny
+        ``httpx.AsyncClient`` do sekwencji logowania — patrz jej docstring),
+        którego cykl życia nie zależy od tego, kto stworzył klienta
+        produkcyjnego. `getattr` zamiast `isinstance`, bo `OjsClient` nie ma
+        (i nie powinien mieć) importu konkretnych strategii z `auth.py` /
+        `session_login.py` — większość z nich (np. `TokenAuth`) nie ma
+        żadnych zasobów do zamknięcia.
+        """
         if self._wlasny_klient:
             await self._klient.aclose()
+        zamknij_auth = getattr(self._auth, "aclose", None)
+        if zamknij_auth is not None:
+            await zamknij_auth()
 
     def _url(self, sciezka: str, czasopismo: str | None) -> str:
         return f"{self.config.api_root(czasopismo)}/{sciezka.lstrip('/')}"

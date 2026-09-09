@@ -20,11 +20,12 @@ import json
 import logging
 import re
 from collections.abc import AsyncGenerator
+from typing import NoReturn
 
 import httpx
 
 from .bledy import BladLogowania, BladUwierzytelnienia
-from .config import Config
+from .config import KONTEKST_WITRYNY, Config
 from .slowniki import ROLE
 
 logger = logging.getLogger(__name__)
@@ -173,19 +174,36 @@ class SessionAuth(httpx.Auth):
     (``asyncio.Lock``) i licznikiem ``self._generacja``: pod blokadą
     sprawdzamy, czy generacja zmieniła się od chwili decyzji o ponowieniu —
     jeśli tak, inne równoległe żądanie już zalogowało się / odświeżyło
-    token i nie robimy tego drugi raz. Bez tego wzorca "wyścig" kilku
-    żądań o wygasły token logowałby się tyle razy, ile było żądań naraz.
+    token i nie robimy tego drugi raz. Generacja rośnie RÓWNIEŻ przy
+    NIEUDANEJ próbie (błąd trafia do ``self._blad``) — inaczej żądania
+    czekające na blokadzie widziałyby niezmienioną generację i próbowałyby
+    logować się same, dokładnie ta pętla logowań, przed którą ostrzega
+    spec. (każda porażka zużywa limit ``RateLimitingService``). Czekające
+    żądanie, które zastanie zamkniętą generację z zapisanym błędem, dostaje
+    TEN SAM błąd zamiast prawa do własnej próby.
     """
 
-    #: Decyzja o ponowieniu zależy od kodu statusu odpowiedzi (401/403),
-    #: który jest dostępny natychmiast po nagłówkach — ale flaga jest
-    #: kontraktem klasy bazowej ``httpx.Auth`` i dokumentuje intencję.
+    # httpx czyta CAŁĄ treść odpowiedzi pośredniej bezwarunkowo — patrz
+    # `AsyncClient._send_handling_auth`: `await response.aread()` następuje
+    # zaraz po tym, jak generator (`async_auth_flow` niżej) zdecyduje się na
+    # kolejne żądanie, niezależnie od wartości tej flagi (ta flaga steruje
+    # WYŁĄCZNIE domyślną implementacją `async_auth_flow` opakowującą
+    # synchroniczny `auth_flow` z klasy bazowej — my nadpisujemy
+    # `async_auth_flow` bezpośrednio, więc httpx jej u nas nie sprawdza).
+    # Ustawiamy mimo to `True`: to uczciwy opis rzeczywistości — treść
+    # odpowiedzi naprawdę jest czytana w tym przepływie, tyle że nie za
+    # sprawą tej flagi. Sama decyzja o ponowieniu i tak zapada wcześniej,
+    # na podstawie `status_code`, dostępnego natychmiast po nagłówkach.
     requires_response_body = True
 
     def __init__(self, config: Config) -> None:
         self.config = config
         self._csrf: str | None = None
         self._generacja = 0
+        # Błąd ostatniej ZAMKNIĘTEJ (sukcesem lub porażką) próby logowania /
+        # odświeżenia tokenu — patrz akapit o `self._generacja` w docstringu
+        # klasy. `None`, gdy ta próba się powiodła.
+        self._blad: Exception | None = None
         self._blokada = asyncio.Lock()
         # Własny, oddzielny klient — patrz akapit o rekurencji wyżej. Ten
         # sam obiekt (i jego magazyn ciasteczek) obsługuje całą sekwencję
@@ -194,17 +212,58 @@ class SessionAuth(httpx.Auth):
             timeout=httpx.Timeout(30.0, connect=10.0)
         )
 
+    async def aclose(self) -> None:
+        """Zamknij własny klient logowania.
+
+        Ten klient (``self._klient_logowania``) jest zasobem TEJ strategii,
+        nie ``OjsClient`` — `OjsClient.aclose()` woła tę metodę, jeśli
+        strategia ją udostępnia (``getattr(auth, "aclose", None)``), więc
+        proces nie kończy z drugą, niezarządzaną pulą połączeń httpx obok
+        klienta produkcyjnego.
+        """
+        await self._klient_logowania.aclose()
+
+    def sync_auth_flow(
+        self, request: httpx.Request
+    ) -> NoReturn:  # pragma: no cover — patrz raise niżej
+        """Odmawia użycia z klientem SYNCHRONICZNYM (``httpx.Client``).
+
+        Domyślna implementacja bazowej klasy ``httpx.Auth`` po cichu NIE
+        wywołuje ``async_auth_flow`` dla synchronicznych klientów — wywołuje
+        ``sync_auth_flow``, a jej domyślny wariant (gdy nie jest nadpisany)
+        po prostu przepuszcza żądanie BEZ ŻADNEGO uwierzytelnienia: bez
+        ciasteczek sesji, bez ``X-Csrf-Token``. To ciche, milczące
+        pominięcie uwierzytelnienia byłoby dużo gorsze niż jawny błąd —
+        stąd to nadpisanie, mimo że ``OjsClient`` (jedyny produkcyjny
+        użytkownik tej klasy) zawsze używa ``httpx.AsyncClient``.
+        """
+        raise RuntimeError(
+            "SessionAuth wymaga httpx.AsyncClient — sekwencja logowania "
+            "robi I/O i używa asyncio.Lock. Użyj httpx.AsyncClient zamiast "
+            "httpx.Client (synchronicznego)."
+        )
+
     def _kontekst(self, request: httpx.Request) -> str:
-        """Wyznacz kontekst czasopisma z URL-a żądania (fallback: config)."""
+        """Wyznacz kontekst czasopisma z URL-a żądania (fallback: config).
+
+        Kontekst poziomu WITRYNY (``KONTEKST_WITRYNY``, ``"index"``) NIGDY
+        nie jest używany do logowania — strony pulpitu (``PULPITY``) są per
+        czasopismo, na poziomie witryny nie istnieją. Żądania na tym
+        poziomie (np. ``katalog.czasopisma()`` bez ``OJS_JOURNAL``, albo
+        jawne ``czasopismo="index"`` w narzędziu) i tak muszą logować się w
+        JAKIMŚ czasopiśmie — używamy wtedy ``config.journal``.
+        """
         dopasowanie = _KONTEKST_Z_URL.search(request.url.path)
-        if dopasowanie:
-            return dopasowanie.group(1)
+        kontekst = dopasowanie.group(1) if dopasowanie else None
+        if kontekst and kontekst != KONTEKST_WITRYNY:
+            return kontekst
         if self.config.journal:
             return self.config.journal
         raise BladUwierzytelnienia(
-            "Nie udało się wyznaczyć kontekstu czasopisma z adresu żądania "
-            f"({request.url}) ani z konfiguracji (OJS_JOURNAL). Logowanie "
-            "sesyjne musi wiedzieć, w którym czasopiśmie się zalogować."
+            "Nie udało się wyznaczyć kontekstu czasopisma do zalogowania — "
+            f"adres żądania ({request.url}) wskazuje na poziom witryny albo "
+            "nie ma rozpoznawalnego kontekstu, a OJS_JOURNAL nie jest "
+            "ustawione. Logowanie sesyjne wymaga konkretnego czasopisma."
         )
 
     async def _zaloguj(self, kontekst: str) -> None:
@@ -237,21 +296,47 @@ class SessionAuth(httpx.Auth):
 
         Patrz akapit o ``self._generacja`` w docstringu klasy: pod blokadą
         sprawdzamy, czy stan współdzielony zmienił się od chwili, gdy
-        wywołujący podjął decyzję o ponowieniu. Jeśli tak — ktoś inny już
-        wykonał tę pracę i korzystamy z jej efektu zamiast logować się
-        drugi raz.
+        wywołujący podjął decyzję o ponowieniu. Jeśli tak — generacja
+        ``generacja_przed`` jest już ZAMKNIĘTA (sukcesem albo porażką) przez
+        inne żądanie; przy sukcesie korzystamy z jego efektu, przy porażce
+        podnosimy TEN SAM zapisany błąd zamiast próbować jeszcze raz —
+        inaczej każde czekające żądanie zużywałoby własną próbę z limitu
+        ``RateLimitingService``, dokładnie ta pętla logowań, której spec.
+        zabrania.
+
+        :raises Exception: ten sam wyjątek, którym zawiodła próba logowania
+            (własna albo cudza, zamknięta pod tą samą generacją).
         """
         async with self._blokada:
             if self._generacja != generacja_przed:
+                if self._blad is not None:
+                    raise self._blad
                 return
-            if tylko_csrf:
-                await self._odswiez_csrf(kontekst)
-            else:
-                await self._zaloguj(kontekst)
+            try:
+                if tylko_csrf:
+                    await self._odswiez_csrf(kontekst)
+                else:
+                    await self._zaloguj(kontekst)
+            except Exception as exc:
+                # Generacja zamyka się TAKŻE na porażce (patrz docstring
+                # metody) — bez tego `self._generacja += 1` czekające
+                # żądania próbowałyby logować się same.
+                self._blad = exc
+                self._generacja += 1
+                raise
+            self._blad = None
             self._generacja += 1
 
     def _przygotuj(self, request: httpx.Request) -> None:
         """Dołóż ciasteczka sesji i (tylko dla zapisów) ``X-Csrf-Token``."""
+        # `http.cookiejar.CookieJar.add_cookie_header`, na którym bazuje
+        # `Cookies.set_cookie_header`, ma warunek `if not
+        # request.has_header("Cookie")` — NIE nadpisuje istniejącego
+        # nagłówka `Cookie`. Bez tego `pop` powtórka po ponownym logowaniu
+        # (druga iteracja pętli w `async_auth_flow`) poszłaby z ciasteczkiem
+        # sprzed przelogowania — czyli z MARTWĄ sesją, a cała ścieżka
+        # 401 → przelogowanie → powtórka byłaby funkcjonalnie martwa.
+        request.headers.pop("Cookie", None)
         self._klient_logowania.cookies.set_cookie_header(request)
         if request.method in _METODY_ZAPISU and self._csrf:
             request.headers["X-Csrf-Token"] = self._csrf
@@ -270,6 +355,13 @@ class SessionAuth(httpx.Auth):
         while True:
             self._przygotuj(request)
             generacja_uzyta = self._generacja
+            # Powtórka zapisu (POST/PUT/PATCH/DELETE) wysyła TEN SAM obiekt
+            # `request` drugi raz — zakłada, że jego strumień treści jest
+            # odtwarzalny. Dziś to zawsze prawda: `OjsClient` woła
+            # `httpx.AsyncClient.request(..., json=cialo)`, a treść
+            # zbudowana z `json=` to prosty bajtowy `ByteStream` w pamięci
+            # (iterowalny wielokrotnie), nie jednorazowy strumień z pliku —
+            # ten sam wzorzec, którego używa wbudowany `httpx.DigestAuth`.
             odpowiedz = yield request
 
             if odpowiedz.status_code == 401 and proby_logowania == 0:

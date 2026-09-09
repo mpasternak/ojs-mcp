@@ -12,6 +12,7 @@ from ojs_mcp.bledy import (
 )
 from ojs_mcp.client import OjsClient
 from ojs_mcp.config import Config
+from ojs_mcp.session_login import SessionAuth
 
 BAZA = "https://x.edu/index.php/rocznik/api/v1"
 
@@ -169,3 +170,27 @@ async def test_404_nie_json_to_nieznane_czasopismo():
         await k.get("sections", czasopismo="niema")
     assert "czasopism" in str(exc.value).lower()
     await k.aclose()
+
+
+async def test_aclose_zamyka_tez_klienta_logowania_sessionauth():
+    """WAŻNE 3 (recenzja Task 11, Runda 0): `SessionAuth` trzyma WŁASNY
+    `httpx.AsyncClient` do sekwencji logowania (patrz jej docstring) —
+    zasób, o którym `OjsClient` nic nie wie, gdyby nie ten most.
+    `OjsClient.aclose()` musi zamknąć go razem ze swoim klientem
+    produkcyjnym, żeby proces nie kończył z drugą, niezarządzaną pulą
+    połączeń httpx obok tej, o której już dba `server.py`."""
+    cfg = Config(
+        base_url="https://x.edu", journal="rocznik", username="u", password="p"
+    )
+    auth = SessionAuth(cfg)
+    k = OjsClient(cfg, auth)
+    assert not auth._klient_logowania.is_closed
+    await k.aclose()
+    assert auth._klient_logowania.is_closed
+
+
+async def test_aclose_toleruje_strategie_bez_wlasnych_zasobow():
+    # `TokenAuth` nie ma `aclose` — `getattr(self._auth, "aclose", None)`
+    # musi po prostu pominąć ten krok, nie wywalić się na braku atrybutu.
+    k = _klient()
+    await k.aclose()  # nie podnosi wyjątku
