@@ -27,11 +27,30 @@ OJS_API_TOKEN=<token from setup.sh> .venv/bin/python demo/check_api.py
 `check_api.py` is a real MCP client: it launches `ojs-mcp` over stdio the way
 Claude Desktop would, then calls every read tool and prints one line per call.
 
+The write tools have their own script, kept separate because it *changes* the
+journal — it creates an announcement, edits metadata, walks a submission
+through two editorial decisions, publishes it and unpublishes it again,
+reading the state back after each step:
+
+```bash
+OJS_API_TOKEN=<token from setup.sh> .venv/bin/python demo/check_writes.py
+```
+
+It refuses to run against anything but `localhost:8081`. These tools exist to
+modify production journals, and a script that fires all five must not be one
+typo away from doing so.
+
 To wipe it all, including the database:
 
 ```bash
 docker compose down -v
 ```
+
+`setup.sh` copes with that: the database lives in a Docker volume but
+`config.inc.php` lives on the host, so after `down -v` the config still says
+`installed = On` while the schema is gone. The script notices the mismatch
+and regenerates the config instead of handing you an OJS that answers 500 to
+everything.
 
 ## What you get
 
@@ -61,6 +80,7 @@ answered with a recommendation, one still pending.
 | `seed/demo-users.xml` | Editor and two reviewers (users XML) |
 | `seed/assign-reviewers.php` | Review assignments, via OJS's own repositories |
 | `check_api.py` | MCP client that calls every read tool |
+| `check_writes.py` | MCP client that exercises the five write tools |
 
 ## Three things that are not obvious
 

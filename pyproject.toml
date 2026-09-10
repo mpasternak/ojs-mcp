@@ -1,6 +1,6 @@
 [project]
 name = "ojs-mcp"
-version = "0.1.0"
+version = "0.2.0"
 description = "MCP server for the authenticated Open Journal Systems REST API (OJS 3.5/3.6)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -8,7 +8,7 @@ license = { text = "MIT" }
 authors = [{ name = "Michał Pasternak", email = "michal.dtz@gmail.com" }]
 keywords = ["ojs", "mcp", "open-journal-systems", "pkp", "api", "llm"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",

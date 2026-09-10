@@ -3,14 +3,18 @@
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] — 2026-09-10
 
 ### Added
 
 - `demo/` — a throwaway OJS 3.5 stack (Docker: OJS 3.5.0-5 + MariaDB)
-  with fictional seed content, plus `demo/check_api.py`, an MCP client
-  that launches the server over stdio and calls every read tool. Used to
-  exercise the server against a live instance for the first time.
+  with fictional seed content, plus two MCP clients that launch the
+  server over stdio and drive it: `demo/check_api.py` for the sixteen
+  read tools and the `ojs_request` escape hatch, `demo/check_writes.py`
+  for the five write tools. Every tool has now been exercised against a
+  live OJS instance, the write tools by reading back the resulting state
+  (announcement created, metadata edited, a submission moved to
+  production by two editorial decisions, published, unpublished).
 - A regression test for `python -m ojs_mcp.server`.
 
 ### Fixed
@@ -28,8 +32,10 @@ versioning follows [Semantic Versioning](https://semver.org/).
   401 that is byte-for-byte identical to an anonymous refusal. Documented
   the symptom, how to tell it apart from a missing journal role, and the
   one-line fix.
-- Status: the read tools are no longer unverified against live OJS; the
-  write tools and login/password authentication still are.
+- Status: the README no longer describes the project as unverified
+  against a live instance, because every tool now has been. What remains
+  unverified is named instead: login/password authentication, network
+  mode (`OJS_MCP_TRANSPORT=http`), and OJS 3.6.
 
 ## [0.1.0] — 2026-09-09
 

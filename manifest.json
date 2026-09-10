@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "ojs-mcp",
   "display_name": "OJS — Open Journal Systems",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for the authenticated Open Journal Systems REST API (OJS 3.5/3.6)",
   "long_description": "Queries the REST API of any OJS instance: issues, articles, submissions, publications, and controlled vocabularies, with pagination and hyperlink following. Writing data is disabled by default.\n\nThe instance address must be provided below — it has no default value on purpose. Every OJS deployment is a different journal, so a hard-coded host would mean silently showing someone else's data as your own.",
   "author": {

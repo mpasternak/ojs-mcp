@@ -11,25 +11,31 @@ others), it gives the model access to a journal's submissions, reviews,
 issues, and editorial statistics — and, with writes explicitly enabled,
 also to making editorial decisions, publishing, and editing metadata.
 
-## Status: Alpha — reads verified against a live OJS 3.5, writes not yet
+## Verified against a live OJS 3.5
 
-All seventeen always-registered tools (the sixteen read tools plus the
-`ojs_request` escape hatch) have been exercised end-to-end against a real
-OJS 3.5.0-5 instance: journal catalog, sections, issues, submissions and
-their filters, publications, files, review rounds and assignments, users,
-reviewers, statistics and DOIs all answered without error, and returned
-the seeded data where there was any. The stack that instance runs on, and
-the script that drives the server against it, are in
-[`demo/`](https://github.com/mpasternak/ojs-mcp/tree/main/demo).
+Every tool has been exercised end-to-end against a real OJS 3.5.0-5
+instance — the sixteen read tools, the `ojs_request` escape hatch, and all
+five write tools. The write tools were checked by reading back the state
+OJS actually ended up in, not by trusting the status code: an announcement
+created, publication metadata edited, a submission carried from the
+submission stage to production by two editorial decisions, then published
+and unpublished again.
 
-**The five write tools have not been exercised against a live instance.**
-Neither has login/password authentication (`OJS_USERNAME`/`OJS_PASSWORD`);
-only the API token path has. Those parts still rest on what the PKP source
-(`pkp-lib`, `pkp/ojs`) says rather than on observed behavior, as does the
-unit test suite, which runs entirely against stubbed HTTP responses (via
-`respx`). Treat them accordingly — before pointing this at production data
-with `OJS_ALLOW_WRITES=1`, verify each tool's effect on a test journal
-first.
+That instance is reproducible. [`demo/`](https://github.com/mpasternak/ojs-mcp/tree/main/demo)
+holds the Docker stack, the fictional seed content, and the two scripts that
+drive this server against it as a real MCP client — `check_api.py` for the
+read tools, `check_writes.py` for the write tools.
+
+Three things have **not** been exercised against a live server, and still
+rest on what the PKP source (`pkp-lib`, `pkp/ojs`) says rather than on
+observed behavior: login/password authentication
+(`OJS_USERNAME`/`OJS_PASSWORD`), network mode (`OJS_MCP_TRANSPORT=http`),
+and OJS 3.6 — only 3.5 has been tested. The unit test suite likewise runs
+entirely against stubbed HTTP responses (via `respx`).
+
+Writes change real journal data, which is why `OJS_ALLOW_WRITES=1` is off by
+default. Verify each tool's effect on a test journal before pointing it at
+production.
 
 ## Quick start
 

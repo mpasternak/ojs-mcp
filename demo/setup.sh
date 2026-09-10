@@ -26,15 +26,16 @@ DB="ojs-mcp-demo-db"
 say() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 # --------------------------------------------------------------------------
-say "Preparing config.inc.php"
-# OJS rewrites this file during installation, so it has to be writable by the
-# container. `sed -i` inside the container cannot touch it (a bind-mounted
+# OJS rewrites config.inc.php during installation, so it has to be writable by
+# the container. `sed -i` inside the container cannot touch it (a bind-mounted
 # file cannot be renamed), which is why base_url, the API secret and
 # restful_urls are set here rather than through the image's own entrypoint.
-if [ ! -f "$CONFIG" ]; then
+#
+# Rewrites in place rather than deleting first: the file is a bind mount
+# target, and replacing it with a new inode would leave the container looking
+# at the old, deleted one.
+prepare_config() {
     curl -sSL "https://raw.githubusercontent.com/pkp/ojs/3_5_0-5/config.TEMPLATE.inc.php" -o "$CONFIG"
-fi
-if ! grep -q '^api_key_secret = "..*"' "$CONFIG"; then
     python3 - "$CONFIG" <<'PY'
 import secrets, sys
 p = sys.argv[1]
@@ -46,8 +47,16 @@ s = s.replace('files_dir = files', 'files_dir = /var/www/files')
 s = s.replace('restful_urls = Off', 'restful_urls = On')
 open(p, 'w').write(s)
 PY
+    chmod 666 "$CONFIG"
+}
+
+say "Preparing config.inc.php"
+if [ ! -f "$CONFIG" ]; then
+    prepare_config
+else
+    chmod 666 "$CONFIG"
+    echo "already present"
 fi
-chmod 666 "$CONFIG"
 
 if [ ! -f config/pkp.conf ]; then
     say "config/pkp.conf missing -- see README (Apache must forward the Authorization header)"
@@ -67,6 +76,17 @@ for _ in $(seq 1 120); do
     printf '.'; sleep 2
 done
 echo
+
+# `docker compose down -v` destroys the database but not this file, which
+# lives on the host. Left alone, the next run would read `installed = On`,
+# skip the installation, and hand you an OJS pointing at an empty schema --
+# a 500 on every page with nothing saying why.
+tables=$(docker exec "$DB" mariadb -uojs -pojspass ojs -N -B \
+    -e "select count(*) from information_schema.tables where table_schema='ojs'")
+if [ "$tables" = "0" ] && grep -q '^installed = On' "$CONFIG"; then
+    say "Database is empty but config.inc.php says installed - regenerating it"
+    prepare_config
+fi
 
 # --------------------------------------------------------------------------
 say "Installing OJS"
