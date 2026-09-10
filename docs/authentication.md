@@ -33,6 +33,58 @@ This setting is made by the OJS **server** administrator (someone with
 access to the instance's files); it cannot be turned on from the
 browser, nor from this MCP server.
 
+### Requirement: the web server must forward the `Authorization` header
+
+Setting `api_key_secret` is not always enough. Apache does not hand the
+`Authorization` header to PHP on its own, so on a deployment that does not
+forward it, OJS never sees the token at all — the request arrives as
+anonymous and is refused with **401**, no matter how valid the token is.
+
+This failure is unusually hard to recognise, because the refusal is
+**byte-for-byte identical** to the one an anonymous request gets:
+
+```json
+{"error":"You are not authorized to access the requested resource.","errorMessage":""}
+```
+
+Nothing in it mentions the header, so the natural suspects are the token or
+the account's roles in the journal — both of which are fine.
+
+**How to tell this apart from a genuine permission problem.** OJS also
+accepts the token as a query parameter, and that path does not depend on
+the header. Compare the two against the same instance:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' \
+     -H "Authorization: Bearer $TOKEN" \
+     "https://journals.example.edu/index.php/index/api/v1/contexts"
+
+curl -s -o /dev/null -w '%{http_code}\n' \
+     "https://journals.example.edu/index.php/index/api/v1/contexts?apiToken=$TOKEN"
+```
+
+If the first gives `401` and the second `200`, the token and the roles are
+correct and the header is being dropped in the web server. (If both give
+`500`, it is `api_key_secret` — see above. If both give `401`, the account
+genuinely has no role in that journal.)
+
+**The fix**, made by the OJS server administrator, is one line in the Apache
+virtual host or `.htaccess`:
+
+```apache
+SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+```
+
+This affects the official `pkpofficial/ojs` Docker images too: as shipped,
+they drop the header, so an out-of-the-box container refuses every token
+until that line is added. The demo stack under `demo/` in this repository
+mounts a patched vhost for exactly this reason.
+
+This server always sends the token in the header and never in the query
+string — a token in a URL ends up in access logs, `Referer` headers and
+browser history, which is not an acceptable trade for working around a
+misconfigured web server.
+
 ### How to generate a token
 
 A logged-in user generates one in their own profile: **User Profile →

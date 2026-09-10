@@ -141,3 +141,11 @@ async def _run_stdio_and_close(mcp: MCPServer, client: OjsClient) -> None:
             # right to mask the error that caused it — we log with a
             # full traceback instead of raising.
             logger.exception("Could not close the HTTP client after the server stopped")
+
+
+if __name__ == "__main__":
+    # `python -m ojs_mcp.server` has to work as well as the `ojs-mcp` console
+    # script: without this block the module is imported, defines `main()`,
+    # and exits — an MCP client sees only the stdio pipe closing, and
+    # reports a connection error that says nothing about the cause.
+    raise SystemExit(main())

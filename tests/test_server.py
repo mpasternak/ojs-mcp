@@ -1,4 +1,6 @@
 import logging
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -197,6 +199,24 @@ def test_version(capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--version"])
     assert exc.value.code == 0
+
+
+def test_module_is_runnable_with_python_m():
+    """`python -m ojs_mcp.server` must start the server, not fall through.
+
+    Without a `__main__` block the module merely defines `main()` and
+    exits with 0 — which looks like success from the shell, but an MCP
+    client launched that way sees the stdio pipe close immediately and
+    reports a bare "connection closed". `--version` is the cheapest proof
+    that the entry point actually runs: it can only come from `main()`.
+    """
+    result = subprocess.run(
+        [sys.executable, "-m", "ojs_mcp.server", "--version"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    assert "ojs-mcp" in result.stdout
 
 
 async def test_auth_mode_http_is_token_despite_no_api_token_in_config():

@@ -11,17 +11,25 @@ others), it gives the model access to a journal's submissions, reviews,
 issues, and editorial statistics — and, with writes explicitly enabled,
 also to making editorial decisions, publishing, and editing metadata.
 
-## Status: Alpha — not yet verified against a live OJS instance
+## Status: Alpha — reads verified against a live OJS 3.5, writes not yet
 
-This project has not yet talked to a running OJS instance. All 280 tests
-run against stubbed HTTP responses (via `respx`); the facts about the API
-— endpoint shapes, status codes, field names, workflow-stage and
-decision constants — were read directly from the PKP source (`pkp-lib`,
-`pkp/ojs`) rather than observed against a live server. The behavior
-described in this documentation should be accurate, but it has not been
-exercised end-to-end against real OJS. Treat it accordingly, especially
-before pointing it at production data with `OJS_ALLOW_WRITES=1` — verify
-each tool's effect on a test journal first.
+All seventeen always-registered tools (the sixteen read tools plus the
+`ojs_request` escape hatch) have been exercised end-to-end against a real
+OJS 3.5.0-5 instance: journal catalog, sections, issues, submissions and
+their filters, publications, files, review rounds and assignments, users,
+reviewers, statistics and DOIs all answered without error, and returned
+the seeded data where there was any. The stack that instance runs on, and
+the script that drives the server against it, are in
+[`demo/`](https://github.com/mpasternak/ojs-mcp/tree/main/demo).
+
+**The five write tools have not been exercised against a live instance.**
+Neither has login/password authentication (`OJS_USERNAME`/`OJS_PASSWORD`);
+only the API token path has. Those parts still rest on what the PKP source
+(`pkp-lib`, `pkp/ojs`) says rather than on observed behavior, as does the
+unit test suite, which runs entirely against stubbed HTTP responses (via
+`respx`). Treat them accordingly — before pointing this at production data
+with `OJS_ALLOW_WRITES=1`, verify each tool's effect on a test journal
+first.
 
 ## Quick start
 
@@ -49,7 +57,15 @@ side:
    role (manager, editor, reviewer...); an account with no role in the
    given journal gets denied (401) on almost every call.
 
-Without these two conditions the server will start, but every tool that
+A third condition applies to instances served by Apache — including the
+official `pkpofficial/ojs` Docker images: the web server must forward the
+`Authorization` header to PHP. Apache does not do that on its own, and when
+it doesn't, OJS answers 401 to every request carrying a token, with a
+response indistinguishable from an anonymous one. The one-line fix, and how
+to tell this case apart from a genuine permission problem, are in the
+authentication documentation.
+
+Without these conditions the server will start, but every tool that
 reaches into OJS will return an authentication error. Details, including
 the login/password alternative and its limitations, are in
 [docs/authentication.md](https://mpasternak.github.io/ojs-mcp/authentication/).
