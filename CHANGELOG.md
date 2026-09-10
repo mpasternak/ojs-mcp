@@ -3,6 +3,26 @@
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] — 2026-09-10
+
+### Fixed
+
+- The version number was hardcoded in `src/ojs_mcp/__init__.py` and
+  nothing checked it against `pyproject.toml`, so 0.2.0 shipped to PyPI
+  announcing itself as 0.1.0 — both from `ojs-mcp --version` and, more
+  consequentially, in the version the server reports to an MCP client
+  during the initialize handshake. The release workflow could not catch
+  this: it compares the git tag with `pyproject.toml` only.
+- The `ojs_mcp` package docstring was still in Polish, missed by the
+  translation pass.
+
+### Added
+
+- `tests/test_packaging.py` — asserts that `ojs_mcp.__version__`,
+  `project.version` in `pyproject.toml`, and `version` in
+  `manifest.json` all agree, so this drift fails in CI instead of on
+  PyPI.
+
 ## [0.2.0] — 2026-09-10
 
 ### Added
