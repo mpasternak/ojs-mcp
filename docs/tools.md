@@ -122,9 +122,26 @@ docstrings all start with `WARNING: modifies production journal data.`
   codes, e.g. `{"en": "…", "pl": "…"}`.
 - **`publish_publication`** — publishes the given submission version.
   From that point on, the content is **publicly visible** on the
-  journal's site.
+  journal's site. OJS enforces two preconditions of its own here and
+  refuses the call rather than working around them — both observed
+  against a live 3.5 instance:
+
+    - the submission must have reached the **Copyediting or Production**
+      stage, otherwise: *"The submission must be in the Copyediting or
+      Production stages before it can be published."* Move it there with
+      `add_editorial_decision` (e.g. `skip_external_review`, then
+      `send_to_production`).
+    - the publication must be **assigned to an issue**, otherwise:
+      *"The publication must be assigned to an issue before it can be
+      published."* Assign one by setting `issueId` through
+      `edit_publication_metadata`.
 - **`unpublish_publication`** — unpublishes the given version; it
-  disappears from the journal's public site.
+  disappears from the journal's public site. Calling it on something
+  that was never published is refused by OJS (*"The publication you want
+  to unpublish is not published."*) — and, because OJS answers that with
+  a 403, this server reports it as a permission problem. If a denial
+  mentions unpublishing, check the publication's status before checking
+  the account's roles.
 - **`create_announcement`** — creates a new journal announcement,
   **publicly visible**, without emailing subscribers (this tool does
   not do that — a parameter controlling a mass email to subscribers is
