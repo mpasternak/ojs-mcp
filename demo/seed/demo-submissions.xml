@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Unpublished demo submissions: articles still sitting in the editorial
+  workflow, so the API returns something other than six identical "published"
+  rows. Invented, like everything else in this directory.
+
+  Import with:
+    php tools/importExport.php NativeImportExportPlugin import \
+        demo-submissions.xml demojournal admin
+-->
+<articles xmlns="http://pkp.sfu.ca" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://pkp.sfu.ca native.xsd">
+  <article xmlns="http://pkp.sfu.ca" locale="en" date_submitted="2026-01-20" status="1"
+           submission_progress="" current_publication_id="7" stage="externalReview">
+    <id type="internal" advice="ignore">7</id>
+    <publication xmlns="http://pkp.sfu.ca" version="1" status="1" primary_contact_id="9"
+                 seq="1" section_ref="ART">
+      <id type="internal" advice="ignore">7</id>
+      <title locale="en">Do Deadlines Exist? Evidence from a Single Laboratory</title>
+      <abstract locale="en">
+        We attempted to observe a deadline directly and failed. We discuss whether deadlines
+        are best modelled as physical objects, social constructs, or rumours, and conclude
+        that further funding is required.
+      </abstract>
+      <keywords locale="en">
+        <keyword><name>deadlines</name></keyword>
+        <keyword><name>research culture</name></keyword>
+      </keywords>
+      <authors xmlns="http://pkp.sfu.ca">
+        <author include_in_browse="true" user_group_ref="Author" seq="0" id="9" primary_contact="true">
+          <givenname locale="en">Halina</givenname>
+          <familyname locale="en">Probna</familyname>
+          <affiliation><name locale="en">Laboratory of Postponed Results</name></affiliation>
+          <country>PL</country>
+          <email>halina.probna@example.org</email>
+        </author>
+      </authors>
+    </publication>
+  </article>
+  <article xmlns="http://pkp.sfu.ca" locale="en" date_submitted="2026-02-08" status="1"
+           submission_progress="" current_publication_id="8" stage="submission">
+    <id type="internal" advice="ignore">8</id>
+    <publication xmlns="http://pkp.sfu.ca" version="1" status="1" primary_contact_id="10"
+                 seq="2" section_ref="ART">
+      <id type="internal" advice="ignore">8</id>
+      <title locale="en">A Meta-Analysis of Meta-Analyses of Meta-Analyses</title>
+      <abstract locale="en">
+        Three levels of aggregation were applied to a literature that was itself entirely
+        aggregate. The pooled effect size is reported with a confidence interval wide enough
+        to contain both the hypothesis and its negation.
+      </abstract>
+      <keywords locale="en">
+        <keyword><name>meta-analysis</name></keyword>
+        <keyword><name>effect size</name></keyword>
+        <keyword><name>evidence synthesis</name></keyword>
+      </keywords>
+      <authors xmlns="http://pkp.sfu.ca">
+        <author include_in_browse="true" user_group_ref="Author" seq="0" id="10" primary_contact="true">
+          <givenname locale="en">Tomasz</givenname>
+          <familyname locale="en">Szkicowy</familyname>
+          <affiliation><name locale="en">Centre for Recursive Evidence</name></affiliation>
+          <country>PL</country>
+          <email>tomasz.szkicowy@example.org</email>
+        </author>
+      </authors>
+    </publication>
+  </article>
+</articles>

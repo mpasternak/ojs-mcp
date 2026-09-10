@@ -16,6 +16,8 @@ build/
 tests/
 tools/
 docs/
+# The demo OJS stack — Docker files and seed data, of no use inside the bundle.
+demo/
 site/
 .superpowers/
 .pre-commit-config.yaml

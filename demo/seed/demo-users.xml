@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Demo staff for the ojs-mcp demo stack: one editor and two reviewers, so the
+  user and reviewer endpoints return more than the admin account.
+
+  All three share the password "ojsdemo1234". Fictional people, throwaway
+  instance; do not reuse this file anywhere that matters.
+
+  Import with:
+    php tools/importExport.php UserImportExportPlugin import \
+        demo-users.xml demojournal
+-->
+<PKPUsers xmlns="http://pkp.sfu.ca" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://pkp.sfu.ca pkp-users.xsd">
+  <!-- Required by the schema. Groups are matched by name, so these resolve to
+       the ones the journal already has rather than creating duplicates. -->
+  <user_groups>
+    <user_group>
+      <role_id>16</role_id>
+      <context_id>1</context_id>
+      <is_default>true</is_default>
+      <show_title>true</show_title>
+      <permit_self_registration>false</permit_self_registration>
+      <permit_metadata_edit>true</permit_metadata_edit>
+      <name locale="en">Journal editor</name>
+      <abbrev locale="en">JE</abbrev>
+      <stage_assignments>1:3:4:5</stage_assignments>
+      <masthead>true</masthead>
+    </user_group>
+    <user_group>
+      <role_id>4096</role_id>
+      <context_id>1</context_id>
+      <is_default>true</is_default>
+      <show_title>true</show_title>
+      <permit_self_registration>true</permit_self_registration>
+      <permit_metadata_edit>false</permit_metadata_edit>
+      <name locale="en">Reviewer</name>
+      <abbrev locale="en">R</abbrev>
+      <stage_assignments>3</stage_assignments>
+      <masthead>true</masthead>
+    </user_group>
+  </user_groups>
+  <users>
+    <user>
+      <givenname locale="en">Ewa</givenname>
+      <familyname locale="en">Redaktor</familyname>
+      <country>PL</country>
+      <email>ewa.redaktor@example.org</email>
+      <username>editor</username>
+      <password is_disabled="false" must_change="false" encryption="bcrypt">
+        <value>$2y$10$QYXMc3tLMhs49g2IZTRddeZtIBloxRB/El06hJccy.GGAX68Z7aEi</value>
+      </password>
+      <date_registered>2025-01-02 09:00:00</date_registered>
+      <date_last_login>2026-02-01 09:00:00</date_last_login>
+      <inline_help>true</inline_help>
+      <user_user_group>
+        <user_group_ref>Journal editor</user_group_ref>
+        <date_start>2025-01-02 00:00:00</date_start>
+        <masthead>true</masthead>
+      </user_user_group>
+    </user>
+    <user>
+      <givenname locale="en">Bartosz</givenname>
+      <familyname locale="en">Recenzent</familyname>
+      <country>PL</country>
+      <email>bartosz.recenzent@example.org</email>
+      <username>reviewer1</username>
+      <password is_disabled="false" must_change="false" encryption="bcrypt">
+        <value>$2y$10$QYXMc3tLMhs49g2IZTRddeZtIBloxRB/El06hJccy.GGAX68Z7aEi</value>
+      </password>
+      <date_registered>2025-01-02 09:00:00</date_registered>
+      <date_last_login>2026-02-01 09:00:00</date_last_login>
+      <inline_help>true</inline_help>
+      <user_user_group>
+        <user_group_ref>Reviewer</user_group_ref>
+        <date_start>2025-01-02 00:00:00</date_start>
+        <masthead>true</masthead>
+      </user_user_group>
+    </user>
+    <user>
+      <givenname locale="en">Iwona</givenname>
+      <familyname locale="en">Ocena</familyname>
+      <country>PL</country>
+      <email>iwona.ocena@example.org</email>
+      <username>reviewer2</username>
+      <password is_disabled="false" must_change="false" encryption="bcrypt">
+        <value>$2y$10$QYXMc3tLMhs49g2IZTRddeZtIBloxRB/El06hJccy.GGAX68Z7aEi</value>
+      </password>
+      <date_registered>2025-01-02 09:00:00</date_registered>
+      <date_last_login>2026-02-01 09:00:00</date_last_login>
+      <inline_help>true</inline_help>
+      <user_user_group>
+        <user_group_ref>Reviewer</user_group_ref>
+        <date_start>2025-01-02 00:00:00</date_start>
+        <masthead>true</masthead>
+      </user_user_group>
+    </user>
+  </users>
+</PKPUsers>

@@ -1,0 +1,64 @@
+# Demo OJS 3.5 stack for exercising ojs-mcp against a live instance.
+#
+# Everything here is throwaway: passwords are in plain sight on purpose,
+# the data is fictional, and the whole thing is meant to be destroyed with
+# `docker compose down -v`.
+#
+#   docker compose up -d          # start
+#   ./setup.sh                    # install OJS + create the demo journal
+#   docker compose down -v        # wipe everything, including the database
+#
+# The OJS images PKP publishes are amd64-only; on Apple Silicon they run
+# under emulation, which is slow but works.
+
+name: ojs-mcp-demo
+
+services:
+  db:
+    image: mariadb:11.4
+    container_name: ojs-mcp-demo-db
+    environment:
+      MARIADB_ROOT_PASSWORD: rootpass
+      MARIADB_DATABASE: ojs
+      MARIADB_USER: ojs
+      MARIADB_PASSWORD: ojspass
+    volumes:
+      - db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  ojs:
+    image: pkpofficial/ojs:3_5_0-5
+    platform: linux/amd64
+    container_name: ojs-mcp-demo-app
+    hostname: localhost
+    ports:
+      - "8081:80"
+    environment:
+      # The image's own auto-installer is deliberately left off: setup.sh
+      # drives the installation from the host instead, so every step is
+      # visible and re-runnable.
+      OJS_CLI_INSTALL: "0"
+      SERVERNAME: localhost
+    volumes:
+      # OJS rewrites config.inc.php during installation, so this file must
+      # be writable by the container (setup.sh chmods it).
+      - ./config/ojs.config.inc.php:/var/www/html/config.inc.php
+      # Apache does not hand the `Authorization` header to PHP on its own,
+      # so an `Authorization: Bearer <OJS token>` request would reach OJS as
+      # anonymous (401). This copy of the image's vhost adds the SetEnvIf
+      # line that forwards it.
+      - ./config/pkp.conf:/etc/apache2/conf-enabled/pkp.conf:ro
+      - files:/var/www/files
+      - public:/var/www/html/public
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db:
+  files:
+  public:

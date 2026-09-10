@@ -1,0 +1,252 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Demo content for the ojs-mcp demo stack.
+
+  Every article, author, and affiliation below is invented. The point is to
+  give the API something non-empty to return: two issues, six published
+  articles, several authors, keywords, and page ranges.
+
+  Import with:
+    php tools/importExport.php NativeImportExportPlugin import \
+        demo-content.xml demojournal admin
+-->
+<issues xmlns="http://pkp.sfu.ca" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="http://pkp.sfu.ca native.xsd">
+  <issue published="1" current="0" access_status="1" url_path="v1i1">
+    <description locale="en">The first issue of a journal that does not exist.</description>
+    <issue_identification>
+      <volume>1</volume>
+      <number>1</number>
+      <year>2025</year>
+      <title locale="en">Inaugural Issue</title>
+    </issue_identification>
+    <date_published>2025-03-14</date_published>
+    <last_modified>2025-03-14</last_modified>
+    <articles>
+      <article xmlns="http://pkp.sfu.ca" locale="en" date_submitted="2024-11-02" status="3" submission_progress="" current_publication_id="1" stage="production">
+        <id type="internal" advice="ignore">1</id>
+        <publication xmlns="http://pkp.sfu.ca" version="1" status="3" primary_contact_id="1" seq="1" date_published="2025-03-14" section_ref="ART" access_status="0">
+          <id type="internal" advice="ignore">1</id>
+          <title locale="en">A Preliminary Survey of Nothing in Particular</title>
+          <abstract locale="en">
+            We surveyed nothing in particular across three sites and found, as expected, nothing
+            in particular. The result was robust to every specification we tried, including the
+            ones we did not try.
+          </abstract>
+          <keywords locale="en">
+            <keyword><name>null results</name></keyword>
+            <keyword><name>survey methodology</name></keyword>
+            <keyword><name>demonstration data</name></keyword>
+          </keywords>
+          <authors xmlns="http://pkp.sfu.ca">
+            <author include_in_browse="true" user_group_ref="Author" seq="0" id="1" primary_contact="true">
+              <givenname locale="en">Ada</givenname>
+              <familyname locale="en">Testowa</familyname>
+              <affiliation><name locale="en">Institute of Demonstrative Studies</name></affiliation>
+              <country>PL</country>
+              <email>ada.testowa@example.org</email>
+            </author>
+            <author include_in_browse="true" user_group_ref="Author" seq="1" id="2">
+              <givenname locale="en">Jan</givenname>
+              <familyname locale="en">Przyklad</familyname>
+              <affiliation><name locale="en">Faculty of Placeholder Sciences</name></affiliation>
+              <country>PL</country>
+              <email>jan.przyklad@example.org</email>
+            </author>
+          </authors>
+          <issue_identification>
+                  <volume>1</volume>
+                  <number>1</number>
+                  <year>2025</year>
+                  <title locale="en">Inaugural Issue</title>
+          </issue_identification>
+          <pages>1-12</pages>
+        </publication>
+      </article>
+      <article xmlns="http://pkp.sfu.ca" locale="en" date_submitted="2024-11-20" status="3" submission_progress="" current_publication_id="2" stage="production">
+        <id type="internal" advice="ignore">2</id>
+        <publication xmlns="http://pkp.sfu.ca" version="1" status="3" primary_contact_id="3" seq="2" date_published="2025-03-14" section_ref="ART" access_status="0">
+          <id type="internal" advice="ignore">2</id>
+          <title locale="en">On the Reproducibility of Coin Flips in Laboratory Settings</title>
+          <abstract locale="en">
+            Two hundred coin flips were performed under controlled conditions and then repeated
+            by an independent team. Agreement was approximately what chance would predict, which
+            we interpret as encouraging.
+          </abstract>
+          <keywords locale="en">
+            <keyword><name>reproducibility</name></keyword>
+            <keyword><name>randomness</name></keyword>
+            <keyword><name>replication</name></keyword>
+          </keywords>
+          <authors xmlns="http://pkp.sfu.ca">
+            <author include_in_browse="true" user_group_ref="Author" seq="0" id="3" primary_contact="true">
+              <givenname locale="en">Marek</givenname>
+              <familyname locale="en">Zaslepka</familyname>
+              <affiliation><name locale="en">Centre for Applied Coin Flipping</name></affiliation>
+              <country>PL</country>
+              <email>marek.zaslepka@example.org</email>
+            </author>
+          </authors>
+          <issue_identification>
+                  <volume>1</volume>
+                  <number>1</number>
+                  <year>2025</year>
+                  <title locale="en">Inaugural Issue</title>
+          </issue_identification>
+          <pages>13-27</pages>
+        </publication>
+      </article>
+      <article xmlns="http://pkp.sfu.ca" locale="en" date_submitted="2024-12-05" status="3" submission_progress="" current_publication_id="3" stage="production">
+        <id type="internal" advice="ignore">3</id>
+        <publication xmlns="http://pkp.sfu.ca" version="1" status="3" primary_contact_id="4" seq="3" date_published="2025-03-14" section_ref="ART" access_status="0">
+          <id type="internal" advice="ignore">3</id>
+          <title locale="en">Lorem Ipsum as a Research Instrument: A Critical Review</title>
+          <abstract locale="en">
+            Placeholder text has shaped the layout of scholarly publishing for decades while
+            remaining entirely unexamined as an object of study. We review its history and
+            propose a research agenda nobody asked for.
+          </abstract>
+          <keywords locale="en">
+            <keyword><name>typography</name></keyword>
+            <keyword><name>placeholder text</name></keyword>
+            <keyword><name>critical review</name></keyword>
+          </keywords>
+          <authors xmlns="http://pkp.sfu.ca">
+            <author include_in_browse="true" user_group_ref="Author" seq="0" id="4" primary_contact="true">
+              <givenname locale="en">Zofia</givenname>
+              <familyname locale="en">Atrapa</familyname>
+              <affiliation><name locale="en">Department of Layout Studies</name></affiliation>
+              <country>PL</country>
+              <email>zofia.atrapa@example.org</email>
+            </author>
+            <author include_in_browse="true" user_group_ref="Author" seq="1" id="5">
+              <givenname locale="en">Piotr</givenname>
+              <familyname locale="en">Wypelniacz</familyname>
+              <affiliation><name locale="en">Department of Layout Studies</name></affiliation>
+              <country>PL</country>
+              <email>piotr.wypelniacz@example.org</email>
+            </author>
+          </authors>
+          <issue_identification>
+                  <volume>1</volume>
+                  <number>1</number>
+                  <year>2025</year>
+                  <title locale="en">Inaugural Issue</title>
+          </issue_identification>
+          <pages>28-45</pages>
+        </publication>
+      </article>
+    </articles>
+  </issue>
+  <issue published="1" current="1" access_status="1" url_path="v1i2">
+    <description locale="en">A themed issue collecting methods that should not be reused.</description>
+    <issue_identification>
+      <volume>1</volume>
+      <number>2</number>
+      <year>2025</year>
+      <title locale="en">Special Issue: Methods We Regret</title>
+    </issue_identification>
+    <date_published>2025-09-01</date_published>
+    <last_modified>2025-09-01</last_modified>
+    <articles>
+      <article xmlns="http://pkp.sfu.ca" locale="en" date_submitted="2025-04-11" status="3" submission_progress="" current_publication_id="4" stage="production">
+        <id type="internal" advice="ignore">4</id>
+        <publication xmlns="http://pkp.sfu.ca" version="1" status="3" primary_contact_id="6" seq="1" date_published="2025-09-01" section_ref="ART" access_status="0">
+          <id type="internal" advice="ignore">4</id>
+          <title locale="en">Counting to Ten: Methodological Considerations</title>
+          <abstract locale="en">
+            Counting to ten is widely practised but rarely documented. We describe a protocol,
+            report inter-rater reliability, and discuss the two cases in which our counters
+            disagreed.
+          </abstract>
+          <keywords locale="en">
+            <keyword><name>protocol</name></keyword>
+            <keyword><name>inter-rater reliability</name></keyword>
+            <keyword><name>counting</name></keyword>
+          </keywords>
+          <authors xmlns="http://pkp.sfu.ca">
+            <author include_in_browse="true" user_group_ref="Author" seq="0" id="6" primary_contact="true">
+              <givenname locale="en">Jan</givenname>
+              <familyname locale="en">Przyklad</familyname>
+              <affiliation><name locale="en">Faculty of Placeholder Sciences</name></affiliation>
+              <country>PL</country>
+              <email>jan.przyklad@example.org</email>
+            </author>
+          </authors>
+          <issue_identification>
+                  <volume>1</volume>
+                  <number>2</number>
+                  <year>2025</year>
+                  <title locale="en">Special Issue: Methods We Regret</title>
+          </issue_identification>
+          <pages>1-9</pages>
+        </publication>
+      </article>
+      <article xmlns="http://pkp.sfu.ca" locale="en" date_submitted="2025-05-02" status="3" submission_progress="" current_publication_id="5" stage="production">
+        <id type="internal" advice="ignore">5</id>
+        <publication xmlns="http://pkp.sfu.ca" version="1" status="3" primary_contact_id="7" seq="2" date_published="2025-09-01" section_ref="ART" access_status="0">
+          <id type="internal" advice="ignore">5</id>
+          <title locale="en">Why Our Sample Size Was Four</title>
+          <abstract locale="en">
+            A candid account of a study whose power analysis was performed after data
+            collection, by a different person, for a different study.
+          </abstract>
+          <keywords locale="en">
+            <keyword><name>sample size</name></keyword>
+            <keyword><name>statistical power</name></keyword>
+            <keyword><name>research transparency</name></keyword>
+          </keywords>
+          <authors xmlns="http://pkp.sfu.ca">
+            <author include_in_browse="true" user_group_ref="Author" seq="0" id="7" primary_contact="true">
+              <givenname locale="en">Ada</givenname>
+              <familyname locale="en">Testowa</familyname>
+              <affiliation><name locale="en">Institute of Demonstrative Studies</name></affiliation>
+              <country>PL</country>
+              <email>ada.testowa@example.org</email>
+            </author>
+          </authors>
+          <issue_identification>
+                  <volume>1</volume>
+                  <number>2</number>
+                  <year>2025</year>
+                  <title locale="en">Special Issue: Methods We Regret</title>
+          </issue_identification>
+          <pages>10-18</pages>
+        </publication>
+      </article>
+      <article xmlns="http://pkp.sfu.ca" locale="en" date_submitted="2025-06-17" status="3" submission_progress="" current_publication_id="6" stage="production">
+        <id type="internal" advice="ignore">6</id>
+        <publication xmlns="http://pkp.sfu.ca" version="1" status="3" primary_contact_id="8" seq="3" date_published="2025-09-01" section_ref="ART" access_status="0">
+          <id type="internal" advice="ignore">6</id>
+          <title locale="en">Null Results from a Study We Forgot to Run</title>
+          <abstract locale="en">
+            We report null results from an intervention trial that was designed, funded, and
+            written up, but never actually conducted. We argue this is no less informative than
+            several trials that were.
+          </abstract>
+          <keywords locale="en">
+            <keyword><name>null results</name></keyword>
+            <keyword><name>publication bias</name></keyword>
+            <keyword><name>open science</name></keyword>
+          </keywords>
+          <authors xmlns="http://pkp.sfu.ca">
+            <author include_in_browse="true" user_group_ref="Author" seq="0" id="8" primary_contact="true">
+              <givenname locale="en">Katarzyna</givenname>
+              <familyname locale="en">Makieta</familyname>
+              <affiliation><name locale="en">Office of Unstarted Research</name></affiliation>
+              <country>PL</country>
+              <email>katarzyna.makieta@example.org</email>
+            </author>
+          </authors>
+          <issue_identification>
+                  <volume>1</volume>
+                  <number>2</number>
+                  <year>2025</year>
+                  <title locale="en">Special Issue: Methods We Regret</title>
+          </issue_identification>
+          <pages>19-31</pages>
+        </publication>
+      </article>
+    </articles>
+  </issue>
+</issues>
