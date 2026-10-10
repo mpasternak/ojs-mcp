@@ -84,16 +84,16 @@ Always registered, regardless of `OJS_ALLOW_WRITES`.
   `submissions/12/files`); check the exact shape of each endpoint in
   the `ojs://endpoints` resource. Without `OJS_ALLOW_WRITES`, only read
   requests (`GET`/`HEAD`) are allowed. See also the warning in the
-  [Write tools](#write-tools-5) section about the reach of this escape
+  [Write tools](#write-tools-6) section about the reach of this escape
   hatch once writes are enabled.
 
-## Write tools (5)
+## Write tools (6)
 
 **Registered only when `OJS_ALLOW_WRITES=1`.** Without this flag, the
 model doesn't see them **at all** — these aren't tools that exist but
 are blocked; the server doesn't report them to the MCP client as
 available, so they never appear in the tool list the model receives.
-With the flag on, the model sees 22 tools in total (17 read + 5 write).
+With the flag on, the model sees 23 tools in total (17 read + 6 write).
 
 Each of these modifies the journal's **production** data — their
 docstrings all start with `WARNING: modifies production journal data.`
@@ -142,6 +142,15 @@ docstrings all start with `WARNING: modifies production journal data.`
   a 403, this server reports it as a permission problem. If a denial
   mentions unpublishing, check the publication's status before checking
   the account's roles.
+- **`reorder_issue_articles`** — sets the order of articles within
+  their sections of an issue's table of contents (sections keep the
+  journal's section order). `order` lists submission IDs in the wanted
+  order; the position becomes the `seq` of each article's current
+  publication — the same field the drag-and-drop table-of-contents grid
+  writes, and the only field this tool writes. Every section touched
+  must be listed in full; IDs outside the issue, repeats, or a partly
+  listed section are rejected before anything is sent. On a published
+  issue the new order is public immediately.
 - **`create_announcement`** — creates a new journal announcement,
   **publicly visible**, without emailing subscribers (this tool does
   not do that — a parameter controlling a mass email to subscribers is

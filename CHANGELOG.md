@@ -3,6 +3,18 @@
 Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 versioning follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `reorder_issue_articles` write tool: sets the order of articles within
+  their sections of an issue's table of contents by writing each current
+  publication's `seq` — the field the table-of-contents grid writes and
+  that `edit_publication_metadata` deliberately does not accept. Checks
+  the order (no repeats, only articles of the issue, every touched
+  section listed in full) before writing anything. Exercised against a
+  production OJS 3.5.0-5 journal.
+
 ## [0.2.1] — 2026-09-10
 
 ### Fixed

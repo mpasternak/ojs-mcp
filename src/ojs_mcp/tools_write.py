@@ -376,6 +376,101 @@ async def create_announcement_impl(
     return result
 
 
+# --- Issue table of contents ---------------------------------------------------
+
+
+async def reorder_issue_articles_impl(
+    client: OjsClient,
+    catalog: Catalog,
+    *,
+    issue: int,
+    order: list[int],
+    journal: str | None = None,
+) -> dict[str, Any]:
+    """Set the order of articles within their sections of an issue's
+    table of contents.
+
+    OJS sorts a table of contents by section, then by the ``seq`` of each
+    article's current publication (``po.seq`` for
+    ``Collector::ORDERBY_SEQUENCE`` in pkp-lib) — the same field the
+    drag-and-drop table-of-contents grid writes
+    (``TocGridHandler::setDataElementInCategorySequence``). ``seq`` is
+    deliberately NOT in ``EDITABLE_FIELDS`` (see its note: an operational
+    field), so this tool is the only curated way to write it, and it
+    writes nothing else, only for articles of the given issue.
+
+    ``order`` lists submission IDs in the wanted order; the position in
+    the list (0, 1, …) becomes ``seq``. Sections themselves keep the
+    journal's section order. Every section that ``order`` touches must
+    be listed in full — otherwise the articles left out would keep their
+    old ``seq`` and interleave unpredictably with the new values.
+
+    One ``PUT /submissions/{id}/publications/{id}`` per article, body
+    ``{"seq": n}``.
+
+    :raises InputError: when ``order`` is empty, repeats an ID, names a
+        submission that is not in the issue, or lists a section only
+        partially — all checked before anything is written.
+    """
+    if not order:
+        raise InputError("`order` must list at least one submission ID.")
+    repeated = sorted({sid for sid in order if order.count(sid) > 1})
+    if repeated:
+        raise InputError(f"`order` repeats submission IDs: {repeated}.")
+    context = await catalog.resolve(journal)
+
+    data = await client.get(f"issues/{issue}", journal=context)
+    current: dict[int, tuple[int, Any]] = {}
+    for article in (data or {}).get("articles") or []:
+        publication = next(
+            (
+                p
+                for p in article.get("publications") or []
+                if p.get("id") == article.get("currentPublicationId")
+            ),
+            None,
+        )
+        if publication is not None:
+            current[article["id"]] = (publication["id"], publication.get("sectionId"))
+
+    unknown = [sid for sid in order if sid not in current]
+    if unknown:
+        raise InputError(
+            f"Not articles of issue {issue}: {unknown}. "
+            f"Articles in this issue: {sorted(current)}."
+        )
+    sections = {current[sid][1] for sid in order}
+    missing = sorted(
+        sid
+        for sid, (_, section) in current.items()
+        if section in sections and sid not in order
+    )
+    if missing:
+        raise InputError(
+            "List every article of each section you reorder — missing from "
+            f"`order`: {missing}."
+        )
+
+    articles = []
+    for seq, sid in enumerate(order):
+        publication_id, section = current[sid]
+        await client.request(
+            "PUT",
+            f"submissions/{sid}/publications/{publication_id}",
+            body={"seq": seq},
+            journal=context,
+        )
+        articles.append(
+            {
+                "submission": sid,
+                "publication": publication_id,
+                "sectionId": section,
+                "seq": seq,
+            }
+        )
+    return {"journal": context, "issue": issue, "articles": articles}
+
+
 # --- Registration on the MCP server ------------------------------------------
 
 
@@ -528,4 +623,24 @@ def register_write_tools(mcp, client: OjsClient, catalog: Catalog) -> None:
             type_id=type_id,
             expiry_date=expiry_date,
             journal=journal,
+        )
+
+    @mcp.tool()
+    @with_readable_error
+    async def reorder_issue_articles(
+        issue: int, order: list[int], journal: str | None = None
+    ) -> dict:
+        """WARNING: modifies production journal data.
+
+        Sets the order of articles within their sections in an issue's
+        table of contents — on the public site too, if the issue is
+        published. Sections keep the journal's section order.
+
+        `order`: submission IDs in the wanted order (the article list
+        is in `get_issue`/`search_submissions`). Every section you touch
+        must be listed in full; IDs outside the issue, repeats or a
+        partly listed section are rejected before anything is written.
+        """
+        return await reorder_issue_articles_impl(
+            client, catalog, issue=issue, order=order, journal=journal
         )

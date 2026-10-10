@@ -17,6 +17,7 @@ from ojs_mcp.tools_write import (
     edit_publication_metadata_impl,
     publish_publication_impl,
     register_write_tools,
+    reorder_issue_articles_impl,
     unpublish_publication_impl,
 )
 
@@ -308,6 +309,78 @@ async def test_publish_without_a_response_body_gives_an_explicit_confirmation():
     await client.aclose()
 
 
+# --- reorder_issue_articles ----------------------------------------------------
+
+
+def _issue_with_articles():
+    # Two sections: 1 (articles 10, 11) and 2 (article 12).
+    return {
+        "id": 9,
+        "articles": [
+            {
+                "id": 10,
+                "currentPublicationId": 100,
+                "publications": [{"id": 100, "sectionId": 1}],
+            },
+            {
+                "id": 11,
+                "currentPublicationId": 110,
+                "publications": [{"id": 110, "sectionId": 1}],
+            },
+            {
+                "id": 12,
+                "currentPublicationId": 120,
+                "publications": [{"id": 120, "sectionId": 2}],
+            },
+        ],
+    }
+
+
+@respx.mock
+async def test_reorder_writes_only_seq_by_position():
+    respx.get(f"{BASE}/issues/9").mock(
+        return_value=httpx.Response(200, json=_issue_with_articles())
+    )
+    r11 = respx.put(f"{BASE}/submissions/11/publications/110").mock(
+        return_value=httpx.Response(200, json={"id": 110})
+    )
+    r10 = respx.put(f"{BASE}/submissions/10/publications/100").mock(
+        return_value=httpx.Response(200, json={"id": 100})
+    )
+    client, catalog = _setup()
+    result = await reorder_issue_articles_impl(client, catalog, issue=9, order=[11, 10])
+    assert json.loads(r11.calls.last.request.content) == {"seq": 0}
+    assert json.loads(r10.calls.last.request.content) == {"seq": 1}
+    assert [a["submission"] for a in result["articles"]] == [11, 10]
+    assert result["journal"] == "annual"
+    await client.aclose()
+
+
+@pytest.mark.parametrize(
+    "order, message",
+    [
+        ([], "at least one"),
+        ([10, 10, 11], "repeats"),
+        ([10, 11, 99], "Not articles of issue 9"),
+        ([10], "missing from `order`: [11]"),
+    ],
+)
+@respx.mock
+async def test_reorder_rejects_bad_orders_before_writing(order, message):
+    respx.get(f"{BASE}/issues/9").mock(
+        return_value=httpx.Response(200, json=_issue_with_articles())
+    )
+    put = respx.put(url__regex=r".*/publications/.*").mock(
+        return_value=httpx.Response(200, json={})
+    )
+    client, catalog = _setup()
+    with pytest.raises(InputError) as exc:
+        await reorder_issue_articles_impl(client, catalog, issue=9, order=order)
+    assert message in str(exc.value)
+    assert put.called is False
+    await client.aclose()
+
+
 # --- create_announcement ----------------------------------------------------------
 
 
@@ -386,9 +459,10 @@ async def test_register_write_tools_registers_all_tools_and_works():
         "publish_publication",
         "unpublish_publication",
         "create_announcement",
+        "reorder_issue_articles",
     }
     assert set(mcp.tools) == expected
-    assert len(mcp.tools) == 5
+    assert len(mcp.tools) == 6
 
     route = respx.post(f"{BASE}/submissions/1/decisions").mock(
         return_value=httpx.Response(200, json={"id": 1, "decision": 2})

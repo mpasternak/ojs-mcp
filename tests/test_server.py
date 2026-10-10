@@ -16,7 +16,7 @@ from ojs_mcp.mcp_errors import is_wrapped
 from ojs_mcp.server import _run_stdio_and_close, build_server, main
 from ojs_mcp.tools_write import EDITABLE_FIELDS
 
-# Names of ALL FIVE write tools (Task 13) — used in several tests below,
+# Names of ALL the write tools — used in several tests below,
 # so kept in one place.
 WRITE_TOOLS = {
     "add_editorial_decision",
@@ -24,6 +24,7 @@ WRITE_TOOLS = {
     "publish_publication",
     "unpublish_publication",
     "create_announcement",
+    "reorder_issue_articles",
 }
 
 
@@ -82,7 +83,7 @@ async def test_without_allow_writes_no_write_tools():
     mcp, client = build_server(cfg)
     names = await _tool_names(mcp)
     assert "search_submissions" in names
-    # Key property: the model does NOT SEE ANY of the five write tools
+    # Key property: the model does NOT SEE ANY of the write tools
     # (D8, Round 1 review of Task 13: previously only 2 of 5 were checked).
     assert not (names & WRITE_TOOLS), names & WRITE_TOOLS
     await client.aclose()
@@ -96,7 +97,7 @@ async def test_with_allow_writes_the_write_tools_are_there(caplog):
     mcp, client = build_server(cfg)
     names = await _tool_names(mcp)
     # Task 13: `tools_write` now has a full implementation — with
-    # allow_writes=True the model MUST see all five write tools.
+    # allow_writes=True the model MUST see all the write tools.
     assert WRITE_TOOLS <= names
     # The only signal to the operator that this instance may modify
     # production journal data — must stay, even after a refactor.
